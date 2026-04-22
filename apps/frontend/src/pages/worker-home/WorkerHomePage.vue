@@ -2731,7 +2731,7 @@ async function handleResetUserPassword(user: UserRecord) {
             <img
               :src="flowcraftLogoUrl"
               alt="FlowCraft"
-              class="brand-logo"
+              class="brand-logo brand-logo--auth"
             />
           </div>
           <div>
@@ -4826,6 +4826,13 @@ h2 {
   width: 364%;
   height: 504px;
   object-fit: cover;
+  object-position: center;
+}
+
+.brand-logo--auth {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
   object-position: center;
 }
 
@@ -7052,6 +7059,10 @@ h2 {
   .tabs {
     width: 100%;
     flex-wrap: wrap;
+  }
+
+  .brand-logo-frame--auth {
+    height: 96px;
   }
 
   .tab-button,
