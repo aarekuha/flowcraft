@@ -35,3 +35,7 @@ make frontend-dev
 Подробная инструкция для запуска на другой машине:
 
 - [deploy-current-service.md](/home/alex/projects/flowcraft/docs/runbooks/deploy-current-service.md)
+
+Non-dev запуск:
+
+- [run-non-dev-service.md](/home/alex/projects/flowcraft/docs/runbooks/run-non-dev-service.md)
