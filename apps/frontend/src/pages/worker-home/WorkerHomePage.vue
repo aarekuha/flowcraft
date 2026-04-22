@@ -4834,6 +4834,8 @@ h2 {
   height: 100%;
   object-fit: contain;
   object-position: center;
+  transform: scale(1.72);
+  transform-origin: center;
 }
 
 .tabs {
