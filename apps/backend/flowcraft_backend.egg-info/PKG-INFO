@@ -1,0 +1,50 @@
+Metadata-Version: 2.4
+Name: flowcraft-backend
+Version: 0.1.0
+Summary: Backend for Flowcraft MVP
+Requires-Python: >=3.12
+Description-Content-Type: text/markdown
+Requires-Dist: alembic<2.0,>=1.13
+Requires-Dist: fastapi<1.0,>=0.110
+Requires-Dist: uvicorn[standard]<1.0,>=0.29
+Requires-Dist: pydantic-settings<3.0,>=2.2
+Requires-Dist: sqlalchemy<3.0,>=2.0
+Provides-Extra: dev
+Requires-Dist: httpx<1.0,>=0.27; extra == "dev"
+Requires-Dist: mypy<2.0,>=1.10; extra == "dev"
+Requires-Dist: pytest<9.0,>=8.2; extra == "dev"
+Requires-Dist: ruff<1.0,>=0.4; extra == "dev"
+
+# Backend
+
+Серверная часть проекта на `FastAPI`.
+
+## Структура
+
+- `app/api` — HTTP-слой и роуты.
+- `app/domain` — предметная модель.
+- `app/services` — прикладные сценарии.
+- `app/repositories` — доступ к данным.
+- `app/models` — ORM-модели.
+- `app/schemas` — схемы запросов и ответов.
+- `app/core` — настройки и инфраструктурные зависимости.
+
+## Команды
+
+Из корня проекта:
+
+```bash
+make backend-install
+make backend-migrate
+make backend-dev
+make backend-test
+make backend-lint
+make backend-typecheck
+```
+
+## API
+
+- `GET /api/products` — список изделий.
+- `GET /api/products/{id}` — просмотр одного изделия.
+- `POST /api/products` — создание изделия с деревом операций.
+- `DELETE /api/products/{id}` — удаление изделия.
