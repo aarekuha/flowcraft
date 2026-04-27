@@ -2842,13 +2842,13 @@ async function handleResetUserPassword(user: UserRecord) {
             <button type="button" class="ghost-button" @click="openChangePasswordModal">
               <span class="button-content">
                 <span class="button-icon button-icon--key" aria-hidden="true" />
-                <span>Изменить пароль</span>
+                <span class="current-user-card__action-label">Изменить пароль</span>
               </span>
             </button>
             <button type="button" class="ghost-button" @click="void handleLogout()">
               <span class="button-content">
                 <span class="button-icon button-icon--logout" aria-hidden="true" />
-                <span>Выйти</span>
+                <span class="current-user-card__action-label">Выйти</span>
               </span>
             </button>
           </div>
@@ -3094,42 +3094,71 @@ async function handleResetUserPassword(user: UserRecord) {
               <p>Заказы в работе пока не созданы.</p>
             </div>
 
-            <div v-else class="table-wrap">
-              <table class="products-table brigadier-table">
-                <thead>
-                  <tr>
-                    <th>Номер заказа</th>
-                    <th>Наименование</th>
-                    <th>Версия</th>
-                    <th>Исполнители</th>
-                    <th>Суммарное время</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr v-for="order in workOrders" :key="order.id">
-                    <td>{{ order.orderNumber }}</td>
-                    <td>{{ order.productName }}</td>
-                    <td>{{ order.productVersion }}</td>
-                    <td>
-                      <button
-                        type="button"
-                        class="secondary-button"
-                        @click="openBrigadierManageOrder(order)"
-                      >
-                        <span class="button-content">
-                          <span class="button-icon button-icon--people" aria-hidden="true" />
-                          <span>{{ order.assignmentsCount }} назначений</span>
+            <div v-else>
+              <div class="table-wrap desktop-only">
+                <table class="products-table brigadier-table">
+                  <thead>
+                    <tr>
+                      <th>Номер заказа</th>
+                      <th>Наименование</th>
+                      <th>Версия</th>
+                      <th>Исполнители</th>
+                      <th>Суммарное время</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="order in workOrders" :key="order.id">
+                      <td>{{ order.orderNumber }}</td>
+                      <td>{{ order.productName }}</td>
+                      <td>{{ order.productVersion }}</td>
+                      <td>
+                        <button
+                          type="button"
+                          class="secondary-button"
+                          @click="openBrigadierManageOrder(order)"
+                        >
+                          <span class="button-content">
+                            <span class="button-icon button-icon--people" aria-hidden="true" />
+                            <span>{{ order.assignmentsCount }} назначений</span>
+                          </span>
+                        </button>
+                      </td>
+                      <td>
+                        <span class="duration-badge">
+                          {{ formatDuration(order.totalSpentMinutes) }}
                         </span>
-                      </button>
-                    </td>
-                    <td>
-                      <span class="duration-badge">
-                        {{ formatDuration(order.totalSpentMinutes) }}
-                      </span>
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+
+              <div class="mobile-list mobile-only">
+                <article
+                  v-for="order in workOrders"
+                  :key="`mobile-order-${order.id}`"
+                  class="mobile-card"
+                >
+                  <div class="mobile-card__head">
+                    <strong>{{ order.orderNumber }}</strong>
+                    <span class="duration-badge">{{ formatDuration(order.totalSpentMinutes) }}</span>
+                  </div>
+                  <div class="mobile-card__meta">
+                    <span>{{ order.productName }}</span>
+                    <span>Версия {{ order.productVersion }} · {{ order.quantity }} шт.</span>
+                  </div>
+                  <button
+                    type="button"
+                    class="secondary-button"
+                    @click="openBrigadierManageOrder(order)"
+                  >
+                    <span class="button-content">
+                      <span class="button-icon button-icon--people" aria-hidden="true" />
+                      <span>{{ order.assignmentsCount }} назначений</span>
+                    </span>
+                  </button>
+                </article>
+              </div>
             </div>
           </template>
 
@@ -3200,36 +3229,64 @@ async function handleResetUserPassword(user: UserRecord) {
               <p>Загрузка изделий...</p>
             </div>
 
-            <div v-else class="table-wrap">
-              <table class="products-table brigadier-table">
-                <thead>
-                  <tr>
-                    <th>Наименование</th>
-                    <th>Версия</th>
-                    <th>Дата создания</th>
-                    <th>Действие</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr v-for="product in filteredBrigadierProducts" :key="product.id">
-                    <td>{{ product.name }}</td>
-                    <td>{{ product.version }}</td>
-                    <td>{{ product.createdAt }}</td>
-                    <td>
-                      <button
-                        type="button"
-                        class="primary-button"
-                        @click="openBrigadierCreateOrder(product.id)"
-                      >
-                        <span class="button-content">
-                          <span class="button-icon button-icon--play" aria-hidden="true" />
-                          <span>Взять в работу</span>
-                        </span>
-                      </button>
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
+            <div v-else>
+              <div class="table-wrap desktop-only">
+                <table class="products-table brigadier-table">
+                  <thead>
+                    <tr>
+                      <th>Наименование</th>
+                      <th>Версия</th>
+                      <th>Дата создания</th>
+                      <th>Действие</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="product in filteredBrigadierProducts" :key="product.id">
+                      <td>{{ product.name }}</td>
+                      <td>{{ product.version }}</td>
+                      <td>{{ product.createdAt }}</td>
+                      <td>
+                        <button
+                          type="button"
+                          class="primary-button"
+                          @click="openBrigadierCreateOrder(product.id)"
+                        >
+                          <span class="button-content">
+                            <span class="button-icon button-icon--play" aria-hidden="true" />
+                            <span>Взять в работу</span>
+                          </span>
+                        </button>
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+
+              <div class="mobile-list mobile-only">
+                <article
+                  v-for="product in filteredBrigadierProducts"
+                  :key="`mobile-product-${product.id}`"
+                  class="mobile-card"
+                >
+                  <div class="mobile-card__head mobile-card__head--stacked">
+                    <strong>{{ product.name }}</strong>
+                    <span class="mobile-card__version">Версия {{ product.version }}</span>
+                  </div>
+                  <div class="mobile-card__meta">
+                    <span>Создано {{ product.createdAt }}</span>
+                  </div>
+                  <button
+                    type="button"
+                    class="primary-button"
+                    @click="openBrigadierCreateOrder(product.id)"
+                  >
+                    <span class="button-content">
+                      <span class="button-icon button-icon--play" aria-hidden="true" />
+                      <span>Взять в работу</span>
+                    </span>
+                  </button>
+                </article>
+              </div>
             </div>
 
             <div
@@ -4897,6 +4954,10 @@ h2 {
   font-size: 0.86rem;
 }
 
+.current-user-card__action-label {
+  display: inline;
+}
+
 .tab-button,
 .primary-button,
 .secondary-button,
@@ -6076,6 +6137,60 @@ h2 {
   font-family: "Sora", "Inter", sans-serif;
 }
 
+.desktop-only {
+  display: block;
+}
+
+.mobile-only {
+  display: none;
+}
+
+.mobile-list {
+  display: grid;
+  gap: 14px;
+}
+
+.mobile-card {
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+  border: 1px solid var(--color-border);
+  border-radius: 18px;
+  background: var(--color-surface);
+  box-shadow: 0 12px 26px rgba(31, 42, 51, 0.05);
+}
+
+.mobile-card__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.mobile-card__head strong {
+  font-size: 1rem;
+  line-height: 1.2;
+  color: var(--color-text);
+}
+
+.mobile-card__head--stacked {
+  display: grid;
+  gap: 6px;
+}
+
+.mobile-card__meta {
+  display: grid;
+  gap: 4px;
+  color: var(--color-text-secondary);
+  font-size: 0.92rem;
+}
+
+.mobile-card__version {
+  color: var(--color-primary-hover);
+  font-weight: 700;
+  font-size: 0.92rem;
+}
+
 .brigadier-modal {
   width: min(980px, calc(100vw - 48px));
 }
@@ -7015,6 +7130,41 @@ h2 {
   .statistics-card--wide {
     grid-column: span 1;
   }
+
+  .modal-backdrop {
+    display: flex;
+    align-items: flex-start;
+    justify-content: center;
+    padding: 16px;
+  }
+
+  .modal {
+    max-height: calc(100dvh - 32px);
+    min-height: 0;
+    overflow-y: auto;
+    overflow-x: hidden;
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior: contain;
+  }
+
+  .confirm-modal {
+    max-height: calc(100dvh - 32px);
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .product-form,
+  .order-form {
+    grid-template-rows: auto auto auto;
+    overflow: visible;
+  }
+
+  .order-assignments,
+  .operations-section {
+    min-height: auto;
+    overflow: visible;
+    padding-right: 0;
+  }
 }
 
 @media (max-width: 1999px) {
@@ -7039,13 +7189,13 @@ h2 {
 
 @media (max-width: 760px) {
   .page {
-    padding: 12px;
+    padding: 10px;
   }
 
   .shell {
     min-height: auto;
-    padding: 18px;
-    border-radius: 22px;
+    padding: 14px;
+    border-radius: 18px;
   }
 
   .header,
@@ -7058,38 +7208,186 @@ h2 {
     align-items: stretch;
   }
 
+  .header {
+    gap: 12px;
+    margin-bottom: 16px;
+  }
+
+  .brand-block {
+    display: flex;
+    justify-content: center;
+  }
+
+  .header .brand-logo-frame {
+    width: min(320px, 86vw);
+    height: 88px;
+  }
+
+  .header .brand-logo {
+    width: 260%;
+    height: 180px;
+    object-fit: cover;
+    object-position: center;
+    transform: none;
+  }
+
   .tabs {
     width: 100%;
-    flex-wrap: wrap;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(132px, 1fr));
+    gap: 8px;
+    padding: 6px;
+  }
+
+  .tab-button {
+    width: 100%;
+    min-height: 56px;
   }
 
   .brand-logo-frame--auth {
     height: 96px;
   }
 
-  .tab-button,
   .primary-button {
     width: 100%;
   }
 
+  .current-user-card {
+    min-width: 0;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 10px;
+    padding: 12px 14px;
+  }
+
+  .current-user-card__identity {
+    min-width: 0;
+    gap: 4px;
+  }
+
+  .current-user-card .section-label {
+    display: none;
+  }
+
+  .current-user-card strong {
+    display: block;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .current-user-card__actions {
+    gap: 6px;
+    flex-wrap: nowrap;
+  }
+
+  .current-user-card .ghost-button {
+    min-width: 40px;
+    padding: 8px;
+  }
+
+  .current-user-card__action-label {
+    display: none;
+  }
+
+  .panel-head h2,
+  .constructor-panel h2 {
+    font-size: 1.15rem;
+    line-height: 1.2;
+  }
+
+  .worker-panel__subtitle {
+    display: none;
+  }
+
+  .worker-summary__card {
+    padding: 18px;
+  }
+
+  .worker-summary__value {
+    font-size: 2.4rem;
+  }
+
+  .subtabs {
+    width: 100%;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+    padding: 6px;
+  }
+
+  .subtab-button {
+    justify-content: center;
+    min-height: 70px;
+    padding: 12px 10px;
+  }
+
+  .subtab-button .button-content {
+    justify-content: center;
+    text-align: center;
+  }
+
+  .toolbar {
+    gap: 12px;
+  }
+
+  .field__label {
+    font-size: 0.82rem;
+  }
+
+  .desktop-only {
+    display: none !important;
+  }
+
+  .mobile-only {
+    display: grid;
+  }
+
   .modal-backdrop {
+    display: flex;
+    align-items: flex-start;
+    justify-content: center;
     padding: 12px;
   }
 
   .modal {
     width: calc(100vw - 24px);
-    max-height: calc(100vh - 24px);
+    max-height: calc(100dvh - 24px);
+    min-height: 0;
     padding: 18px;
+    margin: 0 auto 24px;
+    overflow-y: auto;
+    overflow-x: hidden;
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior: contain;
   }
 
   .confirm-modal {
     width: calc(100vw - 24px);
+    max-height: calc(100dvh - 24px);
     padding: 18px;
+    margin: 0 auto 24px;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
   }
 
   .confirm-modal__actions {
     flex-direction: column-reverse;
     align-items: stretch;
+  }
+
+  .product-form,
+  .order-form {
+    grid-template-rows: auto auto auto;
+    overflow: visible;
+  }
+
+  .order-assignments,
+  .operations-section {
+    min-height: auto;
+    overflow: visible;
+    padding-right: 0;
   }
 
   .products-table th,
