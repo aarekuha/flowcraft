@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import flowcraftLogoUrl from "@/shared/assets/flowcraft_logo.png";
 
 import {
@@ -173,6 +173,7 @@ const BRIGADIER_TAB_STORAGE_KEY = "flowcraft.brigadier-tab";
 const PREPARATION_TIMER_ID = "worker:preparation";
 const BREAK_TIMER_ID = "worker:break";
 const IDLE_TIMER_ID = "worker:idle";
+const SMARTPHONE_MEDIA_QUERY = "(max-width: 760px)";
 
 const activeTab = ref<TabId>(readStoredTab<TabId>(ACTIVE_TAB_STORAGE_KEY, tabs.map((tab) => tab.id), "constructor"));
 const brigadierTab = ref<BrigadierTabId>(
@@ -206,6 +207,8 @@ const brigadierModalOrderId = ref<number | null>(null);
 const brigadierModalAssignments = ref<BrigadierOrderAssignment[]>([]);
 const brigadierModalQuantity = ref("1");
 const brigadierModalOrderNumber = ref("");
+const brigadierOpenAssignmentDropdownId = ref<number | null>(null);
+let brigadierDropdownCloseTimeoutId: number | null = null;
 const brigadierModalLoading = ref(false);
 const brigadierModalError = ref("");
 const brigadierOrdersLoading = ref(false);
@@ -221,6 +224,7 @@ const activeWorkerTimerId = ref<string | null>(null);
 const workerTimers = ref<Record<string, WorkerTimerState>>({});
 const workerTimerNow = ref(Date.now());
 const workerGroupExpanded = ref<Record<string, boolean>>({});
+const isSmartphoneViewport = ref(false);
 const statisticsPeriodDays = ref<(typeof statisticsPeriodOptions)[number]>(14);
 const statisticsLoading = ref(false);
 const statisticsError = ref("");
@@ -653,6 +657,8 @@ const workerActiveTimer = computed(() =>
   activeWorkerTimerId.value ? workerTimers.value[activeWorkerTimerId.value] ?? null : null,
 );
 
+const shouldShowWorkerActiveTimerCard = computed(() => !isSmartphoneViewport.value);
+
 const statisticsDailyMax = computed(() =>
   Math.max(...(statisticsOverview.value?.dailyBreakdown.map((item) => item.totalMs) ?? [0]), 1),
 );
@@ -675,7 +681,9 @@ const statisticsIdleMax = computed(() =>
 
 onMounted(async () => {
   await initializePage();
+  updateSmartphoneViewport();
   window.addEventListener("keydown", handleWindowKeydown);
+  window.addEventListener("resize", updateSmartphoneViewport);
   const intervalId = window.setInterval(() => {
     workerTimerNow.value = Date.now();
   }, 1000);
@@ -724,10 +732,15 @@ watch(
 
 onBeforeUnmount(() => {
   window.removeEventListener("keydown", handleWindowKeydown);
+  window.removeEventListener("resize", updateSmartphoneViewport);
   if (workerClockIntervalId !== null) {
     window.clearInterval(workerClockIntervalId);
   }
 });
+
+function updateSmartphoneViewport() {
+  isSmartphoneViewport.value = window.matchMedia(SMARTPHONE_MEDIA_QUERY).matches;
+}
 
 function setActiveTab(tabId: TabId) {
   activeTab.value = tabId;
@@ -1374,6 +1387,9 @@ async function activateWorkerTimer(timerId: string) {
     return;
   }
 
+  const shouldPreserveScroll = isSmartphoneViewport.value && timer.kind === "operation";
+  const previousScrollY = shouldPreserveScroll ? window.scrollY : null;
+
   workerTimerSubmitting.value = true;
   workerAssignmentsError.value = "";
 
@@ -1385,6 +1401,11 @@ async function activateWorkerTimer(timerId: string) {
       }),
     );
     await loadWorkOrders();
+    if (previousScrollY !== null) {
+      await nextTick();
+      window.scrollTo({ top: previousScrollY, behavior: "auto" });
+      (document.activeElement as HTMLElement | null)?.blur?.();
+    }
   } catch (error) {
     if (isUnauthorizedError(error)) {
       redirectToAuth(getErrorMessage(error, "Требуется аутентификация."));
@@ -2308,6 +2329,8 @@ async function openBrigadierManageOrder(order: WorkOrderSummary) {
 }
 
 function closeBrigadierOrderModal() {
+  clearBrigadierAssignmentDropdownCloseTimeout();
+  brigadierOpenAssignmentDropdownId.value = null;
   brigadierModalMode.value = null;
   brigadierModalProduct.value = null;
   brigadierModalOrderId.value = null;
@@ -2398,6 +2421,8 @@ function handleBrigadierAssignmentInput(operationId: number, event: Event) {
       (user) => normalizeName(user.name) === normalizedName,
     ) ?? null;
 
+  clearBrigadierAssignmentDropdownCloseTimeout();
+  brigadierOpenAssignmentDropdownId.value = operationId;
   brigadierModalAssignments.value = brigadierModalAssignments.value.map((assignment) =>
     assignment.operationId === operationId
       ? {
@@ -2407,6 +2432,72 @@ function handleBrigadierAssignmentInput(operationId: number, event: Event) {
         }
       : assignment,
   );
+}
+
+function clearBrigadierAssignmentDropdownCloseTimeout() {
+  if (brigadierDropdownCloseTimeoutId !== null) {
+    window.clearTimeout(brigadierDropdownCloseTimeoutId);
+    brigadierDropdownCloseTimeoutId = null;
+  }
+}
+
+function openBrigadierAssignmentDropdown(operationId: number) {
+  clearBrigadierAssignmentDropdownCloseTimeout();
+  brigadierOpenAssignmentDropdownId.value = operationId;
+}
+
+function closeBrigadierAssignmentDropdown() {
+  clearBrigadierAssignmentDropdownCloseTimeout();
+  brigadierOpenAssignmentDropdownId.value = null;
+}
+
+function scheduleBrigadierAssignmentDropdownClose(operationId: number) {
+  clearBrigadierAssignmentDropdownCloseTimeout();
+  brigadierDropdownCloseTimeoutId = window.setTimeout(() => {
+    if (brigadierOpenAssignmentDropdownId.value === operationId) {
+      brigadierOpenAssignmentDropdownId.value = null;
+    }
+    brigadierDropdownCloseTimeoutId = null;
+  }, 120);
+}
+
+function isBrigadierAssignmentDropdownOpen(operationId: number): boolean {
+  return brigadierOpenAssignmentDropdownId.value === operationId;
+}
+
+function getBrigadierAssignmentOptions(assignment: BrigadierOrderAssignment): UserRecord[] {
+  const normalizedQuery = normalizeName(assignment.workerName);
+
+  return [...brigadierWorkerUsers.value]
+    .filter(
+      (user) =>
+        user.id === assignment.workerUserId ||
+        !normalizedQuery ||
+        normalizeName(user.name).includes(normalizedQuery),
+    )
+    .sort((left, right) => {
+      const leftPriority = left.id === assignment.workerUserId ? 0 : 1;
+      const rightPriority = right.id === assignment.workerUserId ? 0 : 1;
+
+      if (leftPriority !== rightPriority) {
+        return leftPriority - rightPriority;
+      }
+
+      return left.name.localeCompare(right.name, "ru");
+    });
+}
+
+function selectBrigadierAssignmentWorker(operationId: number, user: UserRecord) {
+  brigadierModalAssignments.value = brigadierModalAssignments.value.map((assignment) =>
+    assignment.operationId === operationId
+      ? {
+          ...assignment,
+          workerName: user.name,
+          workerUserId: user.id,
+        }
+      : assignment,
+  );
+  closeBrigadierAssignmentDropdown();
 }
 
 function clearBrigadierAssignment(operationId: number) {
@@ -2419,6 +2510,7 @@ function clearBrigadierAssignment(operationId: number) {
         }
       : assignment,
   );
+  openBrigadierAssignmentDropdown(operationId);
 }
 
 function getBrigadierAssignmentError(assignment: BrigadierOrderAssignment): string {
@@ -2908,7 +3000,7 @@ async function handleResetUserPassword(user: UserRecord) {
                 <span class="worker-summary__value">{{ formatTimerDuration(workerDayElapsedMs) }}</span>
               </div>
 
-              <div class="worker-summary__card">
+              <div v-if="shouldShowWorkerActiveTimerCard" class="worker-summary__card">
                 <span class="section-label">Активный таймер</span>
                 <strong>{{ workerActiveTimer?.label ?? "Нет активного таймера" }}</strong>
                 <span class="worker-summary__value">
@@ -4225,14 +4317,6 @@ async function handleResetUserPassword(user: UserRecord) {
               <p>Нет активных пользователей с ролью исполнителя.</p>
             </div>
 
-            <datalist id="brigadier-workers-list">
-              <option
-                v-for="worker in brigadierWorkerUsers"
-                :key="worker.id"
-                :value="worker.name"
-              />
-            </datalist>
-
             <div v-if="brigadierModalAssignments.length === 0" class="empty-table-state">
               <p>У этого изделия нет назначаемых операций.</p>
             </div>
@@ -4252,10 +4336,13 @@ async function handleResetUserPassword(user: UserRecord) {
                       :value="assignment.workerName"
                       type="text"
                       class="text-input text-input--with-clear"
-                      list="brigadier-workers-list"
+                      autocomplete="off"
                       :data-brigadier-operation-id="assignment.operationId"
                       placeholder="Выберите исполнителя"
                       @input="handleBrigadierAssignmentInput(assignment.operationId, $event)"
+                      @focus="openBrigadierAssignmentDropdown(assignment.operationId)"
+                      @click="openBrigadierAssignmentDropdown(assignment.operationId)"
+                      @blur="scheduleBrigadierAssignmentDropdownClose(assignment.operationId)"
                     />
                     <button
                       v-if="assignment.workerName"
@@ -4263,10 +4350,36 @@ async function handleResetUserPassword(user: UserRecord) {
                       class="field-action field-action--right"
                       aria-label="Очистить исполнителя"
                       title="Очистить исполнителя"
+                      @mousedown.prevent
                       @click="clearBrigadierAssignment(assignment.operationId)"
                     >
                       <span class="field-action__icon" aria-hidden="true" />
                     </button>
+                    <div
+                      v-if="isBrigadierAssignmentDropdownOpen(assignment.operationId)"
+                      class="assignment-dropdown"
+                    >
+                      <button
+                        v-for="worker in getBrigadierAssignmentOptions(assignment)"
+                        :key="worker.id"
+                        type="button"
+                        class="assignment-dropdown__option"
+                        :class="{
+                          'assignment-dropdown__option--selected':
+                            assignment.workerUserId === worker.id,
+                        }"
+                        @mousedown.prevent
+                        @click="selectBrigadierAssignmentWorker(assignment.operationId, worker)"
+                      >
+                        <span>{{ worker.name }}</span>
+                      </button>
+                      <div
+                        v-if="getBrigadierAssignmentOptions(assignment).length === 0"
+                        class="assignment-dropdown__empty"
+                      >
+                        Ничего не найдено.
+                      </div>
+                    </div>
                   </div>
                   <p
                     v-if="getBrigadierAssignmentError(assignment)"
@@ -6279,6 +6392,49 @@ h2 {
   position: relative;
 }
 
+.assignment-dropdown {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 0;
+  right: 0;
+  z-index: 20;
+  display: grid;
+  gap: 4px;
+  max-height: min(280px, 40dvh);
+  padding: 8px;
+  overflow-y: auto;
+  border: 1px solid var(--color-border);
+  border-radius: 16px;
+  background: var(--color-surface);
+  box-shadow: 0 18px 36px rgba(31, 42, 51, 0.14);
+  -webkit-overflow-scrolling: touch;
+}
+
+.assignment-dropdown__option {
+  padding: 12px 14px;
+  border: 0;
+  border-radius: 12px;
+  background: transparent;
+  color: var(--color-text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition:
+    background-color 0.18s ease,
+    color 0.18s ease;
+}
+
+.assignment-dropdown__option:hover,
+.assignment-dropdown__option--selected {
+  background: var(--color-primary-soft);
+  color: var(--color-primary-hover);
+}
+
+.assignment-dropdown__empty {
+  padding: 12px 14px;
+  color: var(--color-text-secondary);
+}
+
 .table-link {
   padding: 0;
   border: 0;
@@ -7307,6 +7463,24 @@ h2 {
 
   .worker-summary__value {
     font-size: 2.4rem;
+  }
+
+  .worker-summary {
+    grid-template-columns: 1fr;
+  }
+
+  .worker-timer-button--operation {
+    grid-template-columns: 1fr;
+    align-items: start;
+  }
+
+  .worker-timer-button--operation .worker-timer-button__meta,
+  .worker-timer-button--operation .worker-timer-button__heading {
+    min-width: 0;
+  }
+
+  .worker-timer-button--operation .worker-timer-button__value {
+    justify-self: start;
   }
 
   .subtabs {
