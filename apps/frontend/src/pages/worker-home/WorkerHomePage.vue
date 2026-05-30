@@ -12,9 +12,14 @@ import {
 } from "@/shared/api/auth";
 import {
   createWorkOrder,
+  fetchAllWorkOrders,
   fetchWorkOrder,
   fetchWorkOrders,
   updateWorkOrderAssignments,
+  updateWorkOrderStatus,
+  type WorkOrderListParams,
+  type WorkOrderSortBy,
+  type WorkOrderSortDirection,
   type WorkOrderDetail,
   type WorkOrderSummary,
 } from "@/shared/api/orders";
@@ -66,6 +71,13 @@ type ProductSort =
   | "name-desc"
   | "version-asc"
   | "version-desc";
+type WorkOrderSort =
+  | "created-desc"
+  | "created-asc"
+  | "completed-desc"
+  | "completed-asc"
+  | "name-asc"
+  | "name-desc";
 type UserSort = "created-desc" | "created-asc" | "name-asc" | "name-desc";
 
 type FlatOperationNodeRow = {
@@ -166,6 +178,16 @@ const userSortOptions: Array<{
   { field: "created", label: "Сортировка пользователей по дате создания", icon: "created" },
 ];
 
+const workOrderSortOptions: Array<{
+  field: "name" | "created" | "completed";
+  label: string;
+  icon: string;
+}> = [
+  { field: "name", label: "Сортировка заказов по наименованию", icon: "name" },
+  { field: "created", label: "Сортировка заказов по дате создания", icon: "created" },
+  { field: "completed", label: "Сортировка заказов по дате выполнения", icon: "completed" },
+];
+
 const statisticsPeriodOptions = [7, 14, 30] as const;
 
 const ACTIVE_TAB_STORAGE_KEY = "flowcraft.active-tab";
@@ -174,6 +196,7 @@ const PREPARATION_TIMER_ID = "worker:preparation";
 const BREAK_TIMER_ID = "worker:break";
 const IDLE_TIMER_ID = "worker:idle";
 const SMARTPHONE_MEDIA_QUERY = "(max-width: 760px)";
+const WORK_ORDER_PAGE_SIZE = 10;
 
 const activeTab = ref<TabId>(readStoredTab<TabId>(ACTIVE_TAB_STORAGE_KEY, tabs.map((tab) => tab.id), "constructor"));
 const brigadierTab = ref<BrigadierTabId>(
@@ -185,10 +208,18 @@ const products = ref<ProductSummary[]>([]);
 const busyProductIds = ref<number[]>([]);
 const users = ref<UserRecord[]>([]);
 const workOrders = ref<WorkOrderSummary[]>([]);
+const busyWorkOrderIds = ref<number[]>([]);
+const workOrdersTotal = ref(0);
+const workOrdersPage = ref(1);
+const workOrdersPages = ref(1);
 
 const productFilter = ref("");
 const productVisibility = ref<ProductVisibilityFilter>("all");
 const productSort = ref<ProductSort>("name-asc");
+const workOrderFilter = ref("");
+const workOrderSearchDraft = ref("");
+const showCompletedWorkOrders = ref(false);
+const workOrderSort = ref<WorkOrderSort>("created-desc");
 const brigadierProductFilter = ref("");
 const brigadierProductSort = ref<ProductSort>("name-asc");
 const userFilter = ref("");
@@ -214,6 +245,7 @@ const brigadierModalError = ref("");
 const brigadierOrdersLoading = ref(false);
 const brigadierOrdersError = ref("");
 const brigadierSaveLoading = ref(false);
+const isBrigadierSaveConfirmOpen = ref(false);
 const workOrderDetails = ref<WorkOrderDetail[]>([]);
 const workerAssignmentsLoading = ref(false);
 const workerAssignmentsError = ref("");
@@ -257,6 +289,7 @@ const hasAttemptedSubmit = ref(false);
 let nextOperationId = 1;
 let nextUserId = 100;
 let workerClockIntervalId: number | null = null;
+let workOrdersRequestId = 0;
 const isModalOpen = computed(() => modalMode.value !== null);
 const isBrigadierOrderModalOpen = computed(() => brigadierModalMode.value !== null);
 const isDeleteModalOpen = computed(() => productPendingDelete.value !== null);
@@ -439,6 +472,10 @@ const brigadierWorkerUsers = computed(() =>
     .sort((left, right) => left.name.localeCompare(right.name, "ru")),
 );
 
+const filteredWorkOrders = computed(() => {
+  return workOrders.value;
+});
+
 const filteredBrigadierProducts = computed(() => {
   const normalizedFilter = brigadierProductFilter.value.trim().toLowerCase();
   const filtered = products.value.filter(
@@ -456,6 +493,16 @@ const brigadierCurrentOrder = computed(() =>
   workOrders.value.find((order) => order.id === brigadierModalOrderId.value) ?? null,
 );
 
+const workOrdersPageStart = computed(() =>
+  workOrdersTotal.value === 0
+    ? 0
+    : (workOrdersPage.value - 1) * WORK_ORDER_PAGE_SIZE + 1,
+);
+
+const workOrdersPageEnd = computed(() =>
+  Math.min(workOrdersPage.value * WORK_ORDER_PAGE_SIZE, workOrdersTotal.value),
+);
+
 const brigadierModalTitle = computed(() =>
   brigadierModalMode.value === "manage" ? "Заказ в работе" : "Новый заказ",
 );
@@ -468,6 +515,16 @@ const brigadierModalDescription = computed(() =>
 
 const brigadierModalSaveLabel = computed(() =>
   brigadierModalMode.value === "manage" ? "Сохранить изменения" : "Сохранить заказ",
+);
+
+const brigadierSaveConfirmTitle = computed(() =>
+  brigadierModalMode.value === "manage" ? "Сохранить изменения заказа?" : "Создать заказ?",
+);
+
+const brigadierSaveConfirmDescription = computed(() =>
+  brigadierModalMode.value === "manage"
+    ? "Количество изделий и назначения исполнителей будут обновлены в заказе в работе."
+    : "Заказ будет создан и появится в списке заказов в работе.",
 );
 
 const brigadierOrderNumberError = computed(() => {
@@ -709,6 +766,17 @@ watch(brigadierTab, (value) => {
 });
 
 watch(
+  [workOrderFilter, showCompletedWorkOrders, workOrderSort],
+  () => {
+    reloadWorkOrdersFromFirstPage();
+  },
+);
+
+watch(workOrdersPage, () => {
+  void loadWorkOrders();
+});
+
+watch(
   workerTimerDefinitions,
   (definitions) => {
     syncWorkerTimers(definitions);
@@ -768,6 +836,84 @@ function toggleProductSort(field: "name" | "version" | "created") {
       : "asc";
 
   productSort.value = `${field}-${nextDirection}` as ProductSort;
+}
+
+function isWorkOrderSortFieldActive(field: "name" | "created" | "completed"): boolean {
+  return workOrderSort.value.startsWith(field);
+}
+
+function getWorkOrderSortDirection(
+  field: "name" | "created" | "completed",
+): "asc" | "desc" {
+  if (!isWorkOrderSortFieldActive(field)) {
+    return field === "name" ? "asc" : "desc";
+  }
+
+  return workOrderSort.value.endsWith("asc") ? "asc" : "desc";
+}
+
+function toggleWorkOrderSort(field: "name" | "created" | "completed") {
+  const nextDirection = isWorkOrderSortFieldActive(field)
+    ? getWorkOrderSortDirection(field) === "asc"
+      ? "desc"
+      : "asc"
+    : field === "name"
+      ? "asc"
+      : "desc";
+
+  workOrderSort.value = `${field}-${nextDirection}` as WorkOrderSort;
+}
+
+function applyWorkOrderSearch() {
+  const nextSearch = workOrderSearchDraft.value.trim();
+  if (nextSearch === workOrderFilter.value) {
+    return;
+  }
+
+  workOrderFilter.value = nextSearch;
+}
+
+function clearWorkOrderSearch() {
+  workOrderSearchDraft.value = "";
+  if (workOrderFilter.value === "") {
+    return;
+  }
+
+  workOrderFilter.value = "";
+}
+
+function getWorkOrderListParams(): WorkOrderListParams {
+  const [sortBy, sortDirection] = workOrderSort.value.split("-") as [
+    WorkOrderSortBy,
+    WorkOrderSortDirection,
+  ];
+
+  return {
+    search: workOrderFilter.value,
+    includeCompleted: showCompletedWorkOrders.value,
+    sortBy,
+    sortDirection,
+    page: workOrdersPage.value,
+    pageSize: WORK_ORDER_PAGE_SIZE,
+  };
+}
+
+function reloadWorkOrdersFromFirstPage() {
+  if (workOrdersPage.value === 1) {
+    void loadWorkOrders();
+    return;
+  }
+
+  workOrdersPage.value = 1;
+}
+
+function goToWorkOrdersPage(page: number) {
+  const nextPage = Math.min(Math.max(page, 1), workOrdersPages.value);
+  if (nextPage === workOrdersPage.value) {
+    return;
+  }
+
+  workOrdersPage.value = nextPage;
 }
 
 function isUserSortFieldActive(field: "name" | "created"): boolean {
@@ -1017,15 +1163,56 @@ async function loadUsers() {
 }
 
 async function loadWorkOrders() {
+  const requestId = ++workOrdersRequestId;
   brigadierOrdersLoading.value = true;
   brigadierOrdersError.value = "";
   workerAssignmentsError.value = "";
 
   try {
-    const orders = await fetchWorkOrders();
-    workOrders.value = orders;
-    await loadWorkOrderDetails(orders);
+    const shouldLoadWorkerOrders =
+      currentSession.value?.userRoles.includes("worker") ?? false;
+    const [ordersPage, workerOrders] = await Promise.all([
+      fetchWorkOrders(getWorkOrderListParams()),
+      shouldLoadWorkerOrders
+        ? fetchAllWorkOrders({
+            includeCompleted: false,
+            sortBy: "created",
+            sortDirection: "desc",
+            pageSize: 100,
+          })
+        : Promise.resolve([]),
+    ]);
+
+    if (requestId !== workOrdersRequestId) {
+      return;
+    }
+
+    if (
+      ordersPage.items.length === 0 &&
+      ordersPage.total > 0 &&
+      workOrdersPage.value > ordersPage.pages
+    ) {
+      workOrdersTotal.value = ordersPage.total;
+      workOrdersPages.value = ordersPage.pages;
+      workOrdersPage.value = ordersPage.pages;
+      return;
+    }
+
+    workOrders.value = ordersPage.items;
+    workOrdersTotal.value = ordersPage.total;
+    workOrdersPage.value = ordersPage.page;
+    workOrdersPages.value = ordersPage.pages;
+
+    if (shouldLoadWorkerOrders) {
+      await loadWorkOrderDetails(workerOrders);
+    } else {
+      workOrderDetails.value = [];
+    }
   } catch (error) {
+    if (requestId !== workOrdersRequestId) {
+      return;
+    }
+
     if (isUnauthorizedError(error)) {
       redirectToAuth(getErrorMessage(error, "Требуется аутентификация."));
       return;
@@ -1036,7 +1223,9 @@ async function loadWorkOrders() {
       "Не удалось загрузить назначения исполнителя.",
     );
   } finally {
-    brigadierOrdersLoading.value = false;
+    if (requestId === workOrdersRequestId) {
+      brigadierOrdersLoading.value = false;
+    }
   }
 }
 
@@ -1277,6 +1466,11 @@ function handleWindowKeydown(event: KeyboardEvent) {
 
   if (isWorkerDayEndConfirmOpen.value) {
     closeWorkerDayEndConfirm();
+    return;
+  }
+
+  if (isBrigadierSaveConfirmOpen.value) {
+    closeBrigadierSaveConfirm();
     return;
   }
 
@@ -1819,6 +2013,19 @@ function setProductBusy(productId: number, isBusy: boolean) {
   busyProductIds.value = busyProductIds.value.filter((id) => id !== productId);
 }
 
+function isWorkOrderBusy(orderId: number): boolean {
+  return busyWorkOrderIds.value.includes(orderId);
+}
+
+function setWorkOrderBusy(orderId: number, isBusy: boolean) {
+  if (isBusy) {
+    busyWorkOrderIds.value = [...new Set([...busyWorkOrderIds.value, orderId])];
+    return;
+  }
+
+  busyWorkOrderIds.value = busyWorkOrderIds.value.filter((id) => id !== orderId);
+}
+
 function replaceProductSummary(updatedProduct: ProductSummary) {
   products.value = products.value.map((product) =>
     product.id === updatedProduct.id ? updatedProduct : product,
@@ -2279,12 +2486,21 @@ async function openBrigadierCreateOrder(productId: number) {
   brigadierModalError.value = "";
   brigadierSaveLoading.value = false;
   brigadierModalQuantity.value = "1";
-  brigadierModalOrderNumber.value = generateNextWorkOrderNumber();
+  brigadierModalOrderNumber.value = "";
   brigadierModalAssignments.value = [];
 
   try {
-    const product = await fetchProduct(productId);
+    const [product, allOrders] = await Promise.all([
+      fetchProduct(productId),
+      fetchAllWorkOrders({
+        includeCompleted: true,
+        sortBy: "created",
+        sortDirection: "desc",
+        pageSize: 100,
+      }),
+    ]);
     brigadierModalProduct.value = product;
+    brigadierModalOrderNumber.value = generateNextWorkOrderNumber(allOrders);
     brigadierModalAssignments.value = buildBrigadierAssignments(product.operations);
   } catch (error) {
     if (isUnauthorizedError(error)) {
@@ -2328,8 +2544,30 @@ async function openBrigadierManageOrder(order: WorkOrderSummary) {
   }
 }
 
+async function toggleWorkOrderStatus(order: WorkOrderSummary) {
+  setWorkOrderBusy(order.id, true);
+  brigadierOrdersError.value = "";
+
+  try {
+    await updateWorkOrderStatus(order.id, order.completedAtTs === null);
+    await loadWorkOrders();
+  } catch (error) {
+    if (isUnauthorizedError(error)) {
+      redirectToAuth(getErrorMessage(error, "Требуется аутентификация."));
+      return;
+    }
+    brigadierOrdersError.value = getErrorMessage(
+      error,
+      "Не удалось обновить статус заказа.",
+    );
+  } finally {
+    setWorkOrderBusy(order.id, false);
+  }
+}
+
 function closeBrigadierOrderModal() {
   clearBrigadierAssignmentDropdownCloseTimeout();
+  isBrigadierSaveConfirmOpen.value = false;
   brigadierOpenAssignmentDropdownId.value = null;
   brigadierModalMode.value = null;
   brigadierModalProduct.value = null;
@@ -2640,15 +2878,34 @@ function estimateWorkOrderMinutes(
   assignments: BrigadierOrderAssignment[],
 ): number {
   const baseMinutes = assignments.reduce(
-    (total, assignment, index) => total + 18 + Math.min(10, assignment.operationLabel.length % 11) + index,
+    (total, assignment, index) =>
+      total + 18 + Math.min(10, assignment.operationLabel.length % 11) + index,
     0,
   );
 
   return baseMinutes * quantity;
 }
 
+function requestBrigadierOrderSave() {
+  if (!brigadierModalCanSave.value || !brigadierModalProduct.value) {
+    scrollToBrigadierSaveIssue();
+    return;
+  }
+
+  isBrigadierSaveConfirmOpen.value = true;
+}
+
+function closeBrigadierSaveConfirm() {
+  if (brigadierSaveLoading.value) {
+    return;
+  }
+
+  isBrigadierSaveConfirmOpen.value = false;
+}
+
 async function saveBrigadierOrder() {
   if (!brigadierModalCanSave.value || !brigadierModalProduct.value) {
+    closeBrigadierSaveConfirm();
     scrollToBrigadierSaveIssue();
     return;
   }
@@ -2656,16 +2913,14 @@ async function saveBrigadierOrder() {
   brigadierSaveLoading.value = true;
   brigadierModalError.value = "";
 
-  const quantity =
-    brigadierModalMode.value === "manage" && brigadierCurrentOrder.value
-      ? brigadierCurrentOrder.value.quantity
-      : Number.parseInt(brigadierModalQuantity.value, 10);
+  const quantity = Number.parseInt(brigadierModalQuantity.value, 10);
   const assignments = brigadierModalAssignments.value.map((assignment) => ({ ...assignment }));
   const totalSpentMinutes = estimateWorkOrderMinutes(quantity, assignments);
 
   try {
     if (brigadierModalMode.value === "manage" && brigadierCurrentOrder.value) {
       await updateWorkOrderAssignments(brigadierCurrentOrder.value.id, {
+        quantity,
         total_spent_minutes: totalSpentMinutes,
         assignments: assignments.map((assignment) => ({
           operation_id: assignment.operationId,
@@ -2693,14 +2948,15 @@ async function saveBrigadierOrder() {
       redirectToAuth(getErrorMessage(error, "Требуется аутентификация."));
       return;
     }
+    isBrigadierSaveConfirmOpen.value = false;
     brigadierModalError.value = getErrorMessage(error, "Не удалось сохранить заказ.");
   } finally {
     brigadierSaveLoading.value = false;
   }
 }
 
-function generateNextWorkOrderNumber(): string {
-  const maxOrderIndex = workOrders.value.reduce((maxValue, order) => {
+function generateNextWorkOrderNumber(orders: WorkOrderSummary[]): string {
+  const maxOrderIndex = orders.reduce((maxValue, order) => {
     const match = order.orderNumber.match(/(\d+)$/);
 
     if (!match) {
@@ -3182,27 +3438,93 @@ async function handleResetUserPassword(user: UserRecord) {
               <p>Загрузка заказов...</p>
             </div>
 
-            <div v-else-if="workOrders.length === 0" class="empty-table-state">
-              <p>Заказы в работе пока не созданы.</p>
-            </div>
-
             <div v-else>
-              <div class="table-wrap desktop-only">
+              <div class="toolbar work-orders-toolbar">
+                <label class="field field--inline">
+                  <span class="field__label">Поиск по заказам</span>
+                  <div class="filter-input-wrap">
+                    <input
+                      v-model="workOrderSearchDraft"
+                      type="text"
+                      class="text-input text-input--with-action"
+                      placeholder="Номер заказа или изделие"
+                      @keydown.enter.prevent="applyWorkOrderSearch"
+                    />
+                    <button
+                      v-if="workOrderSearchDraft || workOrderFilter"
+                      type="button"
+                      class="field-action"
+                      aria-label="Очистить поиск"
+                      title="Очистить поиск"
+                      @click="clearWorkOrderSearch"
+                    >
+                      <span class="field-action__icon" aria-hidden="true" />
+                    </button>
+                  </div>
+                </label>
+
+                <label class="checkbox-field">
+                  <input
+                    v-model="showCompletedWorkOrders"
+                    type="checkbox"
+                  />
+                  <span>Показывать выполненные</span>
+                </label>
+
+                <div class="field field--inline">
+                  <span class="field__label">Сортировка</span>
+                  <div class="segmented-control segmented-control--wrap" role="group" aria-label="Сортировка заказов в работе">
+                    <button
+                      v-for="option in workOrderSortOptions"
+                      :key="option.field"
+                      type="button"
+                      class="segmented-control__button segmented-control__button--icon"
+                      :class="{
+                        'segmented-control__button--active':
+                          isWorkOrderSortFieldActive(option.field),
+                      }"
+                      :title="`${option.label} (${getWorkOrderSortDirection(option.field) === 'asc' ? 'по возрастанию' : 'по убыванию'})`"
+                      :aria-label="`${option.label} (${getWorkOrderSortDirection(option.field) === 'asc' ? 'по возрастанию' : 'по убыванию'})`"
+                      @click="toggleWorkOrderSort(option.field)"
+                    >
+                      <span
+                        class="toolbar-icon"
+                        :class="[
+                          `toolbar-icon--${option.icon}`,
+                          `toolbar-icon--${getWorkOrderSortDirection(option.field)}`,
+                        ]"
+                        aria-hidden="true"
+                      />
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              <div v-if="filteredWorkOrders.length === 0" class="empty-table-state">
+                <p>Заказы по выбранным условиям не найдены.</p>
+              </div>
+
+              <div v-else class="table-wrap desktop-only">
                 <table class="products-table brigadier-table">
                   <thead>
                     <tr>
                       <th>Номер заказа</th>
                       <th>Наименование</th>
                       <th>Версия</th>
+                      <th>Время взятия в работу</th>
+                      <th>Время выполнения</th>
                       <th>Исполнители</th>
                       <th>Суммарное время</th>
+                      <th>Действия</th>
                     </tr>
                   </thead>
                   <tbody>
-                    <tr v-for="order in workOrders" :key="order.id">
+                    <tr v-for="order in filteredWorkOrders" :key="order.id">
                       <td>{{ order.orderNumber }}</td>
                       <td>{{ order.productName }}</td>
                       <td>{{ order.productVersion }}</td>
+                      <td>{{ order.createdAt }}</td>
+                      <td>{{ order.completedAt ?? "—" }}</td>
                       <td>
                         <button
                           type="button"
@@ -3220,14 +3542,32 @@ async function handleResetUserPassword(user: UserRecord) {
                           {{ formatDuration(order.totalSpentMinutes) }}
                         </span>
                       </td>
+                      <td>
+                        <button
+                          type="button"
+                          class="status-button"
+                          :class="{
+                            'status-button--active': order.completedAtTs === null,
+                            'status-button--inactive': order.completedAtTs !== null,
+                          }"
+                          :disabled="isWorkOrderBusy(order.id)"
+                          @click="void toggleWorkOrderStatus(order)"
+                        >
+                          {{
+                            order.completedAtTs === null
+                              ? "Выполнен"
+                              : "Вернуть в работу"
+                          }}
+                        </button>
+                      </td>
                     </tr>
                   </tbody>
                 </table>
               </div>
 
-              <div class="mobile-list mobile-only">
+              <div v-if="filteredWorkOrders.length > 0" class="mobile-list mobile-only">
                 <article
-                  v-for="order in workOrders"
+                  v-for="order in filteredWorkOrders"
                   :key="`mobile-order-${order.id}`"
                   class="mobile-card"
                 >
@@ -3238,6 +3578,8 @@ async function handleResetUserPassword(user: UserRecord) {
                   <div class="mobile-card__meta">
                     <span>{{ order.productName }}</span>
                     <span>Версия {{ order.productVersion }} · {{ order.quantity }} шт.</span>
+                    <span>В работе с {{ order.createdAt }}</span>
+                    <span>Выполнен: {{ order.completedAt ?? "—" }}</span>
                   </div>
                   <button
                     type="button"
@@ -3249,7 +3591,49 @@ async function handleResetUserPassword(user: UserRecord) {
                       <span>{{ order.assignmentsCount }} назначений</span>
                     </span>
                   </button>
+                  <button
+                    type="button"
+                    class="status-button"
+                    :class="{
+                      'status-button--active': order.completedAtTs === null,
+                      'status-button--inactive': order.completedAtTs !== null,
+                    }"
+                    :disabled="isWorkOrderBusy(order.id)"
+                    @click="void toggleWorkOrderStatus(order)"
+                  >
+                    {{
+                      order.completedAtTs === null
+                        ? "Выполнен"
+                        : "Вернуть в работу"
+                    }}
+                  </button>
                 </article>
+              </div>
+
+              <div v-if="filteredWorkOrders.length > 0" class="pagination-bar">
+                <span>
+                  Показаны {{ workOrdersPageStart }}–{{ workOrdersPageEnd }}
+                  из {{ workOrdersTotal }}
+                </span>
+                <div class="pagination-bar__actions">
+                  <button
+                    type="button"
+                    class="secondary-button"
+                    :disabled="workOrdersPage <= 1"
+                    @click="goToWorkOrdersPage(workOrdersPage - 1)"
+                  >
+                    Назад
+                  </button>
+                  <span>{{ workOrdersPage }} / {{ workOrdersPages }}</span>
+                  <button
+                    type="button"
+                    class="secondary-button"
+                    :disabled="workOrdersPage >= workOrdersPages"
+                    @click="goToWorkOrdersPage(workOrdersPage + 1)"
+                  >
+                    Вперед
+                  </button>
+                </div>
               </div>
             </div>
           </template>
@@ -4255,7 +4639,7 @@ async function handleResetUserPassword(user: UserRecord) {
         <form
           v-else-if="brigadierModalProduct"
           class="order-form"
-          @submit.prevent="void saveBrigadierOrder()"
+          @submit.prevent="requestBrigadierOrderSave"
         >
           <div class="order-form__header">
             <div class="order-form__summary">
@@ -4291,7 +4675,6 @@ async function handleResetUserPassword(user: UserRecord) {
                   type="text"
                   inputmode="numeric"
                   class="text-input"
-                  :readonly="brigadierModalMode === 'manage'"
                   data-field="brigadier-quantity"
                   placeholder="Например, 12"
                   @input="handleBrigadierQuantityInput"
@@ -4425,6 +4808,66 @@ async function handleResetUserPassword(user: UserRecord) {
             </button>
           </div>
         </form>
+      </section>
+    </div>
+
+    <div
+      v-if="isBrigadierSaveConfirmOpen"
+      class="modal-backdrop"
+      @click.self="closeBrigadierSaveConfirm"
+    >
+      <section class="confirm-modal" role="dialog" aria-modal="true">
+        <div class="confirm-modal__content">
+          <p class="confirm-modal__eyebrow">Подтверждение сохранения</p>
+          <h2>{{ brigadierSaveConfirmTitle }}</h2>
+          <dl class="confirm-modal__details">
+            <div>
+              <dt>Заказ</dt>
+              <dd>{{ brigadierModalOrderNumber || "—" }}</dd>
+            </div>
+            <div>
+              <dt>Изделие</dt>
+              <dd>
+                {{ brigadierModalProduct?.name || "—" }}
+                <template v-if="brigadierModalProduct">
+                  · {{ brigadierModalProduct.version }}
+                </template>
+              </dd>
+            </div>
+            <div>
+              <dt>Количество</dt>
+              <dd>{{ brigadierModalQuantity }} шт.</dd>
+            </div>
+          </dl>
+          <p class="confirm-modal__description">
+            {{ brigadierSaveConfirmDescription }}
+          </p>
+        </div>
+
+        <div class="confirm-modal__actions">
+          <button
+            type="button"
+            class="ghost-button"
+            :disabled="brigadierSaveLoading"
+            @click="closeBrigadierSaveConfirm"
+          >
+            <span class="button-content">
+              <span class="button-icon button-icon--close" aria-hidden="true" />
+              <span>Отменить</span>
+            </span>
+          </button>
+          <button
+            type="button"
+            class="primary-button"
+            :disabled="brigadierSaveLoading"
+            @click="void saveBrigadierOrder()"
+          >
+            <span class="button-content">
+              <span class="button-icon button-icon--save" aria-hidden="true" />
+              <span>{{ brigadierSaveLoading ? "Сохранение..." : "Подтвердить" }}</span>
+            </span>
+          </button>
+        </div>
       </section>
     </div>
 
@@ -5693,6 +6136,10 @@ h2 {
   border: 1px solid var(--color-border);
 }
 
+.segmented-control--wrap {
+  flex-wrap: wrap;
+}
+
 .segmented-control__button {
   border: 0;
   border-radius: 12px;
@@ -5737,6 +6184,28 @@ h2 {
   margin: 6px 0 0;
   font-size: 0.92rem;
   color: var(--color-text-muted);
+}
+
+.checkbox-field {
+  min-height: 46px;
+  align-self: end;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+  border: 1px solid var(--color-border);
+  border-radius: 14px;
+  background: var(--color-surface);
+  color: var(--color-text);
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.checkbox-field input {
+  width: 18px;
+  height: 18px;
+  margin: 0;
+  accent-color: var(--color-primary);
 }
 
 .text-input,
@@ -5930,6 +6399,15 @@ h2 {
   left: 8px;
   transform-origin: bottom center;
   box-shadow: 3px -1px 0 0 currentColor;
+}
+
+.toolbar-icon--completed::before {
+  width: 12px;
+  height: 12px;
+  inset: 3px;
+  border: 2px solid currentColor;
+  background: transparent;
+  border-radius: 999px;
 }
 
 .operation-input,
@@ -6250,6 +6728,27 @@ h2 {
   font-family: "Sora", "Inter", sans-serif;
 }
 
+.pagination-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  margin-top: 16px;
+  color: var(--color-text-secondary);
+  font-weight: 700;
+}
+
+.pagination-bar__actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.pagination-bar .secondary-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
 .desktop-only {
   display: block;
 }
@@ -6261,6 +6760,10 @@ h2 {
 .mobile-list {
   display: grid;
   gap: 14px;
+}
+
+.mobile-list.mobile-only {
+  display: none;
 }
 
 .mobile-card {
@@ -7506,6 +8009,12 @@ h2 {
     gap: 12px;
   }
 
+  .pagination-bar,
+  .pagination-bar__actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
   .field__label {
     font-size: 0.82rem;
   }
@@ -7515,6 +8024,10 @@ h2 {
   }
 
   .mobile-only {
+    display: grid;
+  }
+
+  .mobile-list.mobile-only {
     display: grid;
   }
 

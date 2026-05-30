@@ -21,6 +21,8 @@ export type WorkOrderSummary = {
   createdAt: string;
   updatedAtTs: number;
   updatedAt: string;
+  completedAtTs: number | null;
+  completedAt: string | null;
 };
 
 export type WorkOrderDetail = {
@@ -35,7 +37,29 @@ export type WorkOrderDetail = {
   createdAt: string;
   updatedAtTs: number;
   updatedAt: string;
+  completedAtTs: number | null;
+  completedAt: string | null;
   assignments: WorkOrderAssignment[];
+};
+
+export type WorkOrderSortBy = "created" | "completed" | "name";
+export type WorkOrderSortDirection = "asc" | "desc";
+
+export type WorkOrderListParams = {
+  search?: string;
+  includeCompleted?: boolean;
+  sortBy?: WorkOrderSortBy;
+  sortDirection?: WorkOrderSortDirection;
+  page?: number;
+  pageSize?: number;
+};
+
+export type WorkOrderPage = {
+  items: WorkOrderSummary[];
+  total: number;
+  page: number;
+  pageSize: number;
+  pages: number;
 };
 
 export type WorkOrderCreatePayload = {
@@ -50,6 +74,7 @@ export type WorkOrderCreatePayload = {
 };
 
 export type WorkOrderUpdateAssignmentsPayload = {
+  quantity: number;
   total_spent_minutes: number;
   assignments: WorkOrderCreatePayload["assignments"];
 };
@@ -73,6 +98,7 @@ type WorkOrderSummaryApi = {
   assignments_count: number;
   created_at: number;
   updated_at: number;
+  completed_at: number | null;
 };
 
 type WorkOrderDetailApi = {
@@ -85,14 +111,53 @@ type WorkOrderDetailApi = {
   total_spent_minutes: number;
   created_at: number;
   updated_at: number;
+  completed_at: number | null;
   assignments: WorkOrderAssignmentApi[];
 };
 
-export async function fetchWorkOrders(): Promise<WorkOrderSummary[]> {
-  const response = await apiFetch("/api/orders");
-  return handleJsonResponse<WorkOrderSummaryApi[]>(response).then((orders) =>
-    orders.map(mapWorkOrderSummary),
-  );
+type WorkOrderPageApi = {
+  items: WorkOrderSummaryApi[];
+  total: number;
+  page: number;
+  page_size: number;
+  pages: number;
+};
+
+export async function fetchWorkOrders(
+  params: WorkOrderListParams = {},
+): Promise<WorkOrderPage> {
+  const searchParams = buildWorkOrderSearchParams(params);
+  const queryString = searchParams.toString();
+  const response = await apiFetch(`/api/orders${queryString ? `?${queryString}` : ""}`);
+
+  return handleJsonResponse<WorkOrderPageApi>(response).then(mapWorkOrderPage);
+}
+
+export async function fetchAllWorkOrders(
+  params: WorkOrderListParams = {},
+): Promise<WorkOrderSummary[]> {
+  const baseParams = { ...params };
+  delete baseParams.page;
+  delete baseParams.pageSize;
+
+  const pageSize = params.pageSize ?? 100;
+  const orders: WorkOrderSummary[] = [];
+  let page = 1;
+
+  while (true) {
+    const response = await fetchWorkOrders({
+      ...baseParams,
+      page,
+      pageSize,
+    });
+    orders.push(...response.items);
+
+    if (page >= response.pages || orders.length >= response.total) {
+      return orders;
+    }
+
+    page += 1;
+  }
 }
 
 export async function fetchWorkOrder(orderId: number): Promise<WorkOrderDetail> {
@@ -129,6 +194,21 @@ export async function updateWorkOrderAssignments(
   return handleJsonResponse<WorkOrderDetailApi>(response).then(mapWorkOrderDetail);
 }
 
+export async function updateWorkOrderStatus(
+  orderId: number,
+  isCompleted: boolean,
+): Promise<WorkOrderDetail> {
+  const response = await apiFetch(`/api/orders/${orderId}/status`, {
+    method: "PATCH",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ is_completed: isCompleted }),
+  });
+
+  return handleJsonResponse<WorkOrderDetailApi>(response).then(mapWorkOrderDetail);
+}
+
 function mapWorkOrderAssignment(assignment: WorkOrderAssignmentApi): WorkOrderAssignment {
   return {
     id: assignment.id,
@@ -153,6 +233,18 @@ function mapWorkOrderSummary(order: WorkOrderSummaryApi): WorkOrderSummary {
     createdAt: formatDate(order.created_at),
     updatedAtTs: order.updated_at,
     updatedAt: formatDate(order.updated_at),
+    completedAtTs: order.completed_at,
+    completedAt: order.completed_at === null ? null : formatDate(order.completed_at),
+  };
+}
+
+function mapWorkOrderPage(page: WorkOrderPageApi): WorkOrderPage {
+  return {
+    items: page.items.map(mapWorkOrderSummary),
+    total: page.total,
+    page: page.page,
+    pageSize: page.page_size,
+    pages: page.pages,
   };
 }
 
@@ -169,8 +261,40 @@ function mapWorkOrderDetail(order: WorkOrderDetailApi): WorkOrderDetail {
     createdAt: formatDate(order.created_at),
     updatedAtTs: order.updated_at,
     updatedAt: formatDate(order.updated_at),
+    completedAtTs: order.completed_at,
+    completedAt: order.completed_at === null ? null : formatDate(order.completed_at),
     assignments: order.assignments.map(mapWorkOrderAssignment),
   };
+}
+
+function buildWorkOrderSearchParams(params: WorkOrderListParams): URLSearchParams {
+  const searchParams = new URLSearchParams();
+
+  if (params.search?.trim()) {
+    searchParams.set("search", params.search.trim());
+  }
+
+  if (params.includeCompleted !== undefined) {
+    searchParams.set("include_completed", String(params.includeCompleted));
+  }
+
+  if (params.sortBy) {
+    searchParams.set("sort_by", params.sortBy);
+  }
+
+  if (params.sortDirection) {
+    searchParams.set("sort_direction", params.sortDirection);
+  }
+
+  if (params.page !== undefined) {
+    searchParams.set("page", String(params.page));
+  }
+
+  if (params.pageSize !== undefined) {
+    searchParams.set("page_size", String(params.pageSize));
+  }
+
+  return searchParams;
 }
 
 function formatDate(value: number): string {
