@@ -1,4 +1,17 @@
+from enum import StrEnum
+
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+
+class SortDirection(StrEnum):
+    ASC = "asc"
+    DESC = "desc"
+
+
+class WorkOrderSortField(StrEnum):
+    CREATED = "created"
+    COMPLETED = "completed"
+    NAME = "name"
 
 
 class WorkOrderAssignmentCreate(BaseModel):
@@ -33,8 +46,13 @@ class WorkOrderCreate(BaseModel):
 
 
 class WorkOrderUpdateAssignments(BaseModel):
+    quantity: int = Field(gt=0)
     total_spent_minutes: int = Field(default=0, ge=0)
     assignments: list[WorkOrderAssignmentCreate] = Field(min_length=1)
+
+
+class WorkOrderStatusUpdate(BaseModel):
+    is_completed: bool
 
 
 class WorkOrderListItem(BaseModel):
@@ -50,6 +68,15 @@ class WorkOrderListItem(BaseModel):
     assignments_count: int
     created_at: int
     updated_at: int
+    completed_at: int | None
+
+
+class WorkOrderPage(BaseModel):
+    items: list[WorkOrderListItem]
+    total: int
+    page: int
+    page_size: int
+    pages: int
 
 
 class WorkOrderDetail(BaseModel):
@@ -64,4 +91,5 @@ class WorkOrderDetail(BaseModel):
     total_spent_minutes: int
     created_at: int
     updated_at: int
+    completed_at: int | None
     assignments: list[WorkOrderAssignmentRead] = Field(default_factory=list)

@@ -21,6 +21,7 @@ class WorkOrder(Base):
     total_spent_minutes: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     created_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
     updated_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    completed_at: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
 
     assignments = relationship(
         "WorkOrderAssignment",

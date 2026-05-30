@@ -34,12 +34,14 @@ def create_worker_user(client: TestClient, name: str = "Ирина Соколо�
 def create_product_with_leaf_operations(
     client: TestClient,
     author_user_id: int,
+    name: str = "Сумка City Tote",
+    version: str = "1.0",
 ) -> dict:
     response = client.post(
         "/api/products",
         json={
-            "name": "Сумка City Tote",
-            "version": "1.0",
+            "name": name,
+            "version": version,
             "author_user_id": author_user_id,
             "operations": [
                 {
@@ -97,6 +99,7 @@ def test_create_order_and_get_it(client: TestClient) -> None:
     assert created_order["order_number"] == "FC-0101"
     assert created_order["quantity"] == 12
     assert created_order["product_name"] == product["name"]
+    assert created_order["completed_at"] is None
     assert len(created_order["assignments"]) == 3
 
     get_response = client.get(f"/api/orders/{created_order['id']}")
@@ -128,8 +131,95 @@ def test_list_orders_returns_assignments_count(client: TestClient) -> None:
     list_response = client.get("/api/orders")
     assert list_response.status_code == 200
     payload = list_response.json()
-    assert len(payload) == 1
-    assert payload[0]["assignments_count"] == 3
+    assert payload["total"] == 1
+    assert payload["page"] == 1
+    assert payload["page_size"] == 20
+    assert payload["pages"] == 1
+    assert len(payload["items"]) == 1
+    assert payload["items"][0]["assignments_count"] == 3
+    assert payload["items"][0]["completed_at"] is None
+
+
+def test_list_orders_filters_sorts_and_paginates(client: TestClient) -> None:
+    author = create_author_user(client)
+    worker = create_worker_user(client)
+
+    def create_order(order_number: str, product_name: str) -> dict:
+        product = create_product_with_leaf_operations(
+            client,
+            author["id"],
+            name=product_name,
+        )
+        leaf_ids = collect_leaf_operation_ids(product)
+
+        response = client.post(
+            "/api/orders",
+            json={
+                "order_number": order_number,
+                "product_id": product["id"],
+                "quantity": 1,
+                "assignments": [
+                    {"operation_id": leaf_ids[0], "worker_user_id": worker["id"]},
+                    {"operation_id": leaf_ids[1], "worker_user_id": worker["id"]},
+                    {"operation_id": leaf_ids[2], "worker_user_id": worker["id"]},
+                ],
+            },
+        )
+        assert response.status_code == 201
+        return response.json()
+
+    create_order("FC-0302", "Beta Pack")
+    create_order("FC-0301", "Alpha Bag")
+    create_order("FC-0304", "Сумка Марс")
+    completed_order = create_order("FC-0303", "Gamma Case")
+    completed_response = client.patch(
+        f"/api/orders/{completed_order['id']}/status",
+        json={"is_completed": True},
+    )
+    assert completed_response.status_code == 200
+
+    first_page_response = client.get(
+        "/api/orders?sort_by=name&sort_direction=asc&page=1&page_size=1"
+    )
+    assert first_page_response.status_code == 200
+    first_page = first_page_response.json()
+    assert first_page["total"] == 3
+    assert first_page["pages"] == 3
+    assert len(first_page["items"]) == 1
+    assert first_page["items"][0]["order_number"] == "FC-0301"
+
+    second_page_response = client.get(
+        "/api/orders?sort_by=name&sort_direction=asc&page=2&page_size=1"
+    )
+    assert second_page_response.status_code == 200
+    second_page = second_page_response.json()
+    assert second_page["items"][0]["order_number"] == "FC-0302"
+
+    search_response = client.get("/api/orders?search=fc-0302")
+    assert search_response.status_code == 200
+    search_payload = search_response.json()
+    assert search_payload["total"] == 1
+    assert search_payload["items"][0]["product_name"] == "Beta Pack"
+
+    cyrillic_search_response = client.get("/api/orders?search=сУм")
+    assert cyrillic_search_response.status_code == 200
+    cyrillic_search_payload = cyrillic_search_response.json()
+    assert cyrillic_search_payload["total"] == 1
+    assert cyrillic_search_payload["items"][0]["order_number"] == "FC-0304"
+
+    hidden_completed_response = client.get("/api/orders?search=0303")
+    assert hidden_completed_response.status_code == 200
+    assert hidden_completed_response.json()["total"] == 0
+
+    visible_completed_response = client.get(
+        "/api/orders?search=0303&include_completed=true"
+        "&sort_by=completed&sort_direction=desc"
+    )
+    assert visible_completed_response.status_code == 200
+    visible_completed_payload = visible_completed_response.json()
+    assert visible_completed_payload["total"] == 1
+    assert visible_completed_payload["items"][0]["order_number"] == "FC-0303"
+    assert visible_completed_payload["items"][0]["completed_at"] is not None
 
 
 def test_create_order_rejects_duplicate_number(client: TestClient) -> None:
@@ -234,6 +324,7 @@ def test_update_order_assignments_changes_worker(client: TestClient) -> None:
     update_response = client.put(
         f"/api/orders/{order_id}/assignments",
         json={
+            "quantity": 9,
             "total_spent_minutes": 480,
             "assignments": [
                 {"operation_id": leaf_ids[0], "worker_user_id": second_worker["id"]},
@@ -245,9 +336,48 @@ def test_update_order_assignments_changes_worker(client: TestClient) -> None:
 
     assert update_response.status_code == 200
     payload = update_response.json()
-    assert payload["quantity"] == 7
+    assert payload["quantity"] == 9
     assert payload["total_spent_minutes"] == 480
     assert all(
         assignment["worker_user_name"] == second_worker["name"]
         for assignment in payload["assignments"]
     )
+
+
+def test_update_order_status_marks_completed_and_returns_to_work(
+    client: TestClient,
+) -> None:
+    author = create_author_user(client)
+    worker = create_worker_user(client, name="Светлана Морозова")
+    product = create_product_with_leaf_operations(client, author["id"])
+    leaf_ids = collect_leaf_operation_ids(product)
+
+    create_response = client.post(
+        "/api/orders",
+        json={
+            "order_number": "FC-0107",
+            "product_id": product["id"],
+            "quantity": 4,
+            "assignments": [
+                {"operation_id": leaf_ids[0], "worker_user_id": worker["id"]},
+                {"operation_id": leaf_ids[1], "worker_user_id": worker["id"]},
+                {"operation_id": leaf_ids[2], "worker_user_id": worker["id"]},
+            ],
+        },
+    )
+    assert create_response.status_code == 201
+    order_id = create_response.json()["id"]
+
+    completed_response = client.patch(
+        f"/api/orders/{order_id}/status",
+        json={"is_completed": True},
+    )
+    assert completed_response.status_code == 200
+    assert completed_response.json()["completed_at"] is not None
+
+    returned_response = client.patch(
+        f"/api/orders/{order_id}/status",
+        json={"is_completed": False},
+    )
+    assert returned_response.status_code == 200
+    assert returned_response.json()["completed_at"] is None
