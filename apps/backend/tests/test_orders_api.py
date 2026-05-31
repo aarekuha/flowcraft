@@ -31,6 +31,12 @@ def create_worker_user(client: TestClient, name: str = "Ирина Соколо�
     return response.json()
 
 
+def create_leather_type(client: TestClient, name: str = "Краст") -> dict:
+    response = client.post("/api/leather-types", json={"name": name})
+    assert response.status_code == 201
+    return response.json()
+
+
 def create_product_with_leaf_operations(
     client: TestClient,
     author_user_id: int,
@@ -76,6 +82,7 @@ def collect_leaf_operation_ids(product: dict) -> list[int]:
 def test_create_order_and_get_it(client: TestClient) -> None:
     author = create_author_user(client)
     worker = create_worker_user(client)
+    leather_type = create_leather_type(client)
     product = create_product_with_leaf_operations(client, author["id"])
     leaf_ids = collect_leaf_operation_ids(product)
 
@@ -84,6 +91,7 @@ def test_create_order_and_get_it(client: TestClient) -> None:
         json={
             "order_number": "FC-0101",
             "product_id": product["id"],
+            "leather_type_id": leather_type["id"],
             "quantity": 12,
             "total_spent_minutes": 210,
             "assignments": [
@@ -99,12 +107,15 @@ def test_create_order_and_get_it(client: TestClient) -> None:
     assert created_order["order_number"] == "FC-0101"
     assert created_order["quantity"] == 12
     assert created_order["product_name"] == product["name"]
+    assert created_order["leather_type_id"] == leather_type["id"]
+    assert created_order["leather_type_name"] == leather_type["name"]
     assert created_order["completed_at"] is None
     assert len(created_order["assignments"]) == 3
 
     get_response = client.get(f"/api/orders/{created_order['id']}")
     assert get_response.status_code == 200
     assert get_response.json()["order_number"] == "FC-0101"
+    assert get_response.json()["leather_type_name"] == leather_type["name"]
 
 
 def test_list_orders_returns_assignments_count(client: TestClient) -> None:
@@ -275,6 +286,38 @@ def test_create_order_rejects_inactive_product(client: TestClient) -> None:
     assert response.json()["detail"] == "Only active products can be taken into work."
 
 
+def test_create_order_rejects_inactive_leather_type(client: TestClient) -> None:
+    author = create_author_user(client)
+    worker = create_worker_user(client)
+    product = create_product_with_leaf_operations(client, author["id"])
+    leather_type = create_leather_type(client, name="Нубук")
+    leaf_ids = collect_leaf_operation_ids(product)
+
+    patch_response = client.patch(
+        f"/api/leather-types/{leather_type['id']}/status",
+        json={"is_active": False},
+    )
+    assert patch_response.status_code == 200
+
+    response = client.post(
+        "/api/orders",
+        json={
+            "order_number": "FC-0108",
+            "product_id": product["id"],
+            "leather_type_id": leather_type["id"],
+            "quantity": 1,
+            "assignments": [
+                {"operation_id": leaf_ids[0], "worker_user_id": worker["id"]},
+                {"operation_id": leaf_ids[1], "worker_user_id": worker["id"]},
+                {"operation_id": leaf_ids[2], "worker_user_id": worker["id"]},
+            ],
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == "Only active leather types can be selected."
+
+
 def test_create_order_rejects_non_worker_assignment(client: TestClient) -> None:
     author = create_author_user(client)
     non_worker = create_author_user(client, name="Ольга Белова")
@@ -342,6 +385,56 @@ def test_update_order_assignments_changes_worker(client: TestClient) -> None:
         assignment["worker_user_name"] == second_worker["name"]
         for assignment in payload["assignments"]
     )
+
+
+def test_update_order_allows_existing_inactive_leather_type(client: TestClient) -> None:
+    author = create_author_user(client)
+    worker = create_worker_user(client, name="Вера Павлова")
+    product = create_product_with_leaf_operations(client, author["id"])
+    leather_type = create_leather_type(client, name="Шевро")
+    leaf_ids = collect_leaf_operation_ids(product)
+
+    create_response = client.post(
+        "/api/orders",
+        json={
+            "order_number": "FC-0109",
+            "product_id": product["id"],
+            "leather_type_id": leather_type["id"],
+            "quantity": 2,
+            "assignments": [
+                {"operation_id": leaf_ids[0], "worker_user_id": worker["id"]},
+                {"operation_id": leaf_ids[1], "worker_user_id": worker["id"]},
+                {"operation_id": leaf_ids[2], "worker_user_id": worker["id"]},
+            ],
+        },
+    )
+    assert create_response.status_code == 201
+    order_id = create_response.json()["id"]
+
+    patch_response = client.patch(
+        f"/api/leather-types/{leather_type['id']}/status",
+        json={"is_active": False},
+    )
+    assert patch_response.status_code == 200
+
+    update_response = client.put(
+        f"/api/orders/{order_id}/assignments",
+        json={
+            "leather_type_id": leather_type["id"],
+            "quantity": 3,
+            "total_spent_minutes": 120,
+            "assignments": [
+                {"operation_id": leaf_ids[0], "worker_user_id": worker["id"]},
+                {"operation_id": leaf_ids[1], "worker_user_id": worker["id"]},
+                {"operation_id": leaf_ids[2], "worker_user_id": worker["id"]},
+            ],
+        },
+    )
+
+    assert update_response.status_code == 200
+    payload = update_response.json()
+    assert payload["quantity"] == 3
+    assert payload["leather_type_id"] == leather_type["id"]
 
 
 def test_update_order_status_marks_completed_and_returns_to_work(

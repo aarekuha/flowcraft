@@ -1,6 +1,6 @@
-from collections.abc import Generator
+from collections.abc import Callable, Generator
 
-from fastapi import HTTPException, Request, status
+from fastapi import Depends, HTTPException, Request, status
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db_session
@@ -19,3 +19,17 @@ def get_authenticated_session(request: Request) -> AuthenticatedSession:
             detail="Требуется аутентификация.",
         )
     return auth_session
+
+
+def require_any_role(*roles: str) -> Callable[..., AuthenticatedSession]:
+    def dependency(
+        auth_session: AuthenticatedSession = Depends(get_authenticated_session),
+    ) -> AuthenticatedSession:
+        if not any(role in auth_session.user_roles for role in roles):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Недостаточно прав.",
+            )
+        return auth_session
+
+    return dependency

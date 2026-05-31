@@ -2,6 +2,7 @@ from sqlalchemy import BigInteger, ForeignKey, Integer, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
+from app.models.leather_type import LeatherType
 
 
 class WorkOrder(Base):
@@ -17,6 +18,11 @@ class WorkOrder(Base):
         nullable=False,
         index=True,
     )
+    leather_type_id: Mapped[int | None] = mapped_column(
+        ForeignKey("leather_types.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     quantity: Mapped[int] = mapped_column(Integer, nullable=False)
     total_spent_minutes: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     created_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
@@ -30,6 +36,7 @@ class WorkOrder(Base):
         order_by="WorkOrderAssignment.id",
     )
     product = relationship("Product", lazy="joined")
+    leather_type = relationship(LeatherType, lazy="joined")
 
 
 class WorkOrderAssignment(Base):
