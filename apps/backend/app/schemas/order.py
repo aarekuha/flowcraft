@@ -32,6 +32,7 @@ class WorkOrderAssignmentRead(BaseModel):
 class WorkOrderCreate(BaseModel):
     order_number: str = Field(min_length=1, max_length=64)
     product_id: int
+    leather_type_id: int | None = None
     quantity: int = Field(gt=0)
     total_spent_minutes: int = Field(default=0, ge=0)
     assignments: list[WorkOrderAssignmentCreate] = Field(min_length=1)
@@ -46,6 +47,7 @@ class WorkOrderCreate(BaseModel):
 
 
 class WorkOrderUpdateAssignments(BaseModel):
+    leather_type_id: int | None = None
     quantity: int = Field(gt=0)
     total_spent_minutes: int = Field(default=0, ge=0)
     assignments: list[WorkOrderAssignmentCreate] = Field(min_length=1)
@@ -63,6 +65,8 @@ class WorkOrderListItem(BaseModel):
     product_id: int
     product_name: str
     product_version: str
+    leather_type_id: int | None
+    leather_type_name: str | None
     quantity: int
     total_spent_minutes: int
     assignments_count: int
@@ -87,6 +91,8 @@ class WorkOrderDetail(BaseModel):
     product_id: int
     product_name: str
     product_version: str
+    leather_type_id: int | None
+    leather_type_name: str | None
     quantity: int
     total_spent_minutes: int
     created_at: int

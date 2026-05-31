@@ -6,6 +6,7 @@ from sqlalchemy import Select, func, select
 from sqlalchemy.orm import Session, selectinload
 from sqlalchemy.sql.elements import ColumnElement
 
+from app.models.leather_type import LeatherType
 from app.models.operation import Operation
 from app.models.product import Product
 from app.models.user import User
@@ -57,6 +58,8 @@ class OrderService:
                 WorkOrder.product_id,
                 Product.name.label("product_name"),
                 Product.version.label("product_version"),
+                WorkOrder.leather_type_id,
+                LeatherType.name.label("leather_type_name"),
                 WorkOrder.quantity,
                 WorkOrder.total_spent_minutes,
                 WorkOrder.created_at,
@@ -67,6 +70,7 @@ class OrderService:
                 ),
             )
             .join(Product, Product.id == WorkOrder.product_id)
+            .outerjoin(LeatherType, LeatherType.id == WorkOrder.leather_type_id)
             .outerjoin(
                 assignments_count,
                 assignments_count.c.work_order_id == WorkOrder.id,
@@ -92,6 +96,8 @@ class OrderService:
                 product_id=row.product_id,
                 product_name=row.product_name,
                 product_version=row.product_version,
+                leather_type_id=row.leather_type_id,
+                leather_type_name=row.leather_type_name,
                 quantity=row.quantity,
                 total_spent_minutes=row.total_spent_minutes,
                 assignments_count=row.assignments_count,
@@ -190,12 +196,14 @@ class OrderService:
         self._validate_order_number(payload.order_number)
         product = self._get_product_or_404(payload.product_id)
         self._validate_product_is_active(product)
+        self._validate_leather_type_is_active(payload.leather_type_id)
         self._validate_assignments(product.id, payload.assignments)
 
         timestamp = self._now_ts()
         order = WorkOrder(
             order_number=payload.order_number,
             product_id=product.id,
+            leather_type_id=payload.leather_type_id,
             quantity=payload.quantity,
             total_spent_minutes=payload.total_spent_minutes,
             created_at=timestamp,
@@ -215,8 +223,13 @@ class OrderService:
     ) -> WorkOrderDetail:
         order = self._get_order_or_404(order_id)
         product = self._get_product_or_404(order.product_id)
+        self._validate_leather_type_is_active(
+            payload.leather_type_id,
+            current_leather_type_id=order.leather_type_id,
+        )
         self._validate_assignments(product.id, payload.assignments)
 
+        order.leather_type_id = payload.leather_type_id
         order.quantity = payload.quantity
         order.total_spent_minutes = payload.total_spent_minutes
         order.updated_at = self._now_ts()
@@ -275,6 +288,31 @@ class OrderService:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail="Only active products can be taken into work.",
+            )
+
+    def _validate_leather_type_is_active(
+        self,
+        leather_type_id: int | None,
+        *,
+        current_leather_type_id: int | None = None,
+    ) -> None:
+        if leather_type_id is None:
+            return
+
+        if leather_type_id == current_leather_type_id:
+            return
+
+        leather_type = self.session.get(LeatherType, leather_type_id)
+        if leather_type is None:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Leather type not found.",
+            )
+
+        if not leather_type.is_active:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Only active leather types can be selected.",
             )
 
     def _validate_order_number(self, order_number: str) -> None:
@@ -395,6 +433,10 @@ class OrderService:
             product_id=order.product_id,
             product_name=product.name,
             product_version=product.version,
+            leather_type_id=order.leather_type_id,
+            leather_type_name=order.leather_type.name
+            if order.leather_type is not None
+            else None,
             quantity=order.quantity,
             total_spent_minutes=order.total_spent_minutes,
             created_at=order.created_at,

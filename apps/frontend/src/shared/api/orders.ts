@@ -14,6 +14,8 @@ export type WorkOrderSummary = {
   productId: number;
   productName: string;
   productVersion: string;
+  leatherTypeId: number | null;
+  leatherTypeName: string | null;
   quantity: number;
   totalSpentMinutes: number;
   assignmentsCount: number;
@@ -31,6 +33,8 @@ export type WorkOrderDetail = {
   productId: number;
   productName: string;
   productVersion: string;
+  leatherTypeId: number | null;
+  leatherTypeName: string | null;
   quantity: number;
   totalSpentMinutes: number;
   createdAtTs: number;
@@ -65,6 +69,7 @@ export type WorkOrderPage = {
 export type WorkOrderCreatePayload = {
   order_number: string;
   product_id: number;
+  leather_type_id?: number | null;
   quantity: number;
   total_spent_minutes: number;
   assignments: Array<{
@@ -74,6 +79,7 @@ export type WorkOrderCreatePayload = {
 };
 
 export type WorkOrderUpdateAssignmentsPayload = {
+  leather_type_id?: number | null;
   quantity: number;
   total_spent_minutes: number;
   assignments: WorkOrderCreatePayload["assignments"];
@@ -93,6 +99,8 @@ type WorkOrderSummaryApi = {
   product_id: number;
   product_name: string;
   product_version: string;
+  leather_type_id: number | null;
+  leather_type_name: string | null;
   quantity: number;
   total_spent_minutes: number;
   assignments_count: number;
@@ -107,6 +115,8 @@ type WorkOrderDetailApi = {
   product_id: number;
   product_name: string;
   product_version: string;
+  leather_type_id: number | null;
+  leather_type_name: string | null;
   quantity: number;
   total_spent_minutes: number;
   created_at: number;
@@ -226,6 +236,8 @@ function mapWorkOrderSummary(order: WorkOrderSummaryApi): WorkOrderSummary {
     productId: order.product_id,
     productName: order.product_name,
     productVersion: order.product_version,
+    leatherTypeId: order.leather_type_id,
+    leatherTypeName: order.leather_type_name,
     quantity: order.quantity,
     totalSpentMinutes: order.total_spent_minutes,
     assignmentsCount: order.assignments_count,
@@ -255,6 +267,8 @@ function mapWorkOrderDetail(order: WorkOrderDetailApi): WorkOrderDetail {
     productId: order.product_id,
     productName: order.product_name,
     productVersion: order.product_version,
+    leatherTypeId: order.leather_type_id,
+    leatherTypeName: order.leather_type_name,
     quantity: order.quantity,
     totalSpentMinutes: order.total_spent_minutes,
     createdAtTs: order.created_at,

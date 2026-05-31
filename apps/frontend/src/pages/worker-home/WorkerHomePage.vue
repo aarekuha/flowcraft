@@ -11,6 +11,15 @@ import {
   type AuthSession,
 } from "@/shared/api/auth";
 import {
+  createLeatherType,
+  fetchAllLeatherTypes,
+  fetchLeatherTypes,
+  updateLeatherTypeStatus,
+  type LeatherTypeListParams,
+  type LeatherTypeRecord,
+  type LeatherTypeSortDirection,
+} from "@/shared/api/leatherTypes";
+import {
   createWorkOrder,
   fetchAllWorkOrders,
   fetchWorkOrder,
@@ -63,6 +72,8 @@ import {
 type TabId = "worker" | "brigadier" | "constructor" | "stats" | "users";
 type ModalMode = "create" | "copy" | "view" | null;
 type BrigadierTabId = "active" | "orders";
+type ConstructorTabId = "products" | "directories";
+type ConstructorDirectoryTabId = "leather-types";
 type ProductVisibilityFilter = "all" | "active" | "inactive";
 type ProductSort =
   | "created-desc"
@@ -106,6 +117,7 @@ type WorkerTimerDefinition = {
   kind: WorkerTimerKind;
   productKey?: string;
   productLabel?: string;
+  leatherTypeName?: string | null;
   orderNumber?: string;
 };
 
@@ -118,6 +130,7 @@ type WorkerTimerGroup = {
   productKey: string;
   orderNumbers: string[];
   productLabel: string;
+  leatherTypeName: string | null;
   quantity: number;
   timers: WorkerTimerDefinition[];
 };
@@ -192,15 +205,33 @@ const statisticsPeriodOptions = [7, 14, 30] as const;
 
 const ACTIVE_TAB_STORAGE_KEY = "flowcraft.active-tab";
 const BRIGADIER_TAB_STORAGE_KEY = "flowcraft.brigadier-tab";
+const CONSTRUCTOR_TAB_STORAGE_KEY = "flowcraft.constructor-tab";
+const CONSTRUCTOR_DIRECTORY_TAB_STORAGE_KEY = "flowcraft.constructor-directory-tab";
 const PREPARATION_TIMER_ID = "worker:preparation";
 const BREAK_TIMER_ID = "worker:break";
 const IDLE_TIMER_ID = "worker:idle";
 const SMARTPHONE_MEDIA_QUERY = "(max-width: 760px)";
-const WORK_ORDER_PAGE_SIZE = 10;
+const PROJECT_PAGE_SIZE = 10;
+const WORK_ORDER_PAGE_SIZE = PROJECT_PAGE_SIZE;
+const LEATHER_TYPE_PAGE_SIZE = PROJECT_PAGE_SIZE;
 
 const activeTab = ref<TabId>(readStoredTab<TabId>(ACTIVE_TAB_STORAGE_KEY, tabs.map((tab) => tab.id), "constructor"));
 const brigadierTab = ref<BrigadierTabId>(
   readStoredTab<BrigadierTabId>(BRIGADIER_TAB_STORAGE_KEY, ["active", "orders"], "active"),
+);
+const constructorTab = ref<ConstructorTabId>(
+  readStoredTab<ConstructorTabId>(
+    CONSTRUCTOR_TAB_STORAGE_KEY,
+    ["products", "directories"],
+    "products",
+  ),
+);
+const constructorDirectoryTab = ref<ConstructorDirectoryTabId>(
+  readStoredTab<ConstructorDirectoryTabId>(
+    CONSTRUCTOR_DIRECTORY_TAB_STORAGE_KEY,
+    ["leather-types"],
+    "leather-types",
+  ),
 );
 const modalMode = ref<ModalMode>(null);
 const currentSession = ref<AuthSession | null>(null);
@@ -212,6 +243,12 @@ const busyWorkOrderIds = ref<number[]>([]);
 const workOrdersTotal = ref(0);
 const workOrdersPage = ref(1);
 const workOrdersPages = ref(1);
+const leatherTypes = ref<LeatherTypeRecord[]>([]);
+const activeLeatherTypes = ref<LeatherTypeRecord[]>([]);
+const busyLeatherTypeIds = ref<number[]>([]);
+const leatherTypesTotal = ref(0);
+const leatherTypesPage = ref(1);
+const leatherTypesPages = ref(1);
 
 const productFilter = ref("");
 const productVisibility = ref<ProductVisibilityFilter>("all");
@@ -220,6 +257,11 @@ const workOrderFilter = ref("");
 const workOrderSearchDraft = ref("");
 const showCompletedWorkOrders = ref(false);
 const workOrderSort = ref<WorkOrderSort>("created-desc");
+const leatherTypeFilter = ref("");
+const leatherTypeSearchDraft = ref("");
+const showInactiveLeatherTypes = ref(false);
+const leatherTypeSortDirection = ref<LeatherTypeSortDirection>("asc");
+const leatherTypeName = ref("");
 const brigadierProductFilter = ref("");
 const brigadierProductSort = ref<ProductSort>("name-asc");
 const userFilter = ref("");
@@ -238,8 +280,11 @@ const brigadierModalOrderId = ref<number | null>(null);
 const brigadierModalAssignments = ref<BrigadierOrderAssignment[]>([]);
 const brigadierModalQuantity = ref("1");
 const brigadierModalOrderNumber = ref("");
+const brigadierModalLeatherTypeId = ref("");
 const brigadierOpenAssignmentDropdownId = ref<number | null>(null);
 let brigadierDropdownCloseTimeoutId: number | null = null;
+const isBrigadierLeatherTypeDropdownOpen = ref(false);
+let brigadierLeatherTypeDropdownCloseTimeoutId: number | null = null;
 const brigadierModalLoading = ref(false);
 const brigadierModalError = ref("");
 const brigadierOrdersLoading = ref(false);
@@ -264,6 +309,10 @@ const statisticsOverview = ref<StatisticsOverview | null>(null);
 
 const listLoading = ref(false);
 const listError = ref("");
+const leatherTypesLoading = ref(false);
+const leatherTypesError = ref("");
+const leatherTypeSaveLoading = ref(false);
+const leatherTypeError = ref("");
 const authInitializing = ref(true);
 const authSubmitting = ref(false);
 const authError = ref("");
@@ -290,6 +339,7 @@ let nextOperationId = 1;
 let nextUserId = 100;
 let workerClockIntervalId: number | null = null;
 let workOrdersRequestId = 0;
+let leatherTypesRequestId = 0;
 const isModalOpen = computed(() => modalMode.value !== null);
 const isBrigadierOrderModalOpen = computed(() => brigadierModalMode.value !== null);
 const isDeleteModalOpen = computed(() => productPendingDelete.value !== null);
@@ -493,6 +543,15 @@ const brigadierCurrentOrder = computed(() =>
   workOrders.value.find((order) => order.id === brigadierModalOrderId.value) ?? null,
 );
 
+const brigadierModalLeatherTypeName = computed(() => {
+  const leatherTypeId = Number.parseInt(brigadierModalLeatherTypeId.value, 10);
+  if (!Number.isInteger(leatherTypeId)) {
+    return null;
+  }
+
+  return activeLeatherTypes.value.find((item) => item.id === leatherTypeId)?.name ?? null;
+});
+
 const workOrdersPageStart = computed(() =>
   workOrdersTotal.value === 0
     ? 0
@@ -501,6 +560,20 @@ const workOrdersPageStart = computed(() =>
 
 const workOrdersPageEnd = computed(() =>
   Math.min(workOrdersPage.value * WORK_ORDER_PAGE_SIZE, workOrdersTotal.value),
+);
+
+const leatherTypesPageStart = computed(() =>
+  leatherTypesTotal.value === 0
+    ? 0
+    : (leatherTypesPage.value - 1) * LEATHER_TYPE_PAGE_SIZE + 1,
+);
+
+const leatherTypesPageEnd = computed(() =>
+  Math.min(leatherTypesPage.value * LEATHER_TYPE_PAGE_SIZE, leatherTypesTotal.value),
+);
+
+const leatherTypeNameError = computed(() =>
+  leatherTypeName.value.trim() ? "" : "Укажите наименование вида кожи.",
 );
 
 const brigadierModalTitle = computed(() =>
@@ -631,8 +704,9 @@ const assignedWorkerTimerDefinitions = computed<WorkerTimerDefinition[]>(() => {
         id: `worker:operation:${order.id}:${assignment.operationId}`,
         label: assignment.operationName,
         kind: "operation" as const,
-        productKey: `${order.productName}:::${order.productVersion}`,
+        productKey: getWorkerProductKey(order),
         productLabel: `${order.productName} · ${order.productVersion}`,
+        leatherTypeName: order.leatherTypeName,
         orderNumber: order.orderNumber,
       })),
   );
@@ -658,7 +732,7 @@ const workerTimerGroups = computed<WorkerTimerGroup[]>(() => {
       continue;
     }
 
-    const productKey = `${order.productName}:::${order.productVersion}`;
+    const productKey = getWorkerProductKey(order);
     quantitiesByGroup.set(
       productKey,
       (quantitiesByGroup.get(productKey) ?? 0) + order.quantity,
@@ -684,6 +758,7 @@ const workerTimerGroups = computed<WorkerTimerGroup[]>(() => {
       productKey: timer.productKey,
       orderNumbers: [...new Set(orderNumbersByGroup.get(timer.productKey) ?? [])],
       productLabel: timer.productLabel,
+      leatherTypeName: timer.leatherTypeName ?? null,
       quantity: quantitiesByGroup.get(timer.productKey) ?? 0,
       timers: [timer],
     });
@@ -765,6 +840,14 @@ watch(brigadierTab, (value) => {
   storeTab(BRIGADIER_TAB_STORAGE_KEY, value);
 });
 
+watch(constructorTab, (value) => {
+  storeTab(CONSTRUCTOR_TAB_STORAGE_KEY, value);
+});
+
+watch(constructorDirectoryTab, (value) => {
+  storeTab(CONSTRUCTOR_DIRECTORY_TAB_STORAGE_KEY, value);
+});
+
 watch(
   [workOrderFilter, showCompletedWorkOrders, workOrderSort],
   () => {
@@ -774,6 +857,17 @@ watch(
 
 watch(workOrdersPage, () => {
   void loadWorkOrders();
+});
+
+watch(
+  [leatherTypeFilter, showInactiveLeatherTypes, leatherTypeSortDirection],
+  () => {
+    reloadLeatherTypesFromFirstPage();
+  },
+);
+
+watch(leatherTypesPage, () => {
+  void loadLeatherTypes();
 });
 
 watch(
@@ -916,6 +1010,57 @@ function goToWorkOrdersPage(page: number) {
   workOrdersPage.value = nextPage;
 }
 
+function toggleLeatherTypeSort() {
+  leatherTypeSortDirection.value =
+    leatherTypeSortDirection.value === "asc" ? "desc" : "asc";
+}
+
+function applyLeatherTypeSearch() {
+  const nextSearch = leatherTypeSearchDraft.value.trim();
+  if (nextSearch === leatherTypeFilter.value) {
+    return;
+  }
+
+  leatherTypeFilter.value = nextSearch;
+}
+
+function clearLeatherTypeSearch() {
+  leatherTypeSearchDraft.value = "";
+  if (leatherTypeFilter.value === "") {
+    return;
+  }
+
+  leatherTypeFilter.value = "";
+}
+
+function getLeatherTypeListParams(): LeatherTypeListParams {
+  return {
+    search: leatherTypeFilter.value,
+    includeInactive: showInactiveLeatherTypes.value,
+    sortDirection: leatherTypeSortDirection.value,
+    page: leatherTypesPage.value,
+    pageSize: LEATHER_TYPE_PAGE_SIZE,
+  };
+}
+
+function reloadLeatherTypesFromFirstPage() {
+  if (leatherTypesPage.value === 1) {
+    void loadLeatherTypes();
+    return;
+  }
+
+  leatherTypesPage.value = 1;
+}
+
+function goToLeatherTypesPage(page: number) {
+  const nextPage = Math.min(Math.max(page, 1), leatherTypesPages.value);
+  if (nextPage === leatherTypesPage.value) {
+    return;
+  }
+
+  leatherTypesPage.value = nextPage;
+}
+
 function isUserSortFieldActive(field: "name" | "created"): boolean {
   return userSort.value.startsWith(field);
 }
@@ -980,7 +1125,13 @@ async function initializePage() {
 }
 
 async function loadProtectedData() {
-  await Promise.all([loadProducts(), loadUsers(), loadWorkOrders()]);
+  await Promise.all([
+    loadProducts(),
+    loadUsers(),
+    loadLeatherTypes(),
+    loadActiveLeatherTypes(),
+    loadWorkOrders(),
+  ]);
 
   if (currentSession.value?.userRoles.includes("worker")) {
     await loadWorkerTimerState();
@@ -1159,6 +1310,69 @@ async function loadUsers() {
     usersError.value = getErrorMessage(error, "Не удалось загрузить пользователей.");
   } finally {
     usersLoading.value = false;
+  }
+}
+
+async function loadLeatherTypes() {
+  const requestId = ++leatherTypesRequestId;
+  leatherTypesLoading.value = true;
+  leatherTypesError.value = "";
+
+  try {
+    const page = await fetchLeatherTypes(getLeatherTypeListParams());
+
+    if (requestId !== leatherTypesRequestId) {
+      return;
+    }
+
+    if (
+      page.items.length === 0 &&
+      page.total > 0 &&
+      leatherTypesPage.value > page.pages
+    ) {
+      leatherTypesTotal.value = page.total;
+      leatherTypesPages.value = page.pages;
+      leatherTypesPage.value = page.pages;
+      return;
+    }
+
+    leatherTypes.value = page.items;
+    leatherTypesTotal.value = page.total;
+    leatherTypesPage.value = page.page;
+    leatherTypesPages.value = page.pages;
+  } catch (error) {
+    if (requestId !== leatherTypesRequestId) {
+      return;
+    }
+
+    if (isUnauthorizedError(error)) {
+      redirectToAuth(getErrorMessage(error, "Требуется аутентификация."));
+      return;
+    }
+    leatherTypesError.value = getErrorMessage(
+      error,
+      "Не удалось загрузить виды кожи.",
+    );
+  } finally {
+    if (requestId === leatherTypesRequestId) {
+      leatherTypesLoading.value = false;
+    }
+  }
+}
+
+async function loadActiveLeatherTypes() {
+  try {
+    activeLeatherTypes.value = await fetchAllLeatherTypes({
+      includeInactive: false,
+      sortDirection: "asc",
+      pageSize: 100,
+    });
+  } catch (error) {
+    if (isUnauthorizedError(error)) {
+      redirectToAuth(getErrorMessage(error, "Требуется аутентификация."));
+      return;
+    }
+    activeLeatherTypes.value = [];
   }
 }
 
@@ -1656,6 +1870,53 @@ async function toggleProductStatus(product: ProductSummary) {
   }
 }
 
+async function submitLeatherType() {
+  if (leatherTypeNameError.value) {
+    return;
+  }
+
+  leatherTypeSaveLoading.value = true;
+  leatherTypeError.value = "";
+
+  try {
+    await createLeatherType(leatherTypeName.value.trim());
+    leatherTypeName.value = "";
+    await Promise.all([loadLeatherTypes(), loadActiveLeatherTypes()]);
+  } catch (error) {
+    if (isUnauthorizedError(error)) {
+      redirectToAuth(getErrorMessage(error, "Требуется аутентификация."));
+      return;
+    }
+    leatherTypeError.value = getErrorMessage(
+      error,
+      "Не удалось сохранить вид кожи.",
+    );
+  } finally {
+    leatherTypeSaveLoading.value = false;
+  }
+}
+
+async function toggleLeatherTypeStatus(leatherType: LeatherTypeRecord) {
+  setLeatherTypeBusy(leatherType.id, true);
+  leatherTypeError.value = "";
+
+  try {
+    await updateLeatherTypeStatus(leatherType.id, !leatherType.isActive);
+    await Promise.all([loadLeatherTypes(), loadActiveLeatherTypes()]);
+  } catch (error) {
+    if (isUnauthorizedError(error)) {
+      redirectToAuth(getErrorMessage(error, "Требуется аутентификация."));
+      return;
+    }
+    leatherTypeError.value = getErrorMessage(
+      error,
+      "Не удалось обновить статус вида кожи.",
+    );
+  } finally {
+    setLeatherTypeBusy(leatherType.id, false);
+  }
+}
+
 async function handleDeleteProduct(product: ProductSummary) {
   if (productPendingDelete.value?.id !== product.id) {
     return;
@@ -2026,6 +2287,23 @@ function setWorkOrderBusy(orderId: number, isBusy: boolean) {
   busyWorkOrderIds.value = busyWorkOrderIds.value.filter((id) => id !== orderId);
 }
 
+function isLeatherTypeBusy(leatherTypeId: number): boolean {
+  return busyLeatherTypeIds.value.includes(leatherTypeId);
+}
+
+function setLeatherTypeBusy(leatherTypeId: number, isBusy: boolean) {
+  if (isBusy) {
+    busyLeatherTypeIds.value = [
+      ...new Set([...busyLeatherTypeIds.value, leatherTypeId]),
+    ];
+    return;
+  }
+
+  busyLeatherTypeIds.value = busyLeatherTypeIds.value.filter(
+    (id) => id !== leatherTypeId,
+  );
+}
+
 function replaceProductSummary(updatedProduct: ProductSummary) {
   products.value = products.value.map((product) =>
     product.id === updatedProduct.id ? updatedProduct : product,
@@ -2371,6 +2649,23 @@ function normalizeName(value: string): string {
   return value.trim().toLowerCase();
 }
 
+function getWorkerProductKey(
+  order: Pick<
+    WorkOrderDetail,
+    "productName" | "productVersion" | "leatherTypeId"
+  >,
+): string {
+  return [
+    order.productName,
+    order.productVersion,
+    order.leatherTypeId ?? "no-leather-type",
+  ].join(":::");
+}
+
+function formatWorkerGroupProductMeta(group: WorkerTimerGroup): string {
+  return `${group.quantity} шт., ${group.leatherTypeName ?? "вид кожи не указан"}`;
+}
+
 function getErrorMessage(error: unknown, fallback: string): string {
   return error instanceof Error ? error.message : fallback;
 }
@@ -2487,10 +2782,11 @@ async function openBrigadierCreateOrder(productId: number) {
   brigadierSaveLoading.value = false;
   brigadierModalQuantity.value = "1";
   brigadierModalOrderNumber.value = "";
+  brigadierModalLeatherTypeId.value = "";
   brigadierModalAssignments.value = [];
 
   try {
-    const [product, allOrders] = await Promise.all([
+    const [product, allOrders, leatherTypesForSelect] = await Promise.all([
       fetchProduct(productId),
       fetchAllWorkOrders({
         includeCompleted: true,
@@ -2498,8 +2794,14 @@ async function openBrigadierCreateOrder(productId: number) {
         sortDirection: "desc",
         pageSize: 100,
       }),
+      fetchAllLeatherTypes({
+        includeInactive: false,
+        sortDirection: "asc",
+        pageSize: 100,
+      }),
     ]);
     brigadierModalProduct.value = product;
+    activeLeatherTypes.value = leatherTypesForSelect;
     brigadierModalOrderNumber.value = generateNextWorkOrderNumber(allOrders);
     brigadierModalAssignments.value = buildBrigadierAssignments(product.operations);
   } catch (error) {
@@ -2521,14 +2823,27 @@ async function openBrigadierManageOrder(order: WorkOrderSummary) {
   brigadierSaveLoading.value = false;
   brigadierModalQuantity.value = String(order.quantity);
   brigadierModalOrderNumber.value = order.orderNumber;
+  brigadierModalLeatherTypeId.value =
+    order.leatherTypeId === null ? "" : String(order.leatherTypeId);
   brigadierModalAssignments.value = [];
 
   try {
-    const [product, orderDetail] = await Promise.all([
+    const [product, orderDetail, leatherTypesForSelect] = await Promise.all([
       fetchProduct(order.productId),
       fetchWorkOrder(order.id),
+      fetchAllLeatherTypes({
+        includeInactive: true,
+        sortDirection: "asc",
+        pageSize: 100,
+      }),
     ]);
     brigadierModalProduct.value = product;
+    activeLeatherTypes.value = leatherTypesForSelect.filter(
+      (leatherType) =>
+        leatherType.isActive || leatherType.id === orderDetail.leatherTypeId,
+    );
+    brigadierModalLeatherTypeId.value =
+      orderDetail.leatherTypeId === null ? "" : String(orderDetail.leatherTypeId);
     brigadierModalAssignments.value = mergeBrigadierAssignments(
       buildBrigadierAssignments(product.operations),
       orderDetail,
@@ -2567,14 +2882,17 @@ async function toggleWorkOrderStatus(order: WorkOrderSummary) {
 
 function closeBrigadierOrderModal() {
   clearBrigadierAssignmentDropdownCloseTimeout();
+  clearBrigadierLeatherTypeDropdownCloseTimeout();
   isBrigadierSaveConfirmOpen.value = false;
   brigadierOpenAssignmentDropdownId.value = null;
+  isBrigadierLeatherTypeDropdownOpen.value = false;
   brigadierModalMode.value = null;
   brigadierModalProduct.value = null;
   brigadierModalOrderId.value = null;
   brigadierModalAssignments.value = [];
   brigadierModalQuantity.value = "1";
   brigadierModalOrderNumber.value = "";
+  brigadierModalLeatherTypeId.value = "";
   brigadierModalLoading.value = false;
   brigadierModalError.value = "";
   brigadierSaveLoading.value = false;
@@ -2751,6 +3069,42 @@ function clearBrigadierAssignment(operationId: number) {
   openBrigadierAssignmentDropdown(operationId);
 }
 
+function clearBrigadierLeatherTypeDropdownCloseTimeout() {
+  if (brigadierLeatherTypeDropdownCloseTimeoutId !== null) {
+    window.clearTimeout(brigadierLeatherTypeDropdownCloseTimeoutId);
+    brigadierLeatherTypeDropdownCloseTimeoutId = null;
+  }
+}
+
+function openBrigadierLeatherTypeDropdown() {
+  clearBrigadierLeatherTypeDropdownCloseTimeout();
+  isBrigadierLeatherTypeDropdownOpen.value = true;
+}
+
+function closeBrigadierLeatherTypeDropdown() {
+  clearBrigadierLeatherTypeDropdownCloseTimeout();
+  isBrigadierLeatherTypeDropdownOpen.value = false;
+}
+
+function scheduleBrigadierLeatherTypeDropdownClose() {
+  clearBrigadierLeatherTypeDropdownCloseTimeout();
+  brigadierLeatherTypeDropdownCloseTimeoutId = window.setTimeout(() => {
+    isBrigadierLeatherTypeDropdownOpen.value = false;
+    brigadierLeatherTypeDropdownCloseTimeoutId = null;
+  }, 120);
+}
+
+function selectBrigadierLeatherType(leatherTypeId: number | null) {
+  brigadierModalLeatherTypeId.value =
+    leatherTypeId === null ? "" : String(leatherTypeId);
+  closeBrigadierLeatherTypeDropdown();
+}
+
+function clearBrigadierLeatherType() {
+  brigadierModalLeatherTypeId.value = "";
+  openBrigadierLeatherTypeDropdown();
+}
+
 function getBrigadierAssignmentError(assignment: BrigadierOrderAssignment): string {
   if (assignment.workerUserId !== null) {
     return "";
@@ -2914,12 +3268,16 @@ async function saveBrigadierOrder() {
   brigadierModalError.value = "";
 
   const quantity = Number.parseInt(brigadierModalQuantity.value, 10);
+  const leatherTypeId = brigadierModalLeatherTypeId.value
+    ? Number.parseInt(brigadierModalLeatherTypeId.value, 10)
+    : null;
   const assignments = brigadierModalAssignments.value.map((assignment) => ({ ...assignment }));
   const totalSpentMinutes = estimateWorkOrderMinutes(quantity, assignments);
 
   try {
     if (brigadierModalMode.value === "manage" && brigadierCurrentOrder.value) {
       await updateWorkOrderAssignments(brigadierCurrentOrder.value.id, {
+        leather_type_id: leatherTypeId,
         quantity,
         total_spent_minutes: totalSpentMinutes,
         assignments: assignments.map((assignment) => ({
@@ -2931,6 +3289,7 @@ async function saveBrigadierOrder() {
       await createWorkOrder({
         order_number: brigadierModalOrderNumber.value.trim(),
         product_id: brigadierModalProduct.value.id,
+        leather_type_id: leatherTypeId,
         quantity,
         total_spent_minutes: totalSpentMinutes,
         assignments: assignments.map((assignment) => ({
@@ -3346,7 +3705,7 @@ async function handleResetUserPassword(user: UserRecord) {
                   <span class="worker-group__title">
                     <span class="button-icon button-icon--package" aria-hidden="true" />
                     <h3>
-                      {{ group.orderNumbers.join(", ") }} · {{ group.productLabel }} ({{ group.quantity }} шт.)
+                      {{ group.orderNumbers.join(", ") }} · {{ group.productLabel }} ({{ formatWorkerGroupProductMeta(group) }})
                     </h3>
                   </span>
                   <span
@@ -3510,6 +3869,7 @@ async function handleResetUserPassword(user: UserRecord) {
                     <tr>
                       <th>Номер заказа</th>
                       <th>Наименование</th>
+                      <th>Вид кожи</th>
                       <th>Версия</th>
                       <th>Время взятия в работу</th>
                       <th>Время выполнения</th>
@@ -3522,6 +3882,7 @@ async function handleResetUserPassword(user: UserRecord) {
                     <tr v-for="order in filteredWorkOrders" :key="order.id">
                       <td>{{ order.orderNumber }}</td>
                       <td>{{ order.productName }}</td>
+                      <td>{{ order.leatherTypeName ?? "вид кожи не указан" }}</td>
                       <td>{{ order.productVersion }}</td>
                       <td>{{ order.createdAt }}</td>
                       <td>{{ order.completedAt ?? "—" }}</td>
@@ -3580,6 +3941,7 @@ async function handleResetUserPassword(user: UserRecord) {
                   </div>
                   <div class="mobile-card__meta">
                     <span>{{ order.productName }}</span>
+                    <span>Вид кожи: {{ order.leatherTypeName ?? "вид кожи не указан" }}</span>
                     <span>Версия {{ order.productVersion }} · {{ order.quantity }} шт.</span>
                     <span>В работе с {{ order.createdAt }}</span>
                     <span>Выполнен: {{ order.completedAt ?? "—" }}</span>
@@ -4034,209 +4396,436 @@ async function handleResetUserPassword(user: UserRecord) {
 
       <section v-else-if="activeTab === 'constructor'">
         <article class="constructor-panel">
-          <div class="panel-head">
+          <div class="panel-head panel-head--stacked">
             <div>
-              <h2>Изделия и дерево операций</h2>
+              <h2>Конструктор</h2>
             </div>
 
-            <button type="button" class="primary-button" @click="startCreateProduct">
-              <span class="button-content">
-                <span class="button-icon button-icon--plus" aria-hidden="true" />
-                <span>Создать новое изделие</span>
-              </span>
-            </button>
+            <div class="subtabs" role="tablist" aria-label="Разделы конструктора">
+              <button
+                type="button"
+                class="subtab-button"
+                :class="{ 'subtab-button--active': constructorTab === 'products' }"
+                @click="constructorTab = 'products'"
+              >
+                <span class="button-content">
+                  <span class="button-icon button-icon--package" aria-hidden="true" />
+                  <span>Изделия и дерево операций</span>
+                </span>
+              </button>
+              <button
+                type="button"
+                class="subtab-button"
+                :class="{ 'subtab-button--active': constructorTab === 'directories' }"
+                @click="constructorTab = 'directories'"
+              >
+                <span class="button-content">
+                  <span class="button-icon button-icon--orders" aria-hidden="true" />
+                  <span>Справочники</span>
+                </span>
+              </button>
+            </div>
           </div>
 
-          <div class="toolbar">
-            <label class="field field--inline">
-              <span class="field__label">Фильтр по имени</span>
-              <div class="filter-input-wrap">
-                <input
-                  v-model="productFilter"
-                  type="text"
-                  class="text-input text-input--with-action"
-                  placeholder="Например, кошелек"
-                />
-                <button
-                  v-if="productFilter"
-                  type="button"
-                  class="field-action"
-                  aria-label="Очистить фильтр"
-                  title="Очистить фильтр"
-                  @click="productFilter = ''"
-                >
-                  <span class="field-action__icon" aria-hidden="true" />
-                </button>
+          <template v-if="constructorTab === 'products'">
+            <div class="panel-head">
+              <div>
+                <h2>Изделия и дерево операций</h2>
               </div>
-            </label>
 
-            <div class="field field--inline">
-              <span class="field__label">Отображение</span>
-              <div class="segmented-control" role="group" aria-label="Отображение изделий">
-                <button
-                  v-for="option in visibilityOptions"
-                  :key="option.value"
-                  type="button"
-                  class="segmented-control__button segmented-control__button--icon"
-                  :class="{
-                    'segmented-control__button--active':
-                      productVisibility === option.value,
-                  }"
-                  :title="option.label"
-                  :aria-label="option.label"
-                  @click="productVisibility = option.value"
-                >
-                  <span
-                    class="toolbar-icon"
-                    :class="`toolbar-icon--${option.icon}`"
-                    aria-hidden="true"
+              <button type="button" class="primary-button" @click="startCreateProduct">
+                <span class="button-content">
+                  <span class="button-icon button-icon--plus" aria-hidden="true" />
+                  <span>Создать новое изделие</span>
+                </span>
+              </button>
+            </div>
+
+            <div class="toolbar">
+              <label class="field field--inline">
+                <span class="field__label">Фильтр по имени</span>
+                <div class="filter-input-wrap">
+                  <input
+                    v-model="productFilter"
+                    type="text"
+                    class="text-input text-input--with-action"
+                    placeholder="Например, кошелек"
                   />
-                </button>
+                  <button
+                    v-if="productFilter"
+                    type="button"
+                    class="field-action"
+                    aria-label="Очистить фильтр"
+                    title="Очистить фильтр"
+                    @click="productFilter = ''"
+                  >
+                    <span class="field-action__icon" aria-hidden="true" />
+                  </button>
+                </div>
+              </label>
+
+              <div class="field field--inline">
+                <span class="field__label">Отображение</span>
+                <div class="segmented-control" role="group" aria-label="Отображение изделий">
+                  <button
+                    v-for="option in visibilityOptions"
+                    :key="option.value"
+                    type="button"
+                    class="segmented-control__button segmented-control__button--icon"
+                    :class="{
+                      'segmented-control__button--active':
+                        productVisibility === option.value,
+                    }"
+                    :title="option.label"
+                    :aria-label="option.label"
+                    @click="productVisibility = option.value"
+                  >
+                    <span
+                      class="toolbar-icon"
+                      :class="`toolbar-icon--${option.icon}`"
+                      aria-hidden="true"
+                    />
+                  </button>
+                </div>
+              </div>
+
+              <div class="field field--inline">
+                <span class="field__label">Сортировка</span>
+                <div class="segmented-control segmented-control--wrap" role="group" aria-label="Сортировка изделий">
+                  <button
+                    v-for="option in sortOptions"
+                    :key="option.field"
+                    type="button"
+                    class="segmented-control__button segmented-control__button--icon"
+                    :class="{
+                      'segmented-control__button--active':
+                        isSortFieldActive(option.field),
+                    }"
+                    :title="`${option.label} (${getSortDirection(option.field) === 'asc' ? 'по возрастанию' : 'по убыванию'})`"
+                    :aria-label="`${option.label} (${getSortDirection(option.field) === 'asc' ? 'по возрастанию' : 'по убыванию'})`"
+                    @click="toggleProductSort(option.field)"
+                  >
+                    <span
+                      class="toolbar-icon"
+                      :class="[
+                        `toolbar-icon--${option.icon}`,
+                        `toolbar-icon--${getSortDirection(option.field)}`,
+                      ]"
+                      aria-hidden="true"
+                    />
+                  </button>
+                </div>
               </div>
             </div>
 
-            <div class="field field--inline">
-              <span class="field__label">Сортировка</span>
-              <div class="segmented-control segmented-control--wrap" role="group" aria-label="Сортировка изделий">
-                <button
-                  v-for="option in sortOptions"
-                  :key="option.field"
-                  type="button"
-                  class="segmented-control__button segmented-control__button--icon"
-                  :class="{
-                    'segmented-control__button--active':
-                      isSortFieldActive(option.field),
-                  }"
-                  :title="`${option.label} (${getSortDirection(option.field) === 'asc' ? 'по возрастанию' : 'по убыванию'})`"
-                  :aria-label="`${option.label} (${getSortDirection(option.field) === 'asc' ? 'по возрастанию' : 'по убыванию'})`"
-                  @click="toggleProductSort(option.field)"
-                >
-                  <span
-                    class="toolbar-icon"
-                    :class="[
-                      `toolbar-icon--${option.icon}`,
-                      `toolbar-icon--${getSortDirection(option.field)}`,
-                    ]"
-                    aria-hidden="true"
-                  />
-                </button>
-              </div>
+            <div v-if="listError" class="banner banner--error">
+              <p>{{ listError }}</p>
+              <button type="button" class="ghost-button" @click="loadProducts">
+                <span class="button-content">
+                  <span class="button-icon button-icon--refresh" aria-hidden="true" />
+                  <span>Повторить</span>
+                </span>
+              </button>
             </div>
-          </div>
 
-          <div v-if="listError" class="banner banner--error">
-            <p>{{ listError }}</p>
-            <button type="button" class="ghost-button" @click="loadProducts">
-              <span class="button-content">
-                <span class="button-icon button-icon--refresh" aria-hidden="true" />
-                <span>Повторить</span>
-              </span>
-            </button>
-          </div>
+            <div v-if="listLoading" class="banner">
+              <p>Загрузка изделий...</p>
+            </div>
 
-          <div v-if="listLoading" class="banner">
-            <p>Загрузка изделий...</p>
-          </div>
-
-          <div v-else class="table-wrap">
-            <table class="products-table">
-              <thead>
-                <tr>
-                  <th>Наименование</th>
-                  <th>Версия</th>
-                  <th>Автор</th>
-                  <th>Дата создания</th>
-                  <th>Активность</th>
-                  <th>Операции</th>
-                  <th>Копия</th>
-                  <th>Удаление</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr v-for="product in filteredProducts" :key="product.id">
-                  <td>{{ product.name }}</td>
-                  <td>{{ product.version }}</td>
-                  <td>{{ product.author }}</td>
-                  <td>{{ product.createdAt }}</td>
-                  <td>
-                    <button
-                      type="button"
-                      class="status-button"
-                      :class="{
-                        'status-button--active': product.isActive,
-                        'status-button--inactive': !product.isActive,
-                      }"
-                      :disabled="isProductBusy(product.id)"
-                      @click="toggleProductStatus(product)"
-                    >
-                      <span class="button-content">
-                        <span
-                          class="button-icon"
-                          :class="product.isActive ? 'button-icon--pause' : 'button-icon--check'"
-                          aria-hidden="true"
-                        />
-                        <span>
-                          {{
-                            isProductBusy(product.id)
-                              ? "Обновление..."
-                              : product.isActive
-                                ? "Деактивировать"
-                                : "Активировать"
-                          }}
+            <div v-else class="table-wrap">
+              <table class="products-table">
+                <thead>
+                  <tr>
+                    <th>Наименование</th>
+                    <th>Версия</th>
+                    <th>Автор</th>
+                    <th>Дата создания</th>
+                    <th>Активность</th>
+                    <th>Операции</th>
+                    <th>Копия</th>
+                    <th>Удаление</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="product in filteredProducts" :key="product.id">
+                    <td>{{ product.name }}</td>
+                    <td>{{ product.version }}</td>
+                    <td>{{ product.author }}</td>
+                    <td>{{ product.createdAt }}</td>
+                    <td>
+                      <button
+                        type="button"
+                        class="status-button"
+                        :class="{
+                          'status-button--active': product.isActive,
+                          'status-button--inactive': !product.isActive,
+                        }"
+                        :disabled="isProductBusy(product.id)"
+                        @click="toggleProductStatus(product)"
+                      >
+                        <span class="button-content">
+                          <span
+                            class="button-icon"
+                            :class="product.isActive ? 'button-icon--pause' : 'button-icon--check'"
+                            aria-hidden="true"
+                          />
+                          <span>
+                            {{
+                              isProductBusy(product.id)
+                                ? "Обновление..."
+                                : product.isActive
+                                  ? "Деактивировать"
+                                  : "Активировать"
+                            }}
+                          </span>
                         </span>
-                      </span>
-                    </button>
-                  </td>
-                  <td>
-                    <button
-                      type="button"
-                      class="secondary-button"
-                      :disabled="isProductBusy(product.id)"
-                      @click="startViewProduct(product.id)"
-                    >
-                      <span class="button-content">
-                        <span class="button-icon button-icon--view" aria-hidden="true" />
-                        <span>{{ product.operationsCount }} этапов</span>
-                      </span>
-                    </button>
-                  </td>
-                  <td>
-                    <button
-                      type="button"
-                      class="secondary-button"
-                      :disabled="isProductBusy(product.id)"
-                      @click="startCopyProduct(product.id)"
-                    >
-                      <span class="button-content">
-                        <span class="button-icon button-icon--copy" aria-hidden="true" />
-                        <span>Копировать</span>
-                      </span>
-                    </button>
-                  </td>
-                  <td>
-                    <button
-                      type="button"
-                      class="ghost-button ghost-button--danger"
-                      :disabled="isProductBusy(product.id)"
-                      @click="openDeleteConfirmation(product)"
-                    >
-                      <span class="button-content">
-                        <span class="button-icon button-icon--delete" aria-hidden="true" />
-                        <span>Удалить</span>
-                      </span>
-                    </button>
-                  </td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
+                      </button>
+                    </td>
+                    <td>
+                      <button
+                        type="button"
+                        class="secondary-button"
+                        :disabled="isProductBusy(product.id)"
+                        @click="startViewProduct(product.id)"
+                      >
+                        <span class="button-content">
+                          <span class="button-icon button-icon--view" aria-hidden="true" />
+                          <span>{{ product.operationsCount }} этапов</span>
+                        </span>
+                      </button>
+                    </td>
+                    <td>
+                      <button
+                        type="button"
+                        class="secondary-button"
+                        :disabled="isProductBusy(product.id)"
+                        @click="startCopyProduct(product.id)"
+                      >
+                        <span class="button-content">
+                          <span class="button-icon button-icon--copy" aria-hidden="true" />
+                          <span>Копировать</span>
+                        </span>
+                      </button>
+                    </td>
+                    <td>
+                      <button
+                        type="button"
+                        class="ghost-button ghost-button--danger"
+                        :disabled="isProductBusy(product.id)"
+                        @click="openDeleteConfirmation(product)"
+                      >
+                        <span class="button-content">
+                          <span class="button-icon button-icon--delete" aria-hidden="true" />
+                          <span>Удалить</span>
+                        </span>
+                      </button>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
 
-          <div
-            v-if="!listLoading && filteredProducts.length === 0"
-            class="empty-table-state"
-          >
-            <p>По текущему фильтру изделия не найдены.</p>
-          </div>
+            <div
+              v-if="!listLoading && filteredProducts.length === 0"
+              class="empty-table-state"
+            >
+              <p>По текущему фильтру изделия не найдены.</p>
+            </div>
+          </template>
+
+          <template v-else>
+            <div class="panel-head panel-head--stacked">
+              <div>
+                <h2>Справочники</h2>
+              </div>
+
+              <div class="subtabs" role="tablist" aria-label="Справочники конструктора">
+                <button
+                  type="button"
+                  class="subtab-button subtab-button--active"
+                  @click="constructorDirectoryTab = 'leather-types'"
+                >
+                  <span class="button-content">
+                    <span class="button-icon button-icon--package" aria-hidden="true" />
+                    <span>Виды кожи</span>
+                  </span>
+                </button>
+              </div>
+            </div>
+
+            <template v-if="constructorDirectoryTab === 'leather-types'">
+              <form class="dictionary-form" @submit.prevent="void submitLeatherType()">
+                <label class="field">
+                  <span class="field__label">Новый вид кожи</span>
+                  <input
+                    v-model="leatherTypeName"
+                    type="text"
+                    class="text-input"
+                    placeholder="Например, Краст"
+                  />
+                  <p v-if="leatherTypeName && leatherTypeNameError" class="field-error">
+                    {{ leatherTypeNameError }}
+                  </p>
+                </label>
+                <button
+                  type="submit"
+                  class="primary-button"
+                  :disabled="leatherTypeSaveLoading || Boolean(leatherTypeNameError)"
+                >
+                  <span class="button-content">
+                    <span class="button-icon button-icon--plus" aria-hidden="true" />
+                    <span>{{ leatherTypeSaveLoading ? "Сохранение..." : "Добавить" }}</span>
+                  </span>
+                </button>
+              </form>
+
+              <div class="toolbar">
+                <label class="field field--inline">
+                  <span class="field__label">Поиск по наименованию</span>
+                  <div class="filter-input-wrap">
+                    <input
+                      v-model="leatherTypeSearchDraft"
+                      type="text"
+                      class="text-input text-input--with-action"
+                      placeholder="Например, краст"
+                      @keydown.enter.prevent="applyLeatherTypeSearch"
+                    />
+                    <button
+                      v-if="leatherTypeSearchDraft || leatherTypeFilter"
+                      type="button"
+                      class="field-action"
+                      aria-label="Очистить поиск"
+                      title="Очистить поиск"
+                      @click="clearLeatherTypeSearch"
+                    >
+                      <span class="field-action__icon" aria-hidden="true" />
+                    </button>
+                  </div>
+                </label>
+
+                <label class="checkbox-field">
+                  <input
+                    v-model="showInactiveLeatherTypes"
+                    type="checkbox"
+                  />
+                  <span>Показывать деактивированные</span>
+                </label>
+
+                <div class="field field--inline">
+                  <span class="field__label">Сортировка</span>
+                  <div class="segmented-control segmented-control--wrap" role="group" aria-label="Сортировка видов кожи">
+                    <button
+                      type="button"
+                      class="segmented-control__button segmented-control__button--icon segmented-control__button--active"
+                      :title="`Сортировка по наименованию (${leatherTypeSortDirection === 'asc' ? 'по возрастанию' : 'по убыванию'})`"
+                      :aria-label="`Сортировка по наименованию (${leatherTypeSortDirection === 'asc' ? 'по возрастанию' : 'по убыванию'})`"
+                      @click="toggleLeatherTypeSort"
+                    >
+                      <span
+                        class="toolbar-icon"
+                        :class="[
+                          'toolbar-icon--name',
+                          `toolbar-icon--${leatherTypeSortDirection}`,
+                        ]"
+                        aria-hidden="true"
+                      />
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              <div v-if="leatherTypeError || leatherTypesError" class="banner banner--error">
+                <p>{{ leatherTypeError || leatherTypesError }}</p>
+                <button type="button" class="ghost-button" @click="loadLeatherTypes">
+                  <span class="button-content">
+                    <span class="button-icon button-icon--refresh" aria-hidden="true" />
+                    <span>Повторить</span>
+                  </span>
+                </button>
+              </div>
+
+              <div v-if="leatherTypesLoading" class="banner">
+                <p>Загрузка видов кожи...</p>
+              </div>
+
+              <div v-else-if="leatherTypes.length === 0" class="empty-table-state">
+                <p>Виды кожи по выбранным условиям не найдены.</p>
+              </div>
+
+              <template v-else>
+                <div class="table-wrap">
+                  <table class="products-table dictionary-table">
+                    <thead>
+                      <tr>
+                        <th>Наименование</th>
+                        <th>Отображение</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr v-for="leatherType in leatherTypes" :key="leatherType.id">
+                        <td>{{ leatherType.name }}</td>
+                        <td>
+                          <button
+                            type="button"
+                            class="status-button"
+                            :class="{
+                              'status-button--active': leatherType.isActive,
+                              'status-button--inactive': !leatherType.isActive,
+                            }"
+                            :disabled="isLeatherTypeBusy(leatherType.id)"
+                            @click="void toggleLeatherTypeStatus(leatherType)"
+                          >
+                            <span class="button-content">
+                              <span
+                                class="button-icon"
+                                :class="leatherType.isActive ? 'button-icon--pause' : 'button-icon--check'"
+                                aria-hidden="true"
+                              />
+                              <span>
+                                {{
+                                  isLeatherTypeBusy(leatherType.id)
+                                    ? "Обновление..."
+                                    : leatherType.isActive
+                                      ? "Деактивировать"
+                                      : "Активировать"
+                                }}
+                              </span>
+                            </span>
+                          </button>
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+
+                <div class="pagination-bar">
+                  <span>
+                    Показаны {{ leatherTypesPageStart }}–{{ leatherTypesPageEnd }}
+                    из {{ leatherTypesTotal }}
+                  </span>
+                  <div class="pagination-bar__actions">
+                    <button
+                      type="button"
+                      class="secondary-button"
+                      :disabled="leatherTypesPage <= 1"
+                      @click="goToLeatherTypesPage(leatherTypesPage - 1)"
+                    >
+                      Назад
+                    </button>
+                    <span>{{ leatherTypesPage }} / {{ leatherTypesPages }}</span>
+                    <button
+                      type="button"
+                      class="secondary-button"
+                      :disabled="leatherTypesPage >= leatherTypesPages"
+                      @click="goToLeatherTypesPage(leatherTypesPage + 1)"
+                    >
+                      Вперед
+                    </button>
+                  </div>
+                </div>
+              </template>
+            </template>
+          </template>
         </article>
       </section>
 
@@ -4651,6 +5240,70 @@ async function handleResetUserPassword(user: UserRecord) {
                 <strong>
                   {{ brigadierModalProduct.name }} · {{ brigadierModalProduct.version }}
                 </strong>
+                <label class="field summary-card__field">
+                  <span class="field__label">Вид кожи</span>
+                  <div class="assignment-input-wrap">
+                    <input
+                      :value="brigadierModalLeatherTypeName ?? ''"
+                      type="text"
+                      class="text-input text-input--with-clear"
+                      readonly
+                      autocomplete="off"
+                      placeholder="Не выбран"
+                      @focus="openBrigadierLeatherTypeDropdown"
+                      @click="openBrigadierLeatherTypeDropdown"
+                      @blur="scheduleBrigadierLeatherTypeDropdownClose"
+                    />
+                    <button
+                      v-if="brigadierModalLeatherTypeId"
+                      type="button"
+                      class="field-action field-action--right"
+                      aria-label="Очистить вид кожи"
+                      title="Очистить вид кожи"
+                      @mousedown.prevent
+                      @click="clearBrigadierLeatherType"
+                    >
+                      <span class="field-action__icon" aria-hidden="true" />
+                    </button>
+                    <div
+                      v-if="isBrigadierLeatherTypeDropdownOpen"
+                      class="assignment-dropdown"
+                    >
+                      <button
+                        type="button"
+                        class="assignment-dropdown__option"
+                        :class="{
+                          'assignment-dropdown__option--selected':
+                            !brigadierModalLeatherTypeId,
+                        }"
+                        @mousedown.prevent
+                        @click="selectBrigadierLeatherType(null)"
+                      >
+                        <span>Не выбран</span>
+                      </button>
+                      <button
+                        v-for="leatherType in activeLeatherTypes"
+                        :key="leatherType.id"
+                        type="button"
+                        class="assignment-dropdown__option"
+                        :class="{
+                          'assignment-dropdown__option--selected':
+                            brigadierModalLeatherTypeId === String(leatherType.id),
+                        }"
+                        @mousedown.prevent
+                        @click="selectBrigadierLeatherType(leatherType.id)"
+                      >
+                        <span>{{ leatherType.name }}</span>
+                      </button>
+                      <div
+                        v-if="activeLeatherTypes.length === 0"
+                        class="assignment-dropdown__empty"
+                      >
+                        Справочник видов кожи пуст.
+                      </div>
+                    </div>
+                  </div>
+                </label>
               </div>
             </div>
 
@@ -4836,6 +5489,10 @@ async function handleResetUserPassword(user: UserRecord) {
                   · {{ brigadierModalProduct.version }}
                 </template>
               </dd>
+            </div>
+            <div>
+              <dt>Вид кожи</dt>
+              <dd>{{ brigadierModalLeatherTypeName ?? "Не выбран" }}</dd>
             </div>
             <div>
               <dt>Количество</dt>
@@ -6126,6 +6783,22 @@ h2 {
   justify-self: start;
 }
 
+.dictionary-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 16px;
+  align-items: start;
+  margin-bottom: 18px;
+  padding: 16px;
+  border: 1px solid var(--color-border);
+  border-radius: 18px;
+  background: var(--color-surface-alt);
+}
+
+.dictionary-form .primary-button {
+  align-self: end;
+}
+
 .filter-input-wrap {
   position: relative;
 }
@@ -6853,6 +7526,10 @@ h2 {
 
 .summary-card strong {
   color: var(--color-text);
+}
+
+.summary-card__field {
+  margin-top: 8px;
 }
 
 .order-form__quantity {
@@ -7790,6 +8467,7 @@ h2 {
 
 @media (max-width: 980px) {
   .toolbar,
+  .dictionary-form,
   .form-grid,
   .order-form__header,
   .assignment-row,
