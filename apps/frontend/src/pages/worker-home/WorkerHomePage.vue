@@ -3504,7 +3504,7 @@ async function handleResetUserPassword(user: UserRecord) {
                 <p>Заказы по выбранным условиям не найдены.</p>
               </div>
 
-              <div v-else class="table-wrap desktop-only">
+              <div v-else class="table-wrap desktop-only work-orders-table-wrap">
                 <table class="products-table brigadier-table">
                   <thead>
                     <tr>
@@ -3565,7 +3565,10 @@ async function handleResetUserPassword(user: UserRecord) {
                 </table>
               </div>
 
-              <div v-if="filteredWorkOrders.length > 0" class="mobile-list mobile-only">
+              <div
+                v-if="filteredWorkOrders.length > 0"
+                class="mobile-list mobile-only work-orders-mobile-list"
+              >
                 <article
                   v-for="order in filteredWorkOrders"
                   :key="`mobile-order-${order.id}`"
@@ -7772,6 +7775,17 @@ h2 {
   display: flex;
   justify-content: center;
   text-align: center;
+}
+
+@media (min-width: 761px) and (max-width: 1220px) {
+  .work-orders-table-wrap.desktop-only {
+    display: none;
+  }
+
+  .work-orders-mobile-list.mobile-only {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  }
 }
 
 @media (max-width: 980px) {
