@@ -115,8 +115,9 @@ type WorkerTimerDefinition = {
   id: string;
   label: string;
   kind: WorkerTimerKind;
-  productKey?: string;
+  orderGroupKey?: string;
   productLabel?: string;
+  productQuantity?: number;
   leatherTypeName?: string | null;
   orderNumber?: string;
 };
@@ -127,8 +128,8 @@ type WorkerTimerState = WorkerTimerDefinition & {
 };
 
 type WorkerTimerGroup = {
-  productKey: string;
-  orderNumbers: string[];
+  groupKey: string;
+  orderNumber: string;
   productLabel: string;
   leatherTypeName: string | null;
   quantity: number;
@@ -240,6 +241,7 @@ const busyProductIds = ref<number[]>([]);
 const users = ref<UserRecord[]>([]);
 const workOrders = ref<WorkOrderSummary[]>([]);
 const busyWorkOrderIds = ref<number[]>([]);
+const busyPrintWorkOrderIds = ref<number[]>([]);
 const workOrdersTotal = ref(0);
 const workOrdersPage = ref(1);
 const workOrdersPages = ref(1);
@@ -345,6 +347,7 @@ const isBrigadierOrderModalOpen = computed(() => brigadierModalMode.value !== nu
 const isDeleteModalOpen = computed(() => productPendingDelete.value !== null);
 const isUserDeleteModalOpen = computed(() => userPendingDelete.value !== null);
 const isViewMode = computed(() => modalMode.value === "view");
+const printableWorkOrder = ref<WorkOrderDetail | null>(null);
 const availableTabs = computed(() => {
   if (!currentSession.value) {
     return [] as Array<{ id: TabId; label: string; icon: string }>;
@@ -704,8 +707,9 @@ const assignedWorkerTimerDefinitions = computed<WorkerTimerDefinition[]>(() => {
         id: `worker:operation:${order.id}:${assignment.operationId}`,
         label: assignment.operationName,
         kind: "operation" as const,
-        productKey: getWorkerProductKey(order),
+        orderGroupKey: String(order.id),
         productLabel: `${order.productName} · ${order.productVersion}`,
+        productQuantity: order.quantity,
         leatherTypeName: order.leatherTypeName,
         orderNumber: order.orderNumber,
       })),
@@ -719,47 +723,24 @@ const workerTimerDefinitions = computed<WorkerTimerDefinition[]>(() => [
 
 const workerTimerGroups = computed<WorkerTimerGroup[]>(() => {
   const groups = new Map<string, WorkerTimerGroup>();
-  const quantitiesByGroup = new Map<string, number>();
-  const orderNumbersByGroup = new Map<string, string[]>();
-
-  for (const order of workOrderDetails.value) {
-    if (
-      !currentWorker.value ||
-      !order.assignments.some(
-        (assignment) => assignment.workerUserId === currentWorker.value?.id,
-      )
-    ) {
-      continue;
-    }
-
-    const productKey = getWorkerProductKey(order);
-    quantitiesByGroup.set(
-      productKey,
-      (quantitiesByGroup.get(productKey) ?? 0) + order.quantity,
-    );
-    orderNumbersByGroup.set(productKey, [
-      ...(orderNumbersByGroup.get(productKey) ?? []),
-      order.orderNumber,
-    ]);
-  }
 
   for (const timer of assignedWorkerTimerDefinitions.value) {
-    if (!timer.productKey || !timer.productLabel) {
+    if (!timer.orderGroupKey || !timer.orderNumber || !timer.productLabel) {
       continue;
     }
 
-    const existingGroup = groups.get(timer.productKey);
+    const existingGroup = groups.get(timer.orderGroupKey);
     if (existingGroup) {
       existingGroup.timers.push(timer);
       continue;
     }
 
-    groups.set(timer.productKey, {
-      productKey: timer.productKey,
-      orderNumbers: [...new Set(orderNumbersByGroup.get(timer.productKey) ?? [])],
+    groups.set(timer.orderGroupKey, {
+      groupKey: timer.orderGroupKey,
+      orderNumber: timer.orderNumber,
       productLabel: timer.productLabel,
       leatherTypeName: timer.leatherTypeName ?? null,
-      quantity: quantitiesByGroup.get(timer.productKey) ?? 0,
+      quantity: timer.productQuantity ?? 0,
       timers: [timer],
     });
   }
@@ -884,7 +865,8 @@ watch(
     const nextExpanded: Record<string, boolean> = {};
 
     for (const group of groups) {
-      nextExpanded[group.productKey] = workerGroupExpanded.value[group.productKey] ?? false;
+      nextExpanded[group.groupKey] =
+        workerGroupExpanded.value[group.groupKey] ?? false;
     }
 
     workerGroupExpanded.value = nextExpanded;
@@ -1846,10 +1828,10 @@ function isWorkerTimerActive(timerId: string): boolean {
   return activeWorkerTimerId.value === timerId;
 }
 
-function toggleWorkerGroup(productKey: string) {
+function toggleWorkerGroup(groupKey: string) {
   workerGroupExpanded.value = {
     ...workerGroupExpanded.value,
-    [productKey]: !workerGroupExpanded.value[productKey],
+    [groupKey]: !workerGroupExpanded.value[groupKey],
   };
 }
 
@@ -2287,6 +2269,23 @@ function setWorkOrderBusy(orderId: number, isBusy: boolean) {
   busyWorkOrderIds.value = busyWorkOrderIds.value.filter((id) => id !== orderId);
 }
 
+function isWorkOrderPrintBusy(orderId: number): boolean {
+  return busyPrintWorkOrderIds.value.includes(orderId);
+}
+
+function setWorkOrderPrintBusy(orderId: number, isBusy: boolean) {
+  if (isBusy) {
+    busyPrintWorkOrderIds.value = [
+      ...new Set([...busyPrintWorkOrderIds.value, orderId]),
+    ];
+    return;
+  }
+
+  busyPrintWorkOrderIds.value = busyPrintWorkOrderIds.value.filter(
+    (id) => id !== orderId,
+  );
+}
+
 function isLeatherTypeBusy(leatherTypeId: number): boolean {
   return busyLeatherTypeIds.value.includes(leatherTypeId);
 }
@@ -2649,19 +2648,6 @@ function normalizeName(value: string): string {
   return value.trim().toLowerCase();
 }
 
-function getWorkerProductKey(
-  order: Pick<
-    WorkOrderDetail,
-    "productName" | "productVersion" | "leatherTypeId"
-  >,
-): string {
-  return [
-    order.productName,
-    order.productVersion,
-    order.leatherTypeId ?? "no-leather-type",
-  ].join(":::");
-}
-
 function formatWorkerGroupProductMeta(group: WorkerTimerGroup): string {
   return `${group.quantity} шт., ${group.leatherTypeName ?? "вид кожи не указан"}`;
 }
@@ -2877,6 +2863,34 @@ async function toggleWorkOrderStatus(order: WorkOrderSummary) {
     );
   } finally {
     setWorkOrderBusy(order.id, false);
+  }
+}
+
+async function printWorkOrder(order: WorkOrderSummary) {
+  setWorkOrderPrintBusy(order.id, true);
+  brigadierOrdersError.value = "";
+  printableWorkOrder.value = null;
+
+  try {
+    printableWorkOrder.value = await fetchWorkOrder(order.id);
+    await nextTick();
+    const clearPrintableWorkOrder = () => {
+      printableWorkOrder.value = null;
+      window.removeEventListener("afterprint", clearPrintableWorkOrder);
+    };
+    window.addEventListener("afterprint", clearPrintableWorkOrder, { once: true });
+    window.print();
+  } catch (error) {
+    if (isUnauthorizedError(error)) {
+      redirectToAuth(getErrorMessage(error, "Требуется аутентификация."));
+      return;
+    }
+    brigadierOrdersError.value = getErrorMessage(
+      error,
+      "Не удалось подготовить заказ к печати.",
+    );
+  } finally {
+    setWorkOrderPrintBusy(order.id, false);
   }
 }
 
@@ -3422,7 +3436,7 @@ async function handleResetUserPassword(user: UserRecord) {
 </script>
 
 <template>
-  <main class="page">
+  <main class="page" :class="{ 'page--printing': printableWorkOrder }">
     <section v-if="authInitializing" class="auth-shell">
       <div class="auth-card">
         <p class="section-label">FlowCraft</p>
@@ -3694,32 +3708,32 @@ async function handleResetUserPassword(user: UserRecord) {
             <div v-else class="worker-groups">
               <section
                 v-for="group in workerTimerGroups"
-                :key="group.productKey"
+                :key="group.groupKey"
                 class="worker-group"
               >
                 <button
                   type="button"
                   class="worker-group__head"
-                  @click="toggleWorkerGroup(group.productKey)"
+                  @click="toggleWorkerGroup(group.groupKey)"
                 >
                   <span class="worker-group__title">
                     <span class="button-icon button-icon--package" aria-hidden="true" />
                     <h3>
-                      {{ group.orderNumbers.join(", ") }} · {{ group.productLabel }} ({{ formatWorkerGroupProductMeta(group) }})
+                      {{ group.orderNumber }} · {{ group.productLabel }} ({{ formatWorkerGroupProductMeta(group) }})
                     </h3>
                   </span>
                   <span
                     class="worker-group__chevron"
                     :class="{
                       'worker-group__chevron--expanded':
-                        workerGroupExpanded[group.productKey],
+                        workerGroupExpanded[group.groupKey],
                     }"
                     aria-hidden="true"
                   />
                 </button>
 
                 <div
-                  v-if="workerGroupExpanded[group.productKey]"
+                  v-if="workerGroupExpanded[group.groupKey]"
                   class="worker-group__timers"
                 >
                   <button
@@ -3904,22 +3918,35 @@ async function handleResetUserPassword(user: UserRecord) {
                         </span>
                       </td>
                       <td>
-                        <button
-                          type="button"
-                          class="status-button"
-                          :class="{
-                            'status-button--active': order.completedAtTs === null,
-                            'status-button--inactive': order.completedAtTs !== null,
-                          }"
-                          :disabled="isWorkOrderBusy(order.id)"
-                          @click="void toggleWorkOrderStatus(order)"
-                        >
-                          {{
-                            order.completedAtTs === null
-                              ? "Выполнен"
-                              : "Вернуть в работу"
-                          }}
-                        </button>
+                        <div class="table-actions">
+                          <button
+                            type="button"
+                            class="secondary-button"
+                            :disabled="isWorkOrderPrintBusy(order.id)"
+                            @click="void printWorkOrder(order)"
+                          >
+                            <span class="button-content">
+                              <span class="button-icon button-icon--print" aria-hidden="true" />
+                              <span>{{ isWorkOrderPrintBusy(order.id) ? "Подготовка..." : "Печать" }}</span>
+                            </span>
+                          </button>
+                          <button
+                            type="button"
+                            class="status-button"
+                            :class="{
+                              'status-button--active': order.completedAtTs === null,
+                              'status-button--inactive': order.completedAtTs !== null,
+                            }"
+                            :disabled="isWorkOrderBusy(order.id)"
+                            @click="void toggleWorkOrderStatus(order)"
+                          >
+                            {{
+                              order.completedAtTs === null
+                                ? "Выполнен"
+                                : "Вернуть в работу"
+                            }}
+                          </button>
+                        </div>
                       </td>
                     </tr>
                   </tbody>
@@ -3954,6 +3981,17 @@ async function handleResetUserPassword(user: UserRecord) {
                     <span class="button-content">
                       <span class="button-icon button-icon--people" aria-hidden="true" />
                       <span>{{ order.assignmentsCount }} назначений</span>
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    class="secondary-button"
+                    :disabled="isWorkOrderPrintBusy(order.id)"
+                    @click="void printWorkOrder(order)"
+                  >
+                    <span class="button-content">
+                      <span class="button-icon button-icon--print" aria-hidden="true" />
+                      <span>{{ isWorkOrderPrintBusy(order.id) ? "Подготовка..." : "Печать" }}</span>
                     </span>
                   </button>
                   <button
@@ -5987,6 +6025,47 @@ async function handleResetUserPassword(user: UserRecord) {
         </div>
       </section>
     </div>
+
+    <section v-if="printableWorkOrder" class="print-sheet" aria-label="Печатная форма заказа">
+      <h1>Заказ {{ printableWorkOrder.orderNumber }}</h1>
+      <table class="print-order-table">
+        <tbody>
+          <tr>
+            <th>Изделие</th>
+            <td>
+              {{ printableWorkOrder.productName }} · {{ printableWorkOrder.productVersion }}
+            </td>
+          </tr>
+          <tr>
+            <th>Тип кожи</th>
+            <td>{{ printableWorkOrder.leatherTypeName ?? "вид кожи не указан" }}</td>
+          </tr>
+          <tr>
+            <th>Количество</th>
+            <td>{{ printableWorkOrder.quantity }} шт.</td>
+          </tr>
+          <tr>
+            <th colspan="2" class="print-order-table__section">
+              Список операций с исполнителями
+            </th>
+          </tr>
+          <tr class="print-order-table__head">
+            <th>Операция</th>
+            <th>Исполнитель</th>
+          </tr>
+          <tr
+            v-for="assignment in printableWorkOrder.assignments"
+            :key="assignment.id"
+          >
+            <td>{{ assignment.operationName }}</td>
+            <td>{{ assignment.workerUserName }}</td>
+          </tr>
+          <tr v-if="printableWorkOrder.assignments.length === 0">
+            <td colspan="2">Операции с исполнителями не назначены.</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
   </main>
 </template>
 
@@ -7483,6 +7562,39 @@ h2 {
   font-size: 0.92rem;
 }
 
+.print-sheet {
+  display: none;
+}
+
+.print-order-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.print-order-table th,
+.print-order-table td {
+  padding: 10px 12px;
+  border: 1px solid #1f2a33;
+  color: #111;
+  text-align: left;
+  vertical-align: top;
+}
+
+.print-order-table th {
+  width: 32%;
+  font-weight: 700;
+  background: #f1f3f5;
+}
+
+.print-order-table__section {
+  background: #e4e8ec !important;
+  text-align: left;
+}
+
+.print-order-table__head th {
+  background: #f1f3f5;
+}
+
 .brigadier-modal {
   width: min(980px, calc(100vw - 48px));
 }
@@ -7869,6 +7981,24 @@ h2 {
   width: 9px;
   height: 2px;
   transform: rotate(-45deg);
+}
+
+.button-icon--print::before {
+  top: 5px;
+  left: 2px;
+  width: 12px;
+  height: 8px;
+  border-radius: 2px;
+}
+
+.button-icon--print::after {
+  top: 1px;
+  left: 4px;
+  width: 8px;
+  height: 14px;
+  border: 2px solid currentColor;
+  border-radius: 1px;
+  background: transparent;
 }
 
 .button-icon--refresh::before {
@@ -8535,6 +8665,51 @@ h2 {
 
   .current-user-card {
     order: 1;
+  }
+}
+
+@media print {
+  @page {
+    size: A4;
+    margin: 14mm;
+  }
+
+  :global(body) {
+    background: #fff !important;
+  }
+
+  .page--printing {
+    min-height: auto;
+    padding: 0;
+    background: #fff !important;
+    color: #111;
+  }
+
+  .page--printing > :not(.print-sheet) {
+    display: none !important;
+  }
+
+  .print-sheet {
+    display: block !important;
+    padding: 0;
+    background: #fff;
+    color: #111;
+    font-family: "Times New Roman", serif;
+  }
+
+  .print-sheet h1 {
+    margin: 0 0 18px;
+    color: #111;
+    font-size: 22px;
+  }
+
+  .print-order-table {
+    font-size: 13px;
+  }
+
+  .print-order-table th,
+  .print-order-table td {
+    page-break-inside: avoid;
   }
 }
 
