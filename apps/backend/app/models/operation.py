@@ -19,6 +19,7 @@ class Operation(Base):
         index=True,
     )
     name: Mapped[str] = mapped_column(String(255), nullable=False)
+    price_cents: Mapped[int | None] = mapped_column(Integer, nullable=True)
     sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
     product = relationship("Product", back_populates="operations")

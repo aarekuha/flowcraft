@@ -3,6 +3,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 class OperationCreate(BaseModel):
     name: str = Field(min_length=1, max_length=255)
+    price_cents: int | None = Field(default=None, ge=0)
     children: list["OperationCreate"] = Field(default_factory=list)
 
     @field_validator("name")
@@ -19,13 +20,21 @@ class OperationRead(BaseModel):
 
     id: int
     name: str
+    price_cents: int | None = None
     children: list["OperationRead"] = Field(default_factory=list)
+
+
+class OperationCostUpdate(BaseModel):
+    id: int
+    price_cents: int | None = Field(default=None, ge=0)
+    children: list["OperationCostUpdate"] = Field(default_factory=list)
 
 
 class ProductCreate(BaseModel):
     name: str = Field(min_length=1, max_length=255)
     version: str = Field(min_length=1, max_length=64)
     author_user_id: int | None = None
+    material_cost_cents: int | None = Field(default=None, ge=0)
     operations: list[OperationCreate] = Field(default_factory=list)
 
     @field_validator("name", "version")
@@ -41,6 +50,11 @@ class ProductStatusUpdate(BaseModel):
     is_active: bool
 
 
+class ProductCostsUpdate(BaseModel):
+    material_cost_cents: int | None = Field(default=None, ge=0)
+    operations: list[OperationCostUpdate] = Field(default_factory=list)
+
+
 class ProductListItem(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -49,6 +63,7 @@ class ProductListItem(BaseModel):
     version: str
     author: str
     author_user_id: int | None = None
+    material_cost_cents: int | None = None
     is_active: bool
     created_at: int
     operations_count: int
@@ -62,6 +77,7 @@ class ProductDetail(BaseModel):
     version: str
     author: str
     author_user_id: int | None = None
+    material_cost_cents: int | None = None
     is_active: bool
     created_at: int
     operations: list[OperationRead] = Field(default_factory=list)
@@ -69,3 +85,4 @@ class ProductDetail(BaseModel):
 
 OperationCreate.model_rebuild()
 OperationRead.model_rebuild()
+OperationCostUpdate.model_rebuild()

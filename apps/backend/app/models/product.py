@@ -1,4 +1,4 @@
-from sqlalchemy import BigInteger, ForeignKey, String, UniqueConstraint, and_
+from sqlalchemy import BigInteger, ForeignKey, Integer, String, UniqueConstraint, and_
 from sqlalchemy.orm import Mapped, foreign, mapped_column, relationship
 
 from app.core.database import Base
@@ -20,6 +20,7 @@ class Product(Base):
         ForeignKey("users.id", ondelete="SET NULL"),
         nullable=True,
     )
+    material_cost_cents: Mapped[int | None] = mapped_column(Integer, nullable=True)
     is_active: Mapped[bool] = mapped_column(default=True, nullable=False)
     created_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
 

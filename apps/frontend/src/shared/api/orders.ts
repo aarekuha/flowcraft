@@ -26,6 +26,9 @@ export type WorkOrderSummary = {
   updatedAt: string;
   takenAtTs: number | null;
   takenAt: string | null;
+  qualityControlAtTs: number | null;
+  qualityControlAt: string | null;
+  defectQuantity: number;
   completedAtTs: number | null;
   completedAt: string | null;
   deletedAtTs: number | null;
@@ -49,6 +52,9 @@ export type WorkOrderDetail = {
   updatedAt: string;
   takenAtTs: number | null;
   takenAt: string | null;
+  qualityControlAtTs: number | null;
+  qualityControlAt: string | null;
+  defectQuantity: number;
   completedAtTs: number | null;
   completedAt: string | null;
   deletedAtTs: number | null;
@@ -62,6 +68,7 @@ export type WorkOrderStatusFilter =
   | "all"
   | "created"
   | "in_work"
+  | "quality_control"
   | "completed"
   | "deleted";
 
@@ -81,6 +88,20 @@ export type WorkOrderPage = {
   page: number;
   pageSize: number;
   pages: number;
+};
+
+export type WorkOrderTimeBreakdownItem = {
+  operationId: number | null;
+  operationName: string;
+  workerUserId: number;
+  workerUserName: string;
+  elapsedMs: number;
+};
+
+export type WorkOrderTimeBreakdown = {
+  orderId: number;
+  items: WorkOrderTimeBreakdownItem[];
+  totalElapsedMs: number;
 };
 
 export type WorkOrderCreatePayload = {
@@ -125,6 +146,8 @@ type WorkOrderSummaryApi = {
   created_at: number;
   updated_at: number;
   taken_at: number | null;
+  quality_control_at: number | null;
+  defect_quantity: number;
   completed_at: number | null;
   deleted_at: number | null;
 };
@@ -143,6 +166,8 @@ type WorkOrderDetailApi = {
   created_at: number;
   updated_at: number;
   taken_at: number | null;
+  quality_control_at: number | null;
+  defect_quantity: number;
   completed_at: number | null;
   deleted_at: number | null;
   assignments: WorkOrderAssignmentApi[];
@@ -154,6 +179,20 @@ type WorkOrderPageApi = {
   page: number;
   page_size: number;
   pages: number;
+};
+
+type WorkOrderTimeBreakdownItemApi = {
+  operation_id: number | null;
+  operation_name: string;
+  worker_user_id: number;
+  worker_user_name: string;
+  elapsed_ms: number;
+};
+
+type WorkOrderTimeBreakdownApi = {
+  order_id: number;
+  items: WorkOrderTimeBreakdownItemApi[];
+  total_elapsed_ms: number;
 };
 
 export async function fetchWorkOrders(
@@ -196,6 +235,15 @@ export async function fetchAllWorkOrders(
 export async function fetchWorkOrder(orderId: number): Promise<WorkOrderDetail> {
   const response = await apiFetch(`/api/orders/${orderId}`);
   return handleJsonResponse<WorkOrderDetailApi>(response).then(mapWorkOrderDetail);
+}
+
+export async function fetchWorkOrderTimeBreakdown(
+  orderId: number,
+): Promise<WorkOrderTimeBreakdown> {
+  const response = await apiFetch(`/api/orders/${orderId}/time-breakdown`);
+  return handleJsonResponse<WorkOrderTimeBreakdownApi>(response).then(
+    mapWorkOrderTimeBreakdown,
+  );
 }
 
 export async function fetchWorkerAssignedWorkOrders(): Promise<WorkOrderDetail[]> {
@@ -249,6 +297,39 @@ export async function updateWorkOrderStatus(
   return handleJsonResponse<WorkOrderDetailApi>(response).then(mapWorkOrderDetail);
 }
 
+export async function updateWorkOrderQualityControlStatus(
+  orderId: number,
+  isInQualityControl: boolean,
+): Promise<WorkOrderDetail> {
+  const response = await apiFetch(`/api/orders/${orderId}/quality-control-status`, {
+    method: "PATCH",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ is_in_quality_control: isInQualityControl }),
+  });
+
+  return handleJsonResponse<WorkOrderDetailApi>(response).then(mapWorkOrderDetail);
+}
+
+export async function acceptWorkOrderQualityControl(
+  orderId: number,
+  defectQuantity: number,
+): Promise<WorkOrderDetail> {
+  const response = await apiFetch(
+    `/api/orders/${orderId}/quality-control-acceptance`,
+    {
+      method: "PATCH",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ defect_quantity: defectQuantity }),
+    },
+  );
+
+  return handleJsonResponse<WorkOrderDetailApi>(response).then(mapWorkOrderDetail);
+}
+
 export async function updateWorkOrderTakenStatus(
   orderId: number,
   isTaken: boolean,
@@ -289,6 +370,22 @@ function mapWorkOrderAssignment(assignment: WorkOrderAssignmentApi): WorkOrderAs
   };
 }
 
+function mapWorkOrderTimeBreakdown(
+  breakdown: WorkOrderTimeBreakdownApi,
+): WorkOrderTimeBreakdown {
+  return {
+    orderId: breakdown.order_id,
+    items: breakdown.items.map((item) => ({
+      operationId: item.operation_id,
+      operationName: item.operation_name,
+      workerUserId: item.worker_user_id,
+      workerUserName: item.worker_user_name,
+      elapsedMs: item.elapsed_ms,
+    })),
+    totalElapsedMs: breakdown.total_elapsed_ms,
+  };
+}
+
 function mapWorkOrderSummary(order: WorkOrderSummaryApi): WorkOrderSummary {
   return {
     id: order.id,
@@ -308,6 +405,10 @@ function mapWorkOrderSummary(order: WorkOrderSummaryApi): WorkOrderSummary {
     updatedAt: formatDate(order.updated_at),
     takenAtTs: order.taken_at,
     takenAt: order.taken_at === null ? null : formatDate(order.taken_at),
+    qualityControlAtTs: order.quality_control_at,
+    qualityControlAt:
+      order.quality_control_at === null ? null : formatDate(order.quality_control_at),
+    defectQuantity: order.defect_quantity,
     completedAtTs: order.completed_at,
     completedAt: order.completed_at === null ? null : formatDate(order.completed_at),
     deletedAtTs: order.deleted_at,
@@ -343,6 +444,10 @@ function mapWorkOrderDetail(order: WorkOrderDetailApi): WorkOrderDetail {
     updatedAt: formatDate(order.updated_at),
     takenAtTs: order.taken_at,
     takenAt: order.taken_at === null ? null : formatDate(order.taken_at),
+    qualityControlAtTs: order.quality_control_at,
+    qualityControlAt:
+      order.quality_control_at === null ? null : formatDate(order.quality_control_at),
+    defectQuantity: order.defect_quantity,
     completedAtTs: order.completed_at,
     completedAt: order.completed_at === null ? null : formatDate(order.completed_at),
     deletedAtTs: order.deleted_at,
