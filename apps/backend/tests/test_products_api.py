@@ -26,7 +26,6 @@ def test_create_and_get_product(client: TestClient) -> None:
         "operations": [
             {
                 "name": "Крой",
-                "price_cents": 15000,
                 "children": [
                     {"name": "Фасад", "price_cents": 5000, "children": []},
                     {"name": "Подклад", "children": []},
@@ -45,7 +44,7 @@ def test_create_and_get_product(client: TestClient) -> None:
     assert created_product["author"] == author_user["name"]
     assert created_product["material_cost_cents"] == 125000
     assert len(created_product["operations"]) == 2
-    assert created_product["operations"][0]["price_cents"] == 15000
+    assert created_product["operations"][0]["price_cents"] is None
     assert created_product["operations"][0]["children"][0]["name"] == "Фасад"
     assert created_product["operations"][0]["children"][0]["price_cents"] == 5000
     assert created_product["operations"][0]["children"][1]["price_cents"] is None
@@ -71,57 +70,64 @@ def test_update_product_costs(client: TestClient) -> None:
                 {
                     "name": "Крой",
                     "children": [
-                        {"name": "Фасад", "children": []},
+                        {"name": "Фасад", "price_cents": 7000, "children": []},
                     ],
                 },
-                {"name": "Пошив", "children": []},
+                {"name": "Пошив", "price_cents": 25000, "children": []},
             ],
         },
     )
     assert create_response.status_code == 201
     product = create_response.json()
-    root_operation = product["operations"][0]
-    child_operation = root_operation["children"][0]
-    second_operation = product["operations"][1]
 
     patch_response = client.patch(
         f"/api/products/{product['id']}/costs",
         json={
             "material_cost_cents": 99000,
-            "operations": [
-                {
-                    "id": root_operation["id"],
-                    "price_cents": 12000,
-                    "children": [
-                        {
-                            "id": child_operation["id"],
-                            "price_cents": 7000,
-                            "children": [],
-                        },
-                    ],
-                },
-                {
-                    "id": second_operation["id"],
-                    "price_cents": None,
-                    "children": [],
-                },
-            ],
+            "operations": [],
         },
     )
 
     assert patch_response.status_code == 200
     updated_product = patch_response.json()
     assert updated_product["material_cost_cents"] == 99000
-    assert updated_product["operations"][0]["price_cents"] == 12000
+    assert updated_product["operations"][0]["price_cents"] is None
     assert updated_product["operations"][0]["children"][0]["price_cents"] == 7000
-    assert updated_product["operations"][1]["price_cents"] is None
+    assert updated_product["operations"][1]["price_cents"] == 25000
 
     get_response = client.get(f"/api/products/{product['id']}")
     assert get_response.status_code == 200
     assert get_response.json()["material_cost_cents"] == 99000
 
 
-def test_update_product_costs_requires_every_operation(client: TestClient) -> None:
+def test_create_product_rejects_group_operation_price(client: TestClient) -> None:
+    author_user = create_author_user(client)
+
+    create_response = client.post(
+        "/api/products",
+        json={
+            "name": "Клатч Group Price Guard",
+            "version": "1.0",
+            "author_user_id": author_user["id"],
+            "operations": [
+                {
+                    "name": "Крой",
+                    "price_cents": 10000,
+                    "children": [
+                        {"name": "Фасад", "price_cents": 5000, "children": []},
+                    ],
+                },
+            ],
+        },
+    )
+
+    assert create_response.status_code == 422
+    assert create_response.json()["detail"] == "Operation groups cannot have prices."
+
+
+def test_update_product_costs_rejects_operation_price_change(
+    client: TestClient,
+) -> None:
     author_user = create_author_user(client)
     create_response = client.post(
         "/api/products",
@@ -130,7 +136,7 @@ def test_update_product_costs_requires_every_operation(client: TestClient) -> No
             "version": "1.0",
             "author_user_id": author_user["id"],
             "operations": [
-                {"name": "Крой", "children": []},
+                {"name": "Крой", "price_cents": 10000, "children": []},
                 {"name": "Пошив", "children": []},
             ],
         },
@@ -145,7 +151,7 @@ def test_update_product_costs_requires_every_operation(client: TestClient) -> No
             "operations": [
                 {
                     "id": product["operations"][0]["id"],
-                    "price_cents": 10000,
+                    "price_cents": 11000,
                     "children": [],
                 },
             ],
@@ -155,7 +161,7 @@ def test_update_product_costs_requires_every_operation(client: TestClient) -> No
     assert patch_response.status_code == 422
     assert (
         patch_response.json()["detail"]
-        == "Operation prices must cover every product operation."
+        == "Operation prices cannot be changed after product creation."
     )
 
 

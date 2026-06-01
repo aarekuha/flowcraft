@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.models.timer_session import TimerSession
 from app.models.user import User
+from app.models.work_order import WorkOrder
 from app.models.work_shift import WorkShift
 from app.schemas.timer import TimerType
 from app.services.timer_service import TIMER_TYPE_TO_CODE
@@ -741,7 +742,9 @@ def test_update_order_allows_empty_operation_workers(client: TestClient) -> None
     )
 
 
-def test_update_order_rejects_quantity_change(client: TestClient) -> None:
+def test_update_order_allows_quantity_change_without_spent_time(
+    client: TestClient,
+) -> None:
     author = create_author_user(client)
     first_worker = create_worker_user(client, name="Полина Кузнецова")
     second_worker = create_worker_user(client, name="Мария Тихонова")
@@ -777,10 +780,344 @@ def test_update_order_rejects_quantity_change(client: TestClient) -> None:
         },
     )
 
+    assert update_response.status_code == 200
+    payload = update_response.json()
+    assert payload["quantity"] == 8
+    assert payload["estimated_minutes"] == 480
+
+
+def test_update_order_allows_leather_type_change_without_spent_time(
+    client: TestClient,
+) -> None:
+    author = create_author_user(client)
+    worker = create_worker_user(client, name="Людмила Фролова")
+    product = create_product_with_leaf_operations(client, author["id"])
+    first_leather_type = create_leather_type(client, name="Шорно-седельная")
+    second_leather_type = create_leather_type(client, name="Спилок")
+    leaf_ids = collect_leaf_operation_ids(product)
+
+    create_response = client.post(
+        "/api/orders",
+        json={
+            "order_number": "FC-0114",
+            "product_id": product["id"],
+            "leather_type_id": first_leather_type["id"],
+            "quantity": 3,
+            "assignments": [
+                {"operation_id": leaf_ids[0], "worker_user_id": worker["id"]},
+                {"operation_id": leaf_ids[1], "worker_user_id": worker["id"]},
+                {"operation_id": leaf_ids[2], "worker_user_id": worker["id"]},
+            ],
+        },
+    )
+    assert create_response.status_code == 201
+    order_id = create_response.json()["id"]
+
+    update_response = client.put(
+        f"/api/orders/{order_id}/assignments",
+        json={
+            "leather_type_id": second_leather_type["id"],
+            "quantity": 3,
+            "estimated_minutes": 180,
+            "assignments": [
+                {"operation_id": leaf_ids[0], "worker_user_id": worker["id"]},
+                {"operation_id": leaf_ids[1], "worker_user_id": worker["id"]},
+                {"operation_id": leaf_ids[2], "worker_user_id": worker["id"]},
+            ],
+        },
+    )
+
+    assert update_response.status_code == 200
+    payload = update_response.json()
+    assert payload["leather_type_id"] == second_leather_type["id"]
+    assert payload["leather_type_name"] == second_leather_type["name"]
+
+
+def test_update_order_allows_assignment_change_after_taken_before_quality_control(
+    client: TestClient,
+) -> None:
+    author = create_author_user(client)
+    first_worker = create_worker_user(client, name="Олеся Сафонова")
+    second_worker = create_worker_user(client, name="Евгения Третьякова")
+    product = create_product_with_leaf_operations(client, author["id"])
+    leaf_ids = collect_leaf_operation_ids(product)
+
+    create_response = client.post(
+        "/api/orders",
+        json={
+            "order_number": "FC-0117",
+            "product_id": product["id"],
+            "quantity": 3,
+            "assignments": [
+                {"operation_id": leaf_ids[0], "worker_user_id": first_worker["id"]},
+                {"operation_id": leaf_ids[1], "worker_user_id": first_worker["id"]},
+                {"operation_id": leaf_ids[2], "worker_user_id": first_worker["id"]},
+            ],
+        },
+    )
+    assert create_response.status_code == 201
+    order_id = create_response.json()["id"]
+
+    taken_response = client.patch(
+        f"/api/orders/{order_id}/taken-status",
+        json={"is_taken": True},
+    )
+    assert taken_response.status_code == 200
+    assert taken_response.json()["has_spent_time"] is False
+
+    update_response = client.put(
+        f"/api/orders/{order_id}/assignments",
+        json={
+            "quantity": 3,
+            "estimated_minutes": 180,
+            "assignments": [
+                {"operation_id": leaf_ids[0], "worker_user_id": second_worker["id"]},
+                {"operation_id": leaf_ids[1], "worker_user_id": second_worker["id"]},
+                {"operation_id": leaf_ids[2], "worker_user_id": second_worker["id"]},
+            ],
+        },
+    )
+
+    assert update_response.status_code == 200
+    assert all(
+        assignment["worker_user_name"] == second_worker["name"]
+        for assignment in update_response.json()["assignments"]
+    )
+
+
+def test_update_order_rejects_assignment_change_in_quality_control(
+    client: TestClient,
+) -> None:
+    author = create_author_user(client)
+    first_worker = create_worker_user(client, name="София Беляева")
+    second_worker = create_worker_user(client, name="Алина Крылова")
+    product = create_product_with_leaf_operations(client, author["id"])
+    leaf_ids = collect_leaf_operation_ids(product)
+
+    create_response = client.post(
+        "/api/orders",
+        json={
+            "order_number": "FC-0119",
+            "product_id": product["id"],
+            "quantity": 3,
+            "assignments": [
+                {"operation_id": leaf_ids[0], "worker_user_id": first_worker["id"]},
+                {"operation_id": leaf_ids[1], "worker_user_id": first_worker["id"]},
+                {"operation_id": leaf_ids[2], "worker_user_id": first_worker["id"]},
+            ],
+        },
+    )
+    assert create_response.status_code == 201
+    order_id = create_response.json()["id"]
+
+    taken_response = client.patch(
+        f"/api/orders/{order_id}/taken-status",
+        json={"is_taken": True},
+    )
+    assert taken_response.status_code == 200
+
+    quality_control_response = client.patch(
+        f"/api/orders/{order_id}/quality-control-status",
+        json={"is_in_quality_control": True},
+    )
+    assert quality_control_response.status_code == 200
+
+    update_response = client.put(
+        f"/api/orders/{order_id}/assignments",
+        json={
+            "quantity": 3,
+            "estimated_minutes": 180,
+            "assignments": [
+                {"operation_id": leaf_ids[0], "worker_user_id": second_worker["id"]},
+                {"operation_id": leaf_ids[1], "worker_user_id": second_worker["id"]},
+                {"operation_id": leaf_ids[2], "worker_user_id": second_worker["id"]},
+            ],
+        },
+    )
+
     assert update_response.status_code == 422
     assert (
         update_response.json()["detail"]
-        == "Order quantity cannot be changed after creation."
+        == "Order assignments cannot be changed after quality control stage."
+    )
+
+
+def test_update_order_allows_quantity_change_after_taken_without_spent_time(
+    client: TestClient,
+) -> None:
+    author = create_author_user(client)
+    worker = create_worker_user(client, name="Валерия Иванова")
+    product = create_product_with_leaf_operations(client, author["id"])
+    leaf_ids = collect_leaf_operation_ids(product)
+
+    create_response = client.post(
+        "/api/orders",
+        json={
+            "order_number": "FC-0118",
+            "product_id": product["id"],
+            "quantity": 3,
+            "assignments": [
+                {"operation_id": leaf_ids[0], "worker_user_id": worker["id"]},
+                {"operation_id": leaf_ids[1], "worker_user_id": worker["id"]},
+                {"operation_id": leaf_ids[2], "worker_user_id": worker["id"]},
+            ],
+        },
+    )
+    assert create_response.status_code == 201
+    order_id = create_response.json()["id"]
+
+    taken_response = client.patch(
+        f"/api/orders/{order_id}/taken-status",
+        json={"is_taken": True},
+    )
+    assert taken_response.status_code == 200
+
+    update_response = client.put(
+        f"/api/orders/{order_id}/assignments",
+        json={
+            "quantity": 4,
+            "estimated_minutes": 240,
+            "assignments": [
+                {"operation_id": leaf_ids[0], "worker_user_id": worker["id"]},
+                {"operation_id": leaf_ids[1], "worker_user_id": worker["id"]},
+                {"operation_id": leaf_ids[2], "worker_user_id": worker["id"]},
+            ],
+        },
+    )
+
+    assert update_response.status_code == 200
+    assert update_response.json()["quantity"] == 4
+
+
+def test_update_order_rejects_changes_after_spent_time(
+    client: TestClient,
+    db_session: sessionmaker[Session],
+) -> None:
+    author = create_author_user(client)
+    first_worker = create_worker_user(client, name="Анна Лапина")
+    second_worker = create_worker_user(client, name="Татьяна Рыбакова")
+    product = create_product_with_leaf_operations(client, author["id"])
+    leather_type = create_leather_type(client, name="Велюр")
+    leaf_ids = collect_leaf_operation_ids(product)
+
+    create_response = client.post(
+        "/api/orders",
+        json={
+            "order_number": "FC-0116",
+            "product_id": product["id"],
+            "quantity": 3,
+            "assignments": [
+                {"operation_id": leaf_ids[0], "worker_user_id": first_worker["id"]},
+                {"operation_id": leaf_ids[1], "worker_user_id": first_worker["id"]},
+                {"operation_id": leaf_ids[2], "worker_user_id": first_worker["id"]},
+            ],
+        },
+    )
+    assert create_response.status_code == 201
+    order_id = create_response.json()["id"]
+
+    session = db_session()
+    try:
+        shift = WorkShift(
+            user_id=first_worker["id"],
+            started_at=1_000,
+            ended_at=2_000,
+            business_date="2026-06-01",
+            created_at=1_000,
+        )
+        session.add(shift)
+        session.flush()
+        session.add(
+            TimerSession(
+                shift_id=shift.id,
+                user_id=first_worker["id"],
+                timer_type_code=TIMER_TYPE_TO_CODE[TimerType.OPERATION],
+                order_id=order_id,
+                operation_id=leaf_ids[0],
+                started_at=1_000,
+                ended_at=2_000,
+                created_at=1_000,
+            )
+        )
+        session.commit()
+    finally:
+        session.close()
+
+    update_response = client.put(
+        f"/api/orders/{order_id}/assignments",
+        json={
+            "leather_type_id": leather_type["id"],
+            "quantity": 4,
+            "estimated_minutes": 240,
+            "assignments": [
+                {"operation_id": leaf_ids[0], "worker_user_id": second_worker["id"]},
+                {"operation_id": leaf_ids[1], "worker_user_id": second_worker["id"]},
+                {"operation_id": leaf_ids[2], "worker_user_id": second_worker["id"]},
+            ],
+        },
+    )
+
+    assert update_response.status_code == 422
+    assert (
+        update_response.json()["detail"]
+        == "Order cannot be changed after time has been spent."
+    )
+
+
+def test_update_order_rejects_completed_order_assignments(
+    client: TestClient,
+    db_session: sessionmaker[Session],
+) -> None:
+    author = create_author_user(client)
+    first_worker = create_worker_user(client, name="Кира Матвеева")
+    second_worker = create_worker_user(client, name="Оксана Баранова")
+    product = create_product_with_leaf_operations(client, author["id"])
+    leaf_ids = collect_leaf_operation_ids(product)
+
+    create_response = client.post(
+        "/api/orders",
+        json={
+            "order_number": "FC-0115",
+            "product_id": product["id"],
+            "quantity": 6,
+            "assignments": [
+                {"operation_id": leaf_ids[0], "worker_user_id": first_worker["id"]},
+                {"operation_id": leaf_ids[1], "worker_user_id": first_worker["id"]},
+                {"operation_id": leaf_ids[2], "worker_user_id": first_worker["id"]},
+            ],
+        },
+    )
+    assert create_response.status_code == 201
+    order_id = create_response.json()["id"]
+
+    session = db_session()
+    try:
+        order = session.get(WorkOrder, order_id)
+        assert order is not None
+        order.taken_at = 1_000
+        order.quality_control_at = 2_000
+        order.completed_at = 3_000
+        session.commit()
+    finally:
+        session.close()
+
+    update_response = client.put(
+        f"/api/orders/{order_id}/assignments",
+        json={
+            "quantity": 6,
+            "estimated_minutes": 360,
+            "assignments": [
+                {"operation_id": leaf_ids[0], "worker_user_id": second_worker["id"]},
+                {"operation_id": leaf_ids[1], "worker_user_id": second_worker["id"]},
+                {"operation_id": leaf_ids[2], "worker_user_id": second_worker["id"]},
+            ],
+        },
+    )
+
+    assert update_response.status_code == 422
+    assert (
+        update_response.json()["detail"]
+        == "Completed order assignments cannot be changed."
     )
 
 
