@@ -4,8 +4,8 @@ export type WorkOrderAssignment = {
   id: number;
   operationId: number;
   operationName: string;
-  workerUserId: number;
-  workerUserName: string;
+  workerUserId: number | null;
+  workerUserName: string | null;
 };
 
 export type WorkOrderSummary = {
@@ -17,14 +17,19 @@ export type WorkOrderSummary = {
   leatherTypeId: number | null;
   leatherTypeName: string | null;
   quantity: number;
+  estimatedMinutes: number;
   totalSpentMinutes: number;
   assignmentsCount: number;
   createdAtTs: number;
   createdAt: string;
   updatedAtTs: number;
   updatedAt: string;
+  takenAtTs: number | null;
+  takenAt: string | null;
   completedAtTs: number | null;
   completedAt: string | null;
+  deletedAtTs: number | null;
+  deletedAt: string | null;
 };
 
 export type WorkOrderDetail = {
@@ -36,22 +41,34 @@ export type WorkOrderDetail = {
   leatherTypeId: number | null;
   leatherTypeName: string | null;
   quantity: number;
+  estimatedMinutes: number;
   totalSpentMinutes: number;
   createdAtTs: number;
   createdAt: string;
   updatedAtTs: number;
   updatedAt: string;
+  takenAtTs: number | null;
+  takenAt: string | null;
   completedAtTs: number | null;
   completedAt: string | null;
+  deletedAtTs: number | null;
+  deletedAt: string | null;
   assignments: WorkOrderAssignment[];
 };
 
 export type WorkOrderSortBy = "created" | "completed" | "name";
 export type WorkOrderSortDirection = "asc" | "desc";
+export type WorkOrderStatusFilter =
+  | "all"
+  | "created"
+  | "in_work"
+  | "completed"
+  | "deleted";
 
 export type WorkOrderListParams = {
   search?: string;
   includeCompleted?: boolean;
+  status?: WorkOrderStatusFilter;
   sortBy?: WorkOrderSortBy;
   sortDirection?: WorkOrderSortDirection;
   page?: number;
@@ -71,17 +88,17 @@ export type WorkOrderCreatePayload = {
   product_id: number;
   leather_type_id?: number | null;
   quantity: number;
-  total_spent_minutes: number;
+  estimated_minutes: number;
   assignments: Array<{
     operation_id: number;
-    worker_user_id: number;
+    worker_user_id: number | null;
   }>;
 };
 
 export type WorkOrderUpdateAssignmentsPayload = {
   leather_type_id?: number | null;
   quantity: number;
-  total_spent_minutes: number;
+  estimated_minutes: number;
   assignments: WorkOrderCreatePayload["assignments"];
 };
 
@@ -89,8 +106,8 @@ type WorkOrderAssignmentApi = {
   id: number;
   operation_id: number;
   operation_name: string;
-  worker_user_id: number;
-  worker_user_name: string;
+  worker_user_id: number | null;
+  worker_user_name: string | null;
 };
 
 type WorkOrderSummaryApi = {
@@ -102,11 +119,14 @@ type WorkOrderSummaryApi = {
   leather_type_id: number | null;
   leather_type_name: string | null;
   quantity: number;
+  estimated_minutes: number;
   total_spent_minutes: number;
   assignments_count: number;
   created_at: number;
   updated_at: number;
+  taken_at: number | null;
   completed_at: number | null;
+  deleted_at: number | null;
 };
 
 type WorkOrderDetailApi = {
@@ -118,10 +138,13 @@ type WorkOrderDetailApi = {
   leather_type_id: number | null;
   leather_type_name: string | null;
   quantity: number;
+  estimated_minutes: number;
   total_spent_minutes: number;
   created_at: number;
   updated_at: number;
+  taken_at: number | null;
   completed_at: number | null;
+  deleted_at: number | null;
   assignments: WorkOrderAssignmentApi[];
 };
 
@@ -175,6 +198,13 @@ export async function fetchWorkOrder(orderId: number): Promise<WorkOrderDetail> 
   return handleJsonResponse<WorkOrderDetailApi>(response).then(mapWorkOrderDetail);
 }
 
+export async function fetchWorkerAssignedWorkOrders(): Promise<WorkOrderDetail[]> {
+  const response = await apiFetch("/api/orders/worker-assignments");
+  return handleJsonResponse<WorkOrderDetailApi[]>(response).then((orders) =>
+    orders.map(mapWorkOrderDetail),
+  );
+}
+
 export async function createWorkOrder(
   payload: WorkOrderCreatePayload,
 ): Promise<WorkOrderDetail> {
@@ -219,6 +249,36 @@ export async function updateWorkOrderStatus(
   return handleJsonResponse<WorkOrderDetailApi>(response).then(mapWorkOrderDetail);
 }
 
+export async function updateWorkOrderTakenStatus(
+  orderId: number,
+  isTaken: boolean,
+): Promise<WorkOrderDetail> {
+  const response = await apiFetch(`/api/orders/${orderId}/taken-status`, {
+    method: "PATCH",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ is_taken: isTaken }),
+  });
+
+  return handleJsonResponse<WorkOrderDetailApi>(response).then(mapWorkOrderDetail);
+}
+
+export async function updateWorkOrderDeletedStatus(
+  orderId: number,
+  isDeleted: boolean,
+): Promise<WorkOrderDetail> {
+  const response = await apiFetch(`/api/orders/${orderId}/deleted-status`, {
+    method: "PATCH",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ is_deleted: isDeleted }),
+  });
+
+  return handleJsonResponse<WorkOrderDetailApi>(response).then(mapWorkOrderDetail);
+}
+
 function mapWorkOrderAssignment(assignment: WorkOrderAssignmentApi): WorkOrderAssignment {
   return {
     id: assignment.id,
@@ -239,14 +299,19 @@ function mapWorkOrderSummary(order: WorkOrderSummaryApi): WorkOrderSummary {
     leatherTypeId: order.leather_type_id,
     leatherTypeName: order.leather_type_name,
     quantity: order.quantity,
+    estimatedMinutes: order.estimated_minutes,
     totalSpentMinutes: order.total_spent_minutes,
     assignmentsCount: order.assignments_count,
     createdAtTs: order.created_at,
     createdAt: formatDate(order.created_at),
     updatedAtTs: order.updated_at,
     updatedAt: formatDate(order.updated_at),
+    takenAtTs: order.taken_at,
+    takenAt: order.taken_at === null ? null : formatDate(order.taken_at),
     completedAtTs: order.completed_at,
     completedAt: order.completed_at === null ? null : formatDate(order.completed_at),
+    deletedAtTs: order.deleted_at,
+    deletedAt: order.deleted_at === null ? null : formatDate(order.deleted_at),
   };
 }
 
@@ -270,13 +335,18 @@ function mapWorkOrderDetail(order: WorkOrderDetailApi): WorkOrderDetail {
     leatherTypeId: order.leather_type_id,
     leatherTypeName: order.leather_type_name,
     quantity: order.quantity,
+    estimatedMinutes: order.estimated_minutes,
     totalSpentMinutes: order.total_spent_minutes,
     createdAtTs: order.created_at,
     createdAt: formatDate(order.created_at),
     updatedAtTs: order.updated_at,
     updatedAt: formatDate(order.updated_at),
+    takenAtTs: order.taken_at,
+    takenAt: order.taken_at === null ? null : formatDate(order.taken_at),
     completedAtTs: order.completed_at,
     completedAt: order.completed_at === null ? null : formatDate(order.completed_at),
+    deletedAtTs: order.deleted_at,
+    deletedAt: order.deleted_at === null ? null : formatDate(order.deleted_at),
     assignments: order.assignments.map(mapWorkOrderAssignment),
   };
 }
@@ -290,6 +360,10 @@ function buildWorkOrderSearchParams(params: WorkOrderListParams): URLSearchParam
 
   if (params.includeCompleted !== undefined) {
     searchParams.set("include_completed", String(params.includeCompleted));
+  }
+
+  if (params.status) {
+    searchParams.set("status", params.status);
   }
 
   if (params.sortBy) {

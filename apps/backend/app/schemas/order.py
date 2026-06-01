@@ -14,9 +14,17 @@ class WorkOrderSortField(StrEnum):
     NAME = "name"
 
 
+class WorkOrderStatusFilter(StrEnum):
+    ALL = "all"
+    CREATED = "created"
+    IN_WORK = "in_work"
+    COMPLETED = "completed"
+    DELETED = "deleted"
+
+
 class WorkOrderAssignmentCreate(BaseModel):
     operation_id: int
-    worker_user_id: int
+    worker_user_id: int | None = None
 
 
 class WorkOrderAssignmentRead(BaseModel):
@@ -25,8 +33,8 @@ class WorkOrderAssignmentRead(BaseModel):
     id: int
     operation_id: int
     operation_name: str
-    worker_user_id: int
-    worker_user_name: str
+    worker_user_id: int | None
+    worker_user_name: str | None
 
 
 class WorkOrderCreate(BaseModel):
@@ -34,7 +42,7 @@ class WorkOrderCreate(BaseModel):
     product_id: int
     leather_type_id: int | None = None
     quantity: int = Field(gt=0)
-    total_spent_minutes: int = Field(default=0, ge=0)
+    estimated_minutes: int = Field(default=0, ge=0)
     assignments: list[WorkOrderAssignmentCreate] = Field(min_length=1)
 
     @field_validator("order_number")
@@ -49,12 +57,20 @@ class WorkOrderCreate(BaseModel):
 class WorkOrderUpdateAssignments(BaseModel):
     leather_type_id: int | None = None
     quantity: int = Field(gt=0)
-    total_spent_minutes: int = Field(default=0, ge=0)
+    estimated_minutes: int = Field(default=0, ge=0)
     assignments: list[WorkOrderAssignmentCreate] = Field(min_length=1)
 
 
 class WorkOrderStatusUpdate(BaseModel):
     is_completed: bool
+
+
+class WorkOrderTakenStatusUpdate(BaseModel):
+    is_taken: bool
+
+
+class WorkOrderDeletedStatusUpdate(BaseModel):
+    is_deleted: bool
 
 
 class WorkOrderListItem(BaseModel):
@@ -68,11 +84,14 @@ class WorkOrderListItem(BaseModel):
     leather_type_id: int | None
     leather_type_name: str | None
     quantity: int
+    estimated_minutes: int
     total_spent_minutes: int
     assignments_count: int
     created_at: int
     updated_at: int
+    taken_at: int | None
     completed_at: int | None
+    deleted_at: int | None
 
 
 class WorkOrderPage(BaseModel):
@@ -94,8 +113,11 @@ class WorkOrderDetail(BaseModel):
     leather_type_id: int | None
     leather_type_name: str | None
     quantity: int
+    estimated_minutes: int
     total_spent_minutes: int
     created_at: int
     updated_at: int
+    taken_at: int | None
     completed_at: int | None
+    deleted_at: int | None
     assignments: list[WorkOrderAssignmentRead] = Field(default_factory=list)

@@ -1,5 +1,6 @@
 from collections.abc import Sequence
 from datetime import UTC, datetime
+from typing import Any
 
 from fastapi import HTTPException, status
 from sqlalchemy import Select, func, select
@@ -16,11 +17,14 @@ from app.schemas.order import (
     WorkOrderAssignmentCreate,
     WorkOrderAssignmentRead,
     WorkOrderCreate,
+    WorkOrderDeletedStatusUpdate,
     WorkOrderDetail,
     WorkOrderListItem,
     WorkOrderPage,
     WorkOrderSortField,
+    WorkOrderStatusFilter,
     WorkOrderStatusUpdate,
+    WorkOrderTakenStatusUpdate,
     WorkOrderUpdateAssignments,
 )
 
@@ -34,6 +38,7 @@ class OrderService:
         *,
         search: str | None,
         include_completed: bool,
+        status_filter: WorkOrderStatusFilter,
         sort_by: WorkOrderSortField,
         sort_direction: SortDirection,
         page: int,
@@ -49,6 +54,7 @@ class OrderService:
         )
         filters = self._build_order_list_filters(
             include_completed=include_completed,
+            status_filter=status_filter,
         )
 
         stmt = (
@@ -61,10 +67,13 @@ class OrderService:
                 WorkOrder.leather_type_id,
                 LeatherType.name.label("leather_type_name"),
                 WorkOrder.quantity,
+                WorkOrder.estimated_minutes,
                 WorkOrder.total_spent_minutes,
                 WorkOrder.created_at,
                 WorkOrder.updated_at,
+                WorkOrder.taken_at,
                 WorkOrder.completed_at,
+                WorkOrder.deleted_at,
                 func.coalesce(assignments_count.c.assignments_count, 0).label(
                     "assignments_count"
                 ),
@@ -99,11 +108,14 @@ class OrderService:
                 leather_type_id=row.leather_type_id,
                 leather_type_name=row.leather_type_name,
                 quantity=row.quantity,
+                estimated_minutes=row.estimated_minutes,
                 total_spent_minutes=row.total_spent_minutes,
                 assignments_count=row.assignments_count,
                 created_at=row.created_at,
                 updated_at=row.updated_at,
+                taken_at=row.taken_at,
                 completed_at=row.completed_at,
+                deleted_at=row.deleted_at,
             )
             for row in rows
         ]
@@ -129,11 +141,44 @@ class OrderService:
         self,
         *,
         include_completed: bool,
+        status_filter: WorkOrderStatusFilter,
     ) -> list[ColumnElement[bool]]:
         filters: list[ColumnElement[bool]] = []
 
-        if not include_completed:
-            filters.append(WorkOrder.completed_at.is_(None))
+        if status_filter == WorkOrderStatusFilter.CREATED:
+            filters.extend(
+                [
+                    WorkOrder.deleted_at.is_(None),
+                    WorkOrder.completed_at.is_(None),
+                    WorkOrder.taken_at.is_(None),
+                ]
+            )
+        elif status_filter == WorkOrderStatusFilter.IN_WORK:
+            filters.extend(
+                [
+                    WorkOrder.deleted_at.is_(None),
+                    WorkOrder.completed_at.is_(None),
+                    WorkOrder.taken_at.is_not(None),
+                ]
+            )
+        elif status_filter == WorkOrderStatusFilter.COMPLETED:
+            filters.extend(
+                [
+                    WorkOrder.deleted_at.is_(None),
+                    WorkOrder.completed_at.is_not(None),
+                ]
+            )
+        elif status_filter == WorkOrderStatusFilter.DELETED:
+            filters.append(WorkOrder.deleted_at.is_not(None))
+        elif status_filter == WorkOrderStatusFilter.ALL:
+            pass
+        elif not include_completed:
+            filters.extend(
+                [
+                    WorkOrder.deleted_at.is_(None),
+                    WorkOrder.completed_at.is_(None),
+                ]
+            )
 
         return filters
 
@@ -158,7 +203,7 @@ class OrderService:
         *,
         sort_by: WorkOrderSortField,
         sort_direction: SortDirection,
-    ) -> list[ColumnElement[object]]:
+    ) -> list[ColumnElement[Any]]:
         is_desc = sort_direction == SortDirection.DESC
 
         if sort_by == WorkOrderSortField.NAME:
@@ -192,6 +237,40 @@ class OrderService:
         product = self._get_product_or_404(order.product_id)
         return self._serialize_order(order, product)
 
+    def list_worker_assigned_orders(self, worker_user_id: int) -> list[WorkOrderDetail]:
+        stmt: Select[tuple[WorkOrder]] = (
+            select(WorkOrder)
+            .join(
+                WorkOrderAssignment,
+                WorkOrderAssignment.work_order_id == WorkOrder.id,
+            )
+            .options(
+                selectinload(WorkOrder.assignments).selectinload(
+                    WorkOrderAssignment.operation
+                ),
+                selectinload(WorkOrder.assignments).selectinload(
+                    WorkOrderAssignment.worker_user
+                ),
+            )
+            .where(
+                WorkOrder.deleted_at.is_(None),
+                WorkOrder.completed_at.is_(None),
+                WorkOrder.taken_at.is_not(None),
+                WorkOrderAssignment.worker_user_id == worker_user_id,
+            )
+            .order_by(WorkOrder.created_at.desc(), WorkOrder.id.desc())
+        )
+        orders = self.session.scalars(stmt).unique().all()
+
+        return [
+            self._serialize_order(
+                order,
+                order.product,
+                assignment_worker_user_id=worker_user_id,
+            )
+            for order in orders
+        ]
+
     def create_order(self, payload: WorkOrderCreate) -> WorkOrderDetail:
         self._validate_order_number(payload.order_number)
         product = self._get_product_or_404(payload.product_id)
@@ -205,7 +284,8 @@ class OrderService:
             product_id=product.id,
             leather_type_id=payload.leather_type_id,
             quantity=payload.quantity,
-            total_spent_minutes=payload.total_spent_minutes,
+            estimated_minutes=payload.estimated_minutes,
+            total_spent_minutes=0,
             created_at=timestamp,
             updated_at=timestamp,
         )
@@ -222,6 +302,7 @@ class OrderService:
         payload: WorkOrderUpdateAssignments,
     ) -> WorkOrderDetail:
         order = self._get_order_or_404(order_id)
+        self._validate_order_is_not_deleted(order)
         product = self._get_product_or_404(order.product_id)
         self._validate_leather_type_is_active(
             payload.leather_type_id,
@@ -231,7 +312,7 @@ class OrderService:
 
         order.leather_type_id = payload.leather_type_id
         order.quantity = payload.quantity
-        order.total_spent_minutes = payload.total_spent_minutes
+        order.estimated_minutes = payload.estimated_minutes
         order.updated_at = self._now_ts()
         self._sync_assignments(order, payload.assignments)
 
@@ -246,12 +327,58 @@ class OrderService:
     ) -> WorkOrderDetail:
         order = self._get_order_or_404(order_id)
         now = self._now_ts()
+        self._validate_order_is_not_deleted(order)
+        if payload.is_completed and order.taken_at is None:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Only orders in work can be completed.",
+            )
         order.completed_at = now if payload.is_completed else None
         order.updated_at = now
 
         self.session.commit()
         self.session.refresh(order)
         return self.get_order(order.id)
+
+    def update_order_taken_status(
+        self,
+        order_id: int,
+        payload: WorkOrderTakenStatusUpdate,
+    ) -> WorkOrderDetail:
+        order = self._get_order_or_404(order_id)
+        now = self._now_ts()
+        self._validate_order_is_not_deleted(order)
+        if payload.is_taken:
+            order.taken_at = order.taken_at or now
+        else:
+            order.taken_at = None
+            order.completed_at = None
+        order.updated_at = now
+
+        self.session.commit()
+        self.session.refresh(order)
+        return self.get_order(order.id)
+
+    def update_order_deleted_status(
+        self,
+        order_id: int,
+        payload: WorkOrderDeletedStatusUpdate,
+    ) -> WorkOrderDetail:
+        order = self._get_order_or_404(order_id)
+        now = self._now_ts()
+        order.deleted_at = now if payload.is_deleted else None
+        order.updated_at = now
+
+        self.session.commit()
+        self.session.refresh(order)
+        return self.get_order(order.id)
+
+    def _validate_order_is_not_deleted(self, order: WorkOrder) -> None:
+        if order.deleted_at is not None:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Deleted order cannot be changed.",
+            )
 
     def _get_order_or_404(self, order_id: int) -> WorkOrder:
         stmt: Select[tuple[WorkOrder]] = (
@@ -353,13 +480,20 @@ class OrderService:
                 detail="Assignments must cover every leaf operation of the product.",
             )
 
-        worker_ids = {assignment.worker_user_id for assignment in assignments}
+        worker_ids = {
+            assignment.worker_user_id
+            for assignment in assignments
+            if assignment.worker_user_id is not None
+        }
         workers = self.session.scalars(
             select(User).where(User.id.in_(worker_ids))
         ).all()
         workers_by_id = {worker.id: worker for worker in workers}
 
         for assignment in assignments:
+            if assignment.worker_user_id is None:
+                continue
+
             worker = workers_by_id.get(assignment.worker_user_id)
             if worker is None or worker.deleted_at is not None:
                 raise HTTPException(
@@ -426,7 +560,22 @@ class OrderService:
 
             existing_assignment.worker_user_id = incoming_assignment.worker_user_id
 
-    def _serialize_order(self, order: WorkOrder, product: Product) -> WorkOrderDetail:
+    def _serialize_order(
+        self,
+        order: WorkOrder,
+        product: Product,
+        *,
+        assignment_worker_user_id: int | None = None,
+    ) -> WorkOrderDetail:
+        assignments = [
+            assignment
+            for assignment in order.assignments
+            if (
+                assignment_worker_user_id is None
+                or assignment.worker_user_id == assignment_worker_user_id
+            )
+        ]
+
         return WorkOrderDetail(
             id=order.id,
             order_number=order.order_number,
@@ -438,19 +587,24 @@ class OrderService:
             if order.leather_type is not None
             else None,
             quantity=order.quantity,
+            estimated_minutes=order.estimated_minutes,
             total_spent_minutes=order.total_spent_minutes,
             created_at=order.created_at,
             updated_at=order.updated_at,
+            taken_at=order.taken_at,
             completed_at=order.completed_at,
+            deleted_at=order.deleted_at,
             assignments=[
                 WorkOrderAssignmentRead(
                     id=assignment.id,
                     operation_id=assignment.operation_id,
                     operation_name=assignment.operation.name,
                     worker_user_id=assignment.worker_user_id,
-                    worker_user_name=assignment.worker_user.name,
+                    worker_user_name=assignment.worker_user.name
+                    if assignment.worker_user is not None
+                    else None,
                 )
-                for assignment in order.assignments
+                for assignment in assignments
             ],
         )
 
