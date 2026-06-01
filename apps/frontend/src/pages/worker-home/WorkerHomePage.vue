@@ -8328,12 +8328,14 @@ h2 {
 .user-status {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   width: fit-content;
   min-width: 118px;
   padding: 8px 12px;
   border-radius: 999px;
   font-size: 0.86rem;
   font-weight: 700;
+  text-align: center;
 }
 
 .user-status--active {
