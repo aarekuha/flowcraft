@@ -49,7 +49,6 @@ import {
   updateProductStatus,
   type OperationNode,
   type ProductCreatePayload,
-  type ProductCostsUpdatePayload,
   type ProductDetail,
   type ProductSummary,
 } from "@/shared/api/products";
@@ -321,6 +320,7 @@ const brigadierModalQuantity = ref("1");
 const brigadierModalDefectQuantity = ref("0");
 const brigadierModalOrderNumber = ref("");
 const brigadierModalLeatherTypeId = ref("");
+const brigadierModalHasSpentTime = ref(false);
 const brigadierOpenAssignmentDropdownId = ref<number | null>(null);
 let brigadierDropdownCloseTimeoutId: number | null = null;
 const isBrigadierLeatherTypeDropdownOpen = ref(false);
@@ -394,6 +394,12 @@ let leatherTypesRequestId = 0;
 let workOrderTimeBreakdownRequestId = 0;
 const isModalOpen = computed(() => modalMode.value !== null);
 const isBrigadierOrderModalOpen = computed(() => brigadierModalMode.value !== null);
+const isBrigadierLeatherTypeEditable = computed(
+  () => isBrigadierOrderAttributesEditable.value,
+);
+const isBrigadierQuantityEditable = computed(
+  () => isBrigadierOrderAttributesEditable.value,
+);
 const isQualityControlOrderModal = computed(
   () => brigadierModalMode.value === "quality_control",
 );
@@ -479,11 +485,7 @@ const operationTreeError = computed(() =>
 const canSaveProduct = computed(
   () => {
     if (isViewMode.value) {
-      return (
-        modalProductId.value !== null &&
-        !productMaterialCostError.value &&
-        !hasOperationErrors.value
-      );
+      return modalProductId.value !== null && !productMaterialCostError.value;
     }
 
     return (
@@ -564,7 +566,7 @@ const modalDescription = computed(() => {
   }
 
   if (modalMode.value === "view") {
-    return "Структура изделия доступна для просмотра, стоимость материала и цены операций можно изменить.";
+    return "Структура изделия и цены операций доступны для просмотра, стоимость материала можно изменить.";
   }
 
   return "Заполните карточку изделия и задайте дерево производственных операций.";
@@ -635,6 +637,54 @@ const brigadierCurrentOrder = computed(() =>
   workOrders.value.find((order) => order.id === brigadierModalOrderId.value) ?? null,
 );
 
+const isCompletedBrigadierOrderModal = computed(
+  () =>
+    brigadierModalMode.value === "manage" &&
+    brigadierCurrentOrder.value?.completedAtTs !== null &&
+    brigadierCurrentOrder.value?.completedAtTs !== undefined,
+);
+
+const isQualityControlStageBrigadierOrderModal = computed(
+  () =>
+    brigadierModalMode.value === "manage" &&
+    brigadierCurrentOrder.value?.qualityControlAtTs !== null &&
+    brigadierCurrentOrder.value?.qualityControlAtTs !== undefined,
+);
+
+const isDeletedBrigadierOrderModal = computed(
+  () =>
+    brigadierModalMode.value === "manage" &&
+    brigadierCurrentOrder.value?.deletedAtTs !== null &&
+    brigadierCurrentOrder.value?.deletedAtTs !== undefined,
+);
+
+const isBrigadierOrderAttributesEditable = computed(
+  () =>
+    brigadierModalMode.value === "create" ||
+    (brigadierModalMode.value === "manage" &&
+      !isDeletedBrigadierOrderModal.value &&
+      !isCompletedBrigadierOrderModal.value &&
+      !brigadierModalHasSpentTime.value),
+);
+
+const isBrigadierAssignmentsEditable = computed(
+  () =>
+    !isQualityControlOrderModal.value &&
+    (brigadierModalMode.value === "create" ||
+      (brigadierModalMode.value === "manage" &&
+        !isDeletedBrigadierOrderModal.value &&
+        !isCompletedBrigadierOrderModal.value &&
+        !isQualityControlStageBrigadierOrderModal.value)),
+);
+
+const isBrigadierSaveAvailable = computed(
+  () =>
+    brigadierModalMode.value === "create" ||
+    isQualityControlOrderModal.value ||
+    isBrigadierOrderAttributesEditable.value ||
+    isBrigadierAssignmentsEditable.value,
+);
+
 const brigadierModalLeatherTypeName = computed(() => {
   const leatherTypeId = Number.parseInt(brigadierModalLeatherTypeId.value, 10);
   if (!Number.isInteger(leatherTypeId)) {
@@ -675,8 +725,16 @@ const brigadierModalTitle = computed(() =>
 const brigadierModalDescription = computed(() =>
   brigadierModalMode.value === "quality_control"
     ? "Проверьте заказ и укажите количество брака."
+    : isDeletedBrigadierOrderModal.value
+    ? "Удаленный заказ доступен только для просмотра."
+    : isCompletedBrigadierOrderModal.value
+    ? "Выполненный заказ доступен только для просмотра."
+    : isQualityControlStageBrigadierOrderModal.value
+    ? "Заказ на стадии ОТК доступен только для просмотра назначений."
+    : brigadierModalHasSpentTime.value
+    ? "По заказу уже есть трудозатраты: можно изменить исполнителей до передачи в ОТК, вид кожи и количество заблокированы."
     : brigadierModalMode.value === "manage"
-    ? "Просмотр заказа с возможностью изменить вид кожи и назначенных исполнителей."
+    ? "Можно изменить вид кожи, количество изделий и назначенных исполнителей до передачи в ОТК."
     : "Укажите количество изделий и распределите исполнителей по операциям.",
 );
 
@@ -698,9 +756,9 @@ const brigadierSaveConfirmTitle = computed(() =>
 
 const brigadierSaveConfirmDescription = computed(() =>
   brigadierModalMode.value === "quality_control"
-    ? "Будет сохранено количество брака и установлено время выполнения заказа."
+    ? "Будет сохранено количество брака и установлено время проведения ОТК."
     : brigadierModalMode.value === "manage"
-    ? "Вид кожи и назначения исполнителей будут обновлены в заказе."
+    ? "Назначения исполнителей будут обновлены в заказе."
     : "Заказ будет создан и появится во вкладке созданных заказов.",
 );
 
@@ -728,11 +786,11 @@ const workOrderActionConfirmDescription = computed(() => {
     case "send_to_quality_control":
       return "Будет установлена дата передачи в ОТК. Заказ исчезнет из таймеров исполнителей.";
     case "return_to_created":
-      return "Время взятия в работу, ОТК и время выполнения будут очищены. Заказ исчезнет из таймеров исполнителей.";
+      return "Время взятия в работу, ОТК и время проведения ОТК будут очищены. Заказ исчезнет из таймеров исполнителей.";
     case "return_to_work":
       return "Дата передачи в ОТК и количество брака будут очищены, заказ снова появится в работе.";
     case "return_to_quality_control":
-      return "Время выполнения будет очищено, заказ вернется во вкладку ОТК.";
+      return "Время проведения ОТК будет очищено, заказ вернется во вкладку ОТК.";
     case "delete":
       return "Заказ будет перенесен во вкладку удаленных. Его можно будет восстановить позже.";
     case "restore":
@@ -836,6 +894,10 @@ const brigadierSaveIssue = computed<{
   message: string;
   selector: string;
 } | null>(() => {
+  if (!isBrigadierSaveAvailable.value) {
+    return null;
+  }
+
   if (isQualityControlOrderModal.value) {
     return brigadierDefectQuantityError.value
       ? {
@@ -877,6 +939,10 @@ const brigadierSaveIssue = computed<{
 });
 
 const brigadierModalCanSave = computed(() => {
+  if (!isBrigadierSaveAvailable.value) {
+    return false;
+  }
+
   if (isQualityControlOrderModal.value) {
     return (
       Boolean(brigadierModalProduct.value) &&
@@ -2492,7 +2558,7 @@ async function saveProductToApi() {
 
       await updateProductCosts(modalProductId.value, {
         material_cost_cents: productMaterialCostCents.value,
-        operations: serializeOperationCosts(operationTree.value),
+        operations: [],
       });
       await loadProducts();
       closeProductModal();
@@ -2576,7 +2642,7 @@ function handleProductMaterialCostInput(event: Event) {
 function handleOperationPriceInput(operationId: number, event: Event) {
   const target = event.target;
 
-  if (!(target instanceof HTMLInputElement)) {
+  if (isViewMode.value || !(target instanceof HTMLInputElement)) {
     return;
   }
 
@@ -2734,6 +2800,7 @@ function appendChildOperation(
     if (operation.id === parentId) {
       return {
         ...operation,
+        priceCents: null,
         children: [...operation.children, createOperationNode()],
       };
     }
@@ -2807,6 +2874,7 @@ function indentOperationNode(
   }
 
   const [movedOperation] = siblings.splice(currentIndex, 1);
+  siblings[currentIndex - 1].priceCents = null;
   siblings[currentIndex - 1].children = [
     ...siblings[currentIndex - 1].children,
     movedOperation,
@@ -2952,6 +3020,8 @@ function validateOperationTree(
       } else if ((counts.get(normalizedName) ?? 0) > 1) {
         errors[node.id] =
           "Имя операции должно быть уникальным на текущем уровне.";
+      } else if (node.children.length > 0 && node.priceCents !== null) {
+        errors[node.id] = "У группы операций не должно быть цены.";
       } else if (node.priceCents !== null && node.priceCents < 0) {
         errors[node.id] = "Цена операции не может быть отрицательной.";
       }
@@ -2986,18 +3056,8 @@ function serializeOperations(
 ): ProductCreatePayload["operations"] {
   return operations.map((operation) => ({
     name: operation.name.trim(),
-    price_cents: operation.priceCents,
+    price_cents: operation.children.length > 0 ? null : operation.priceCents,
     children: serializeOperations(operation.children),
-  }));
-}
-
-function serializeOperationCosts(
-  operations: OperationNode[],
-): ProductCostsUpdatePayload["operations"] {
-  return operations.map((operation) => ({
-    id: operation.id,
-    price_cents: operation.priceCents,
-    children: serializeOperationCosts(operation.children),
   }));
 }
 
@@ -3220,6 +3280,7 @@ async function openBrigadierCreateOrder(productId: number) {
   brigadierModalDefectQuantity.value = "0";
   brigadierModalOrderNumber.value = "";
   brigadierModalLeatherTypeId.value = "";
+  brigadierModalHasSpentTime.value = false;
   brigadierModalAssignments.value = [];
 
   try {
@@ -3263,6 +3324,7 @@ async function openBrigadierManageOrder(order: WorkOrderSummary) {
   brigadierModalOrderNumber.value = order.orderNumber;
   brigadierModalLeatherTypeId.value =
     order.leatherTypeId === null ? "" : String(order.leatherTypeId);
+  brigadierModalHasSpentTime.value = order.hasSpentTime;
   brigadierModalAssignments.value = [];
 
   try {
@@ -3282,6 +3344,7 @@ async function openBrigadierManageOrder(order: WorkOrderSummary) {
     );
     brigadierModalLeatherTypeId.value =
       orderDetail.leatherTypeId === null ? "" : String(orderDetail.leatherTypeId);
+    brigadierModalHasSpentTime.value = orderDetail.hasSpentTime;
     brigadierModalAssignments.value = mergeBrigadierAssignments(
       buildBrigadierAssignments(product.operations),
       orderDetail,
@@ -3308,6 +3371,7 @@ async function openQualityControlOrder(order: WorkOrderSummary) {
   brigadierModalOrderNumber.value = order.orderNumber;
   brigadierModalLeatherTypeId.value =
     order.leatherTypeId === null ? "" : String(order.leatherTypeId);
+  brigadierModalHasSpentTime.value = order.hasSpentTime;
   brigadierModalAssignments.value = [];
 
   try {
@@ -3329,6 +3393,7 @@ async function openQualityControlOrder(order: WorkOrderSummary) {
     brigadierModalDefectQuantity.value = String(orderDetail.defectQuantity);
     brigadierModalLeatherTypeId.value =
       orderDetail.leatherTypeId === null ? "" : String(orderDetail.leatherTypeId);
+    brigadierModalHasSpentTime.value = orderDetail.hasSpentTime;
     brigadierModalAssignments.value = mergeBrigadierAssignments(
       buildBrigadierAssignments(product.operations),
       orderDetail,
@@ -3466,6 +3531,7 @@ function closeBrigadierOrderModal() {
   brigadierModalDefectQuantity.value = "0";
   brigadierModalOrderNumber.value = "";
   brigadierModalLeatherTypeId.value = "";
+  brigadierModalHasSpentTime.value = false;
   brigadierModalLoading.value = false;
   brigadierModalError.value = "";
   brigadierSaveLoading.value = false;
@@ -3517,7 +3583,7 @@ function mergeBrigadierAssignments(
 }
 
 function handleBrigadierQuantityInput(event: Event) {
-  if (brigadierModalMode.value !== "create") {
+  if (!isBrigadierQuantityEditable.value) {
     return;
   }
 
@@ -3551,6 +3617,10 @@ function handleBrigadierOrderNumberInput(event: Event) {
 }
 
 function handleBrigadierAssignmentInput(operationId: number, event: Event) {
+  if (!isBrigadierAssignmentsEditable.value) {
+    return;
+  }
+
   const target = event.target;
 
   if (!(target instanceof HTMLInputElement)) {
@@ -3585,6 +3655,10 @@ function clearBrigadierAssignmentDropdownCloseTimeout() {
 }
 
 function openBrigadierAssignmentDropdown(operationId: number) {
+  if (!isBrigadierAssignmentsEditable.value) {
+    return;
+  }
+
   clearBrigadierAssignmentDropdownCloseTimeout();
   brigadierOpenAssignmentDropdownId.value = operationId;
 }
@@ -3595,6 +3669,10 @@ function closeBrigadierAssignmentDropdown() {
 }
 
 function scheduleBrigadierAssignmentDropdownClose(operationId: number) {
+  if (!isBrigadierAssignmentsEditable.value) {
+    return;
+  }
+
   clearBrigadierAssignmentDropdownCloseTimeout();
   brigadierDropdownCloseTimeoutId = window.setTimeout(() => {
     if (brigadierOpenAssignmentDropdownId.value === operationId) {
@@ -3610,12 +3688,18 @@ function isBrigadierAssignmentDropdownOpen(operationId: number): boolean {
 
 function getBrigadierAssignmentOptions(assignment: BrigadierOrderAssignment): UserRecord[] {
   const normalizedQuery = normalizeName(assignment.workerName);
+  const selectedWorker = brigadierWorkerUsers.value.find(
+    (user) => user.id === assignment.workerUserId,
+  );
+  const selectedWorkerName = normalizeName(selectedWorker?.name ?? "");
+  const shouldFilterByQuery =
+    normalizedQuery !== "" && normalizedQuery !== selectedWorkerName;
 
   return [...brigadierWorkerUsers.value]
     .filter(
       (user) =>
         user.id === assignment.workerUserId ||
-        !normalizedQuery ||
+        !shouldFilterByQuery ||
         normalizeName(user.name).includes(normalizedQuery),
     )
     .sort((left, right) => {
@@ -3631,6 +3715,10 @@ function getBrigadierAssignmentOptions(assignment: BrigadierOrderAssignment): Us
 }
 
 function selectBrigadierAssignmentWorker(operationId: number, user: UserRecord) {
+  if (!isBrigadierAssignmentsEditable.value) {
+    return;
+  }
+
   brigadierModalAssignments.value = brigadierModalAssignments.value.map((assignment) =>
     assignment.operationId === operationId
       ? {
@@ -3644,6 +3732,10 @@ function selectBrigadierAssignmentWorker(operationId: number, user: UserRecord) 
 }
 
 function clearBrigadierAssignment(operationId: number) {
+  if (!isBrigadierAssignmentsEditable.value) {
+    return;
+  }
+
   brigadierModalAssignments.value = brigadierModalAssignments.value.map((assignment) =>
     assignment.operationId === operationId
       ? {
@@ -3664,6 +3756,10 @@ function clearBrigadierLeatherTypeDropdownCloseTimeout() {
 }
 
 function openBrigadierLeatherTypeDropdown() {
+  if (!isBrigadierLeatherTypeEditable.value) {
+    return;
+  }
+
   clearBrigadierLeatherTypeDropdownCloseTimeout();
   isBrigadierLeatherTypeDropdownOpen.value = true;
 }
@@ -3674,6 +3770,10 @@ function closeBrigadierLeatherTypeDropdown() {
 }
 
 function scheduleBrigadierLeatherTypeDropdownClose() {
+  if (!isBrigadierLeatherTypeEditable.value) {
+    return;
+  }
+
   clearBrigadierLeatherTypeDropdownCloseTimeout();
   brigadierLeatherTypeDropdownCloseTimeoutId = window.setTimeout(() => {
     isBrigadierLeatherTypeDropdownOpen.value = false;
@@ -3682,12 +3782,20 @@ function scheduleBrigadierLeatherTypeDropdownClose() {
 }
 
 function selectBrigadierLeatherType(leatherTypeId: number | null) {
+  if (!isBrigadierLeatherTypeEditable.value) {
+    return;
+  }
+
   brigadierModalLeatherTypeId.value =
     leatherTypeId === null ? "" : String(leatherTypeId);
   closeBrigadierLeatherTypeDropdown();
 }
 
 function clearBrigadierLeatherType() {
+  if (!isBrigadierLeatherTypeEditable.value) {
+    return;
+  }
+
   brigadierModalLeatherTypeId.value = "";
   openBrigadierLeatherTypeDropdown();
 }
@@ -3766,14 +3874,6 @@ function formatDurationCompact(totalMs: number): string {
   return `${hours}ч ${minutes}м`;
 }
 
-function formatQualityControlDuration(order: WorkOrderSummary): string {
-  if (order.qualityControlAtTs === null || order.completedAtTs === null) {
-    return "—";
-  }
-
-  return formatDurationCompact(order.completedAtTs - order.qualityControlAtTs);
-}
-
 function formatPercentage(value: number): string {
   return `${Math.round(value * 100)}%`;
 }
@@ -3834,6 +3934,10 @@ function estimateWorkOrderMinutes(
 }
 
 function requestBrigadierOrderSave() {
+  if (!isBrigadierSaveAvailable.value) {
+    return;
+  }
+
   if (!brigadierModalCanSave.value || !brigadierModalProduct.value) {
     scrollToBrigadierSaveIssue();
     return;
@@ -3851,6 +3955,11 @@ function closeBrigadierSaveConfirm() {
 }
 
 async function saveBrigadierOrder() {
+  if (!isBrigadierSaveAvailable.value) {
+    closeBrigadierSaveConfirm();
+    return;
+  }
+
   if (!brigadierModalCanSave.value || !brigadierModalProduct.value) {
     closeBrigadierSaveConfirm();
     scrollToBrigadierSaveIssue();
@@ -4480,8 +4589,10 @@ async function handleResetUserPassword(user: UserRecord) {
                       </th>
                       <template v-else>
                         <th>Время создания</th>
-                        <th>Время взятия в работу</th>
-                        <th>Время выполнения</th>
+                        <th v-if="workOrderStatusTab !== 'created'">
+                          Время взятия в работу
+                        </th>
+                        <th v-if="workOrderStatusTab === 'deleted'">Время выполнения</th>
                         <th v-if="workOrderStatusTab === 'completed'">
                           Время проведения ОТК
                         </th>
@@ -4505,10 +4616,14 @@ async function handleResetUserPassword(user: UserRecord) {
                       </td>
                       <template v-else>
                         <td>{{ order.createdAt }}</td>
-                        <td>{{ order.takenAt ?? "—" }}</td>
-                        <td>{{ order.completedAt ?? "—" }}</td>
+                        <td v-if="workOrderStatusTab !== 'created'">
+                          {{ order.takenAt ?? "—" }}
+                        </td>
+                        <td v-if="workOrderStatusTab === 'deleted'">
+                          {{ order.completedAt ?? "—" }}
+                        </td>
                         <td v-if="workOrderStatusTab === 'completed'">
-                          {{ formatQualityControlDuration(order) }}
+                          {{ order.completedAt ?? "—" }}
                         </td>
                         <td v-if="workOrderStatusTab === 'completed'">
                           {{ order.defectQuantity }} шт.
@@ -4678,13 +4793,17 @@ async function handleResetUserPassword(user: UserRecord) {
                     <span>Вид кожи: {{ order.leatherTypeName ?? "вид кожи не указан" }}</span>
                     <span>Версия {{ order.productVersion }} · {{ order.quantity }} шт.</span>
                     <span>Создан: {{ order.createdAt }}</span>
-                    <span>В работе с {{ order.takenAt ?? "—" }}</span>
+                    <span v-if="workOrderStatusTab !== 'created'">
+                      В работе с {{ order.takenAt ?? "—" }}
+                    </span>
                     <span v-if="workOrderStatusTab === 'quality_control'">
                       Передан в ОТК: {{ order.qualityControlAt ?? "—" }}
                     </span>
-                    <span>Выполнен: {{ order.completedAt ?? "—" }}</span>
+                    <span v-if="workOrderStatusTab === 'deleted'">
+                      Выполнен: {{ order.completedAt ?? "—" }}
+                    </span>
                     <span v-if="workOrderStatusTab === 'completed'">
-                      Время ОТК: {{ formatQualityControlDuration(order) }}
+                      ОТК проведен: {{ order.completedAt ?? "—" }}
                     </span>
                     <span v-if="workOrderStatusTab === 'completed'">
                       Брак: {{ order.defectQuantity }} шт.
@@ -6087,19 +6206,26 @@ async function handleResetUserPassword(user: UserRecord) {
                 <label class="field summary-card__field">
                   <span class="field__label">Вид кожи</span>
                   <div class="assignment-input-wrap">
+                    <div
+                      v-if="!isBrigadierLeatherTypeEditable"
+                      class="operation-text"
+                    >
+                      {{ brigadierModalLeatherTypeName ?? "вид кожи не указан" }}
+                    </div>
                     <input
+                      v-else
                       :value="brigadierModalLeatherTypeName ?? ''"
                       type="text"
                       class="text-input text-input--with-clear"
                       readonly
                       autocomplete="off"
                       placeholder="Не выбран"
-                      @focus="!isQualityControlOrderModal && openBrigadierLeatherTypeDropdown()"
-                      @click="!isQualityControlOrderModal && openBrigadierLeatherTypeDropdown()"
-                      @blur="!isQualityControlOrderModal && scheduleBrigadierLeatherTypeDropdownClose()"
+                      @focus="openBrigadierLeatherTypeDropdown"
+                      @click="openBrigadierLeatherTypeDropdown"
+                      @blur="scheduleBrigadierLeatherTypeDropdownClose"
                     />
                     <button
-                      v-if="brigadierModalLeatherTypeId && !isQualityControlOrderModal"
+                      v-if="brigadierModalLeatherTypeId && isBrigadierLeatherTypeEditable"
                       type="button"
                       class="field-action field-action--right"
                       aria-label="Очистить вид кожи"
@@ -6110,7 +6236,7 @@ async function handleResetUserPassword(user: UserRecord) {
                       <span class="field-action__icon" aria-hidden="true" />
                     </button>
                     <div
-                      v-if="isBrigadierLeatherTypeDropdownOpen && !isQualityControlOrderModal"
+                      v-if="isBrigadierLeatherTypeDropdownOpen && isBrigadierLeatherTypeEditable"
                       class="assignment-dropdown"
                     >
                       <button
@@ -6191,13 +6317,19 @@ async function handleResetUserPassword(user: UserRecord) {
 
               <label class="field order-form__quantity">
                 <span class="field__label">Количество изделий</span>
+                <div
+                  v-if="!isBrigadierQuantityEditable"
+                  class="operation-text"
+                >
+                  {{ brigadierModalQuantity }} шт.
+                </div>
                 <input
+                  v-else
                   :value="brigadierModalQuantity"
                   type="text"
                   inputmode="numeric"
                   class="text-input"
                   data-field="brigadier-quantity"
-                  :readonly="brigadierModalMode !== 'create'"
                   placeholder="Например, 12"
                   @input="handleBrigadierQuantityInput"
                 />
@@ -6213,7 +6345,11 @@ async function handleResetUserPassword(user: UserRecord) {
               <div>
                 <span class="field__label">Назначение исполнителей</span>
                 <p class="field__hint">
-                  Для каждой операции выберите исполнителя с ролью `исполнитель`.
+                  {{
+                    isBrigadierAssignmentsEditable
+                      ? "Для каждой операции выберите исполнителя с ролью `исполнитель`."
+                      : "Назначения исполнителей доступны только для просмотра."
+                  }}
                 </p>
               </div>
             </div>
@@ -6242,16 +6378,16 @@ async function handleResetUserPassword(user: UserRecord) {
                       type="text"
                       class="text-input text-input--with-clear"
                       autocomplete="off"
-                      :readonly="isQualityControlOrderModal"
+                      :readonly="!isBrigadierAssignmentsEditable"
                       :data-brigadier-operation-id="assignment.operationId"
                       placeholder="Выберите исполнителя"
-                      @input="!isQualityControlOrderModal && handleBrigadierAssignmentInput(assignment.operationId, $event)"
-                      @focus="!isQualityControlOrderModal && openBrigadierAssignmentDropdown(assignment.operationId)"
-                      @click="!isQualityControlOrderModal && openBrigadierAssignmentDropdown(assignment.operationId)"
-                      @blur="!isQualityControlOrderModal && scheduleBrigadierAssignmentDropdownClose(assignment.operationId)"
+                      @input="handleBrigadierAssignmentInput(assignment.operationId, $event)"
+                      @focus="openBrigadierAssignmentDropdown(assignment.operationId)"
+                      @click="openBrigadierAssignmentDropdown(assignment.operationId)"
+                      @blur="scheduleBrigadierAssignmentDropdownClose(assignment.operationId)"
                     />
                     <button
-                      v-if="assignment.workerName && !isQualityControlOrderModal"
+                      v-if="assignment.workerName && isBrigadierAssignmentsEditable"
                       type="button"
                       class="field-action field-action--right"
                       aria-label="Очистить исполнителя"
@@ -6262,7 +6398,10 @@ async function handleResetUserPassword(user: UserRecord) {
                       <span class="field-action__icon" aria-hidden="true" />
                     </button>
                     <div
-                      v-if="isBrigadierAssignmentDropdownOpen(assignment.operationId) && !isQualityControlOrderModal"
+                      v-if="
+                        isBrigadierAssignmentDropdownOpen(assignment.operationId) &&
+                        isBrigadierAssignmentsEditable
+                      "
                       class="assignment-dropdown"
                     >
                       <button
@@ -6288,7 +6427,10 @@ async function handleResetUserPassword(user: UserRecord) {
                     </div>
                   </div>
                   <p
-                    v-if="getBrigadierAssignmentError(assignment)"
+                    v-if="
+                      isBrigadierAssignmentsEditable &&
+                      getBrigadierAssignmentError(assignment)
+                    "
                     class="field-error"
                   >
                     {{ getBrigadierAssignmentError(assignment) }}
@@ -6309,6 +6451,7 @@ async function handleResetUserPassword(user: UserRecord) {
             </button>
 
             <button
+              v-if="isBrigadierSaveAvailable"
               type="submit"
               class="primary-button"
               :disabled="!brigadierModalCanSave || brigadierSaveLoading"
@@ -6326,7 +6469,7 @@ async function handleResetUserPassword(user: UserRecord) {
             >
               <span class="button-content">
                 <span class="button-icon button-icon--close" aria-hidden="true" />
-                <span>Отменить</span>
+                <span>{{ isBrigadierSaveAvailable ? "Отменить" : "Закрыть" }}</span>
               </span>
             </button>
           </div>
@@ -6732,7 +6875,14 @@ async function handleResetUserPassword(user: UserRecord) {
                       </span>
                     </td>
                     <td>
+                      <span v-if="row.isGroup" class="readonly-note">
+                        Цена только у операций
+                      </span>
+                      <span v-else-if="isViewMode" class="operation-text">
+                        {{ formatMoneyInput(row.priceCents) || "Не указана" }}
+                      </span>
                       <input
+                        v-else
                         :value="formatMoneyInput(row.priceCents)"
                         type="number"
                         min="0"
@@ -6742,7 +6892,11 @@ async function handleResetUserPassword(user: UserRecord) {
                         @input="handleOperationPriceInput(row.id, $event)"
                       />
                       <p
-                        v-if="operationErrors[row.id]?.startsWith('Цена')"
+                        v-if="
+                          !isViewMode &&
+                          (operationErrors[row.id]?.startsWith('Цена') ||
+                            operationErrors[row.id]?.startsWith('У группы'))
+                        "
                         class="field-error"
                       >
                         {{ operationErrors[row.id] }}

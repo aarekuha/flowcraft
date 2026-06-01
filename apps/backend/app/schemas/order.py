@@ -95,6 +95,7 @@ class WorkOrderListItem(BaseModel):
     quantity: int
     estimated_minutes: int
     total_spent_minutes: int
+    has_spent_time: bool
     assignments_count: int
     created_at: int
     updated_at: int
@@ -126,6 +127,7 @@ class WorkOrderDetail(BaseModel):
     quantity: int
     estimated_minutes: int
     total_spent_minutes: int
+    has_spent_time: bool
     created_at: int
     updated_at: int
     taken_at: int | None

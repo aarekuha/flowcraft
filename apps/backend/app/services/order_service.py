@@ -3,7 +3,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import HTTPException, status
-from sqlalchemy import Select, func, select
+from sqlalchemy import Select, func, or_, select
 from sqlalchemy.orm import Session, selectinload
 from sqlalchemy.sql.elements import ColumnElement
 
@@ -59,6 +59,7 @@ class OrderService:
             .group_by(WorkOrderAssignment.work_order_id)
             .subquery()
         )
+        spent_time = self._build_spent_time_subquery()
         filters = self._build_order_list_filters(
             include_completed=include_completed,
             status_filter=status_filter,
@@ -86,12 +87,19 @@ class OrderService:
                 func.coalesce(assignments_count.c.assignments_count, 0).label(
                     "assignments_count"
                 ),
+                func.coalesce(spent_time.c.spent_sessions_count, 0).label(
+                    "spent_sessions_count"
+                ),
             )
             .join(Product, Product.id == WorkOrder.product_id)
             .outerjoin(LeatherType, LeatherType.id == WorkOrder.leather_type_id)
             .outerjoin(
                 assignments_count,
                 assignments_count.c.work_order_id == WorkOrder.id,
+            )
+            .outerjoin(
+                spent_time,
+                spent_time.c.order_id == WorkOrder.id,
             )
         )
 
@@ -119,6 +127,7 @@ class OrderService:
                 quantity=row.quantity,
                 estimated_minutes=row.estimated_minutes,
                 total_spent_minutes=row.total_spent_minutes,
+                has_spent_time=row.spent_sessions_count > 0,
                 assignments_count=row.assignments_count,
                 created_at=row.created_at,
                 updated_at=row.updated_at,
@@ -375,18 +384,26 @@ class OrderService:
         order = self._get_order_or_404(order_id)
         self._validate_order_is_not_deleted(order)
         product = self._get_product_or_404(order.product_id)
-        self._validate_leather_type_is_active(
-            payload.leather_type_id,
-            current_leather_type_id=order.leather_type_id,
+        leather_type_id = self._resolve_update_leather_type_id(order, payload)
+        attributes_changed = (
+            leather_type_id != order.leather_type_id
+            or payload.quantity != order.quantity
         )
-        self._validate_assignments(product.id, payload.assignments)
-        if payload.quantity != order.quantity:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail="Order quantity cannot be changed after creation.",
-            )
+        assignments_changed = self._order_assignments_changed(order, payload)
 
-        order.leather_type_id = payload.leather_type_id
+        if attributes_changed:
+            self._validate_order_has_no_spent_time(order)
+            self._validate_leather_type_is_active(
+                leather_type_id,
+                current_leather_type_id=order.leather_type_id,
+            )
+        if assignments_changed:
+            self._validate_order_assignments_can_be_changed(order)
+
+        self._validate_assignments(product.id, payload.assignments)
+
+        order.leather_type_id = leather_type_id
+        order.quantity = payload.quantity
         order.estimated_minutes = payload.estimated_minutes
         order.updated_at = self._now_ts()
         self._sync_assignments(order, payload.assignments)
@@ -521,6 +538,78 @@ class OrderService:
                 detail="Deleted order cannot be changed.",
             )
 
+    def _validate_order_assignments_can_be_changed(self, order: WorkOrder) -> None:
+        if order.completed_at is not None:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Completed order assignments cannot be changed.",
+            )
+        if order.quality_control_at is not None:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=(
+                    "Order assignments cannot be changed after quality control stage."
+                ),
+            )
+
+    def _validate_order_has_no_spent_time(self, order: WorkOrder) -> None:
+        if self._order_has_spent_time(order.id):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Order cannot be changed after time has been spent.",
+            )
+
+    def _order_assignments_changed(
+        self,
+        order: WorkOrder,
+        payload: WorkOrderUpdateAssignments,
+    ) -> bool:
+        current_assignments = {
+            assignment.operation_id: assignment.worker_user_id
+            for assignment in order.assignments
+        }
+        incoming_assignments = {
+            assignment.operation_id: assignment.worker_user_id
+            for assignment in payload.assignments
+        }
+
+        return incoming_assignments != current_assignments
+
+    def _order_has_spent_time(self, order_id: int) -> bool:
+        stmt = select(func.count(TimerSession.id)).where(
+            *self._build_spent_time_filters(order_id=order_id),
+        )
+        return int(self.session.execute(stmt).scalar_one()) > 0
+
+    def _build_spent_time_subquery(self) -> Any:
+        return (
+            select(
+                TimerSession.order_id,
+                func.count(TimerSession.id).label("spent_sessions_count"),
+            )
+            .where(*self._build_spent_time_filters())
+            .group_by(TimerSession.order_id)
+            .subquery()
+        )
+
+    def _build_spent_time_filters(
+        self,
+        *,
+        order_id: int | None = None,
+    ) -> list[ColumnElement[bool]]:
+        filters: list[ColumnElement[bool]] = [
+            TimerSession.order_id.is_not(None),
+            TimerSession.timer_type_code == TIMER_TYPE_TO_CODE[TimerType.OPERATION],
+            or_(
+                TimerSession.ended_at.is_(None),
+                TimerSession.ended_at > TimerSession.started_at,
+            ),
+        ]
+        if order_id is not None:
+            filters.append(TimerSession.order_id == order_id)
+
+        return filters
+
     def _get_order_or_404(self, order_id: int) -> WorkOrder:
         stmt: Select[tuple[WorkOrder]] = (
             select(WorkOrder)
@@ -582,6 +671,16 @@ class OrderService:
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail="Only active leather types can be selected.",
             )
+
+    def _resolve_update_leather_type_id(
+        self,
+        order: WorkOrder,
+        payload: WorkOrderUpdateAssignments,
+    ) -> int | None:
+        if "leather_type_id" not in payload.model_fields_set:
+            return order.leather_type_id
+
+        return payload.leather_type_id
 
     def _validate_order_number(self, order_number: str) -> None:
         stmt = select(WorkOrder.id).where(WorkOrder.order_number == order_number)
@@ -730,6 +829,7 @@ class OrderService:
             quantity=order.quantity,
             estimated_minutes=order.estimated_minutes,
             total_spent_minutes=order.total_spent_minutes,
+            has_spent_time=self._order_has_spent_time(order.id),
             created_at=order.created_at,
             updated_at=order.updated_at,
             taken_at=order.taken_at,

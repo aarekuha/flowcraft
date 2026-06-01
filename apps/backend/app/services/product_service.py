@@ -74,6 +74,7 @@ class ProductService:
 
     def create_product(self, payload: ProductCreate) -> ProductDetail:
         self._validate_operation_names(payload.operations)
+        self._validate_group_operation_prices(payload.operations)
         self._validate_product_identity(name=payload.name, version=payload.version)
         author_user = self._resolve_product_author(payload.author_user_id)
 
@@ -108,21 +109,31 @@ class ProductService:
         payload: ProductCostsUpdate,
     ) -> ProductDetail:
         product = self._get_product_or_404(product_id)
-        operation_prices = self._collect_operation_prices(payload.operations)
+        requested_operation_prices = self._collect_operation_prices(payload.operations)
         operations = self.session.scalars(
             select(Operation).where(Operation.product_id == product.id)
         ).all()
         operations_by_id = {operation.id: operation for operation in operations}
 
-        if set(operation_prices) != set(operations_by_id):
+        unknown_operation_ids = set(requested_operation_prices) - set(operations_by_id)
+        if unknown_operation_ids:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail="Operation prices must cover every product operation.",
+                detail="Operation prices must reference existing product operations.",
             )
 
+        for operation_id, requested_price_cents in requested_operation_prices.items():
+            operation = operations_by_id[operation_id]
+            current_price_cents = (
+                None if operation.children else operation.price_cents
+            )
+            if requested_price_cents != current_price_cents:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="Operation prices cannot be changed after product creation.",
+                )
+
         product.material_cost_cents = payload.material_cost_cents
-        for operation_id, price_cents in operation_prices.items():
-            operations_by_id[operation_id].price_cents = price_cents
 
         self.session.commit()
         self.session.refresh(product)
@@ -179,7 +190,7 @@ class ProductService:
     ) -> Operation:
         operation = Operation(
             name=payload.name,
-            price_cents=payload.price_cents,
+            price_cents=payload.price_cents if not payload.children else None,
             sort_order=sort_order,
             product=product,
         )
@@ -211,6 +222,18 @@ class ProductService:
 
         for operation in operations:
             self._validate_operation_names(operation.children)
+
+    def _validate_group_operation_prices(
+        self,
+        operations: Sequence[OperationCreate],
+    ) -> None:
+        for operation in operations:
+            if operation.children and operation.price_cents is not None:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="Operation groups cannot have prices.",
+                )
+            self._validate_group_operation_prices(operation.children)
 
     def _validate_product_identity(self, name: str, version: str) -> None:
         stmt = select(Product.id).where(
@@ -252,7 +275,7 @@ class ProductService:
         return OperationRead(
             id=operation.id,
             name=operation.name,
-            price_cents=operation.price_cents,
+            price_cents=None if ordered_children else operation.price_cents,
             children=[self._serialize_operation(child) for child in ordered_children],
         )
 

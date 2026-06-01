@@ -19,6 +19,7 @@ export type WorkOrderSummary = {
   quantity: number;
   estimatedMinutes: number;
   totalSpentMinutes: number;
+  hasSpentTime: boolean;
   assignmentsCount: number;
   createdAtTs: number;
   createdAt: string;
@@ -46,6 +47,7 @@ export type WorkOrderDetail = {
   quantity: number;
   estimatedMinutes: number;
   totalSpentMinutes: number;
+  hasSpentTime: boolean;
   createdAtTs: number;
   createdAt: string;
   updatedAtTs: number;
@@ -142,6 +144,7 @@ type WorkOrderSummaryApi = {
   quantity: number;
   estimated_minutes: number;
   total_spent_minutes: number;
+  has_spent_time: boolean;
   assignments_count: number;
   created_at: number;
   updated_at: number;
@@ -163,6 +166,7 @@ type WorkOrderDetailApi = {
   quantity: number;
   estimated_minutes: number;
   total_spent_minutes: number;
+  has_spent_time: boolean;
   created_at: number;
   updated_at: number;
   taken_at: number | null;
@@ -398,6 +402,7 @@ function mapWorkOrderSummary(order: WorkOrderSummaryApi): WorkOrderSummary {
     quantity: order.quantity,
     estimatedMinutes: order.estimated_minutes,
     totalSpentMinutes: order.total_spent_minutes,
+    hasSpentTime: order.has_spent_time,
     assignmentsCount: order.assignments_count,
     createdAtTs: order.created_at,
     createdAt: formatDate(order.created_at),
@@ -438,6 +443,7 @@ function mapWorkOrderDetail(order: WorkOrderDetailApi): WorkOrderDetail {
     quantity: order.quantity,
     estimatedMinutes: order.estimated_minutes,
     totalSpentMinutes: order.total_spent_minutes,
+    hasSpentTime: order.has_spent_time,
     createdAtTs: order.created_at,
     createdAt: formatDate(order.created_at),
     updatedAtTs: order.updated_at,
