@@ -24,10 +24,13 @@ class WorkOrder(Base):
         index=True,
     )
     quantity: Mapped[int] = mapped_column(Integer, nullable=False)
+    estimated_minutes: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     total_spent_minutes: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     created_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
     updated_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    taken_at: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     completed_at: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    deleted_at: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
 
     assignments = relationship(
         "WorkOrderAssignment",
@@ -60,9 +63,9 @@ class WorkOrderAssignment(Base):
         nullable=False,
         index=True,
     )
-    worker_user_id: Mapped[int] = mapped_column(
+    worker_user_id: Mapped[int | None] = mapped_column(
         ForeignKey("users.id"),
-        nullable=False,
+        nullable=True,
         index=True,
     )
 

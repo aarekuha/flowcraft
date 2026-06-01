@@ -1,16 +1,20 @@
 from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.orm import Session
 
-from app.api.dependencies import get_session
+from app.api.dependencies import get_authenticated_session, get_session
 from app.schemas.order import (
     SortDirection,
     WorkOrderCreate,
+    WorkOrderDeletedStatusUpdate,
     WorkOrderDetail,
     WorkOrderPage,
     WorkOrderSortField,
+    WorkOrderStatusFilter,
     WorkOrderStatusUpdate,
+    WorkOrderTakenStatusUpdate,
     WorkOrderUpdateAssignments,
 )
+from app.services.auth_service import AuthenticatedSession
 from app.services.order_service import OrderService
 
 router = APIRouter()
@@ -20,6 +24,10 @@ router = APIRouter()
 def list_orders(
     search: str | None = Query(default=None, max_length=128),
     include_completed: bool = Query(default=False),
+    status_filter: WorkOrderStatusFilter = Query(
+        default=WorkOrderStatusFilter.IN_WORK,
+        alias="status",
+    ),
     sort_by: WorkOrderSortField = Query(default=WorkOrderSortField.CREATED),
     sort_direction: SortDirection = Query(default=SortDirection.DESC),
     page: int = Query(default=1, ge=1),
@@ -29,11 +37,24 @@ def list_orders(
     return OrderService(session).list_orders(
         search=search,
         include_completed=include_completed,
+        status_filter=status_filter,
         sort_by=sort_by,
         sort_direction=sort_direction,
         page=page,
         page_size=page_size,
     )
+
+
+@router.get(
+    "/worker-assignments",
+    response_model=list[WorkOrderDetail],
+    summary="List current worker assigned orders",
+)
+def list_worker_assignments(
+    auth_session: AuthenticatedSession = Depends(get_authenticated_session),
+    session: Session = Depends(get_session),
+) -> list[WorkOrderDetail]:
+    return OrderService(session).list_worker_assigned_orders(auth_session.user_id)
 
 
 @router.get("/{order_id}", response_model=WorkOrderDetail, summary="Get work order")
@@ -81,3 +102,29 @@ def update_order_status(
     session: Session = Depends(get_session),
 ) -> WorkOrderDetail:
     return OrderService(session).update_order_status(order_id, payload)
+
+
+@router.patch(
+    "/{order_id}/taken-status",
+    response_model=WorkOrderDetail,
+    summary="Update work order taken status",
+)
+def update_order_taken_status(
+    order_id: int,
+    payload: WorkOrderTakenStatusUpdate,
+    session: Session = Depends(get_session),
+) -> WorkOrderDetail:
+    return OrderService(session).update_order_taken_status(order_id, payload)
+
+
+@router.patch(
+    "/{order_id}/deleted-status",
+    response_model=WorkOrderDetail,
+    summary="Update work order deleted status",
+)
+def update_order_deleted_status(
+    order_id: int,
+    payload: WorkOrderDeletedStatusUpdate,
+    session: Session = Depends(get_session),
+) -> WorkOrderDetail:
+    return OrderService(session).update_order_deleted_status(order_id, payload)

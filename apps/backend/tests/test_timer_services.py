@@ -1,14 +1,17 @@
+import pytest
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.core.security import hash_password
 from app.models.operation import Operation
 from app.models.product import Product
+from app.models.timer_session import TimerSession
 from app.models.user import User
 from app.models.work_order import WorkOrder, WorkOrderAssignment
+from app.models.work_shift import WorkShift
 from app.schemas.statistics import StatisticsOverviewRead
 from app.schemas.timer import TimerSwitchPayload, TimerType
 from app.services.statistics_service import StatisticsService
-from app.services.timer_service import TimerService
+from app.services.timer_service import TIMER_TYPE_TO_CODE, TimerService
 
 
 def _bootstrap_worker_graph(db_session: sessionmaker[Session]) -> tuple[int, int, int]:
@@ -126,6 +129,88 @@ def test_timer_service_starts_switches_and_ends_shift(
         session.close()
 
 
+def test_timer_service_refreshes_work_order_total_from_operation_sessions(
+    db_session: sessionmaker[Session],
+) -> None:
+    worker_id, order_id, operation_id = _bootstrap_worker_graph(db_session)
+    session = db_session()
+    try:
+        shift = WorkShift(
+            user_id=worker_id,
+            started_at=1_000,
+            ended_at=181_000,
+            business_date="2026-06-01",
+            created_at=1_000,
+        )
+        session.add(shift)
+        session.flush()
+        session.add_all(
+            [
+                TimerSession(
+                    shift_id=shift.id,
+                    user_id=worker_id,
+                    timer_type_code=TIMER_TYPE_TO_CODE[TimerType.OPERATION],
+                    order_id=order_id,
+                    operation_id=operation_id,
+                    started_at=1_000,
+                    ended_at=121_000,
+                    created_at=1_000,
+                ),
+                TimerSession(
+                    shift_id=shift.id,
+                    user_id=worker_id,
+                    timer_type_code=TIMER_TYPE_TO_CODE[TimerType.PREPARATION],
+                    order_id=None,
+                    operation_id=None,
+                    started_at=121_000,
+                    ended_at=181_000,
+                    created_at=121_000,
+                ),
+            ]
+        )
+        session.flush()
+
+        TimerService(session)._refresh_work_order_totals({order_id})
+
+        order = session.get(WorkOrder, order_id)
+        assert order is not None
+        assert order.total_spent_minutes == 2
+    finally:
+        session.close()
+
+
+def test_timer_service_flushes_closed_operation_before_refreshing_order_total(
+    db_session: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    worker_id, order_id, operation_id = _bootstrap_worker_graph(db_session)
+    timestamps = iter([1_000, 2_000, 3_000, 4_000, 64_000, 65_000, 66_000])
+    session = db_session()
+    try:
+        timer_service = TimerService(session)
+        monkeypatch.setattr(timer_service, "_now_ts", lambda: next(timestamps))
+
+        timer_service.start_day(worker_id)
+        timer_service.switch_timer(
+            worker_id,
+            TimerSwitchPayload(
+                timer_type=TimerType.OPERATION,
+                order_id=order_id,
+                operation_id=operation_id,
+            ),
+        )
+        timer_service.switch_timer(
+            worker_id,
+            TimerSwitchPayload(timer_type=TimerType.BREAK),
+        )
+
+        order = session.get(WorkOrder, order_id)
+        assert order is not None
+        assert order.total_spent_minutes == 1
+    finally:
+        session.close()
+
+
 def test_statistics_service_returns_overview(
     db_session: sessionmaker[Session],
 ) -> None:
@@ -142,7 +227,10 @@ def test_statistics_service_returns_overview(
                 operation_id=operation_id,
             ),
         )
-        timer_service.switch_timer(worker_id, TimerSwitchPayload(timer_type=TimerType.BREAK))
+        timer_service.switch_timer(
+            worker_id,
+            TimerSwitchPayload(timer_type=TimerType.BREAK),
+        )
         timer_service.end_day(worker_id)
 
         overview = StatisticsService(session).get_overview(14)

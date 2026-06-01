@@ -16,10 +16,9 @@ from app.schemas.timer import (
     TimerSessionAggregateRead,
     TimerSwitchPayload,
     TimerType,
-    WorkShiftRead,
     WorkerTimerStateRead,
+    WorkShiftRead,
 )
-
 
 TIMER_TYPE_TO_CODE = {
     TimerType.PREPARATION: 1,
@@ -27,7 +26,9 @@ TIMER_TYPE_TO_CODE = {
     TimerType.BREAK: 3,
     TimerType.IDLE: 4,
 }
-CODE_TO_TIMER_TYPE = {code: timer_type for timer_type, code in TIMER_TYPE_TO_CODE.items()}
+CODE_TO_TIMER_TYPE = {
+    code: timer_type for timer_type, code in TIMER_TYPE_TO_CODE.items()
+}
 
 
 class TimerService:
@@ -76,7 +77,11 @@ class TimerService:
 
         return self._serialize_state(shift)
 
-    def switch_timer(self, user_id: int, payload: TimerSwitchPayload) -> WorkerTimerStateRead:
+    def switch_timer(
+        self,
+        user_id: int,
+        payload: TimerSwitchPayload,
+    ) -> WorkerTimerStateRead:
         shift = self._get_open_shift(user_id)
         if shift is None:
             raise HTTPException(
@@ -95,7 +100,8 @@ class TimerService:
         if active_session is not None:
             active_session.ended_at = now
             if (
-                active_session.timer_type_code == TIMER_TYPE_TO_CODE[TimerType.OPERATION]
+                active_session.timer_type_code
+                == TIMER_TYPE_TO_CODE[TimerType.OPERATION]
                 and active_session.order_id is not None
             ):
                 affected_order_ids.add(active_session.order_id)
@@ -126,7 +132,8 @@ class TimerService:
         if active_session is not None:
             active_session.ended_at = now
             if (
-                active_session.timer_type_code == TIMER_TYPE_TO_CODE[TimerType.OPERATION]
+                active_session.timer_type_code
+                == TIMER_TYPE_TO_CODE[TimerType.OPERATION]
                 and active_session.order_id is not None
             ):
                 affected_order_ids.add(active_session.order_id)
@@ -224,7 +231,11 @@ class TimerService:
         )
         self.session.add(timer_session)
 
-    def _validate_switch_payload(self, user_id: int, payload: TimerSwitchPayload) -> None:
+    def _validate_switch_payload(
+        self,
+        user_id: int,
+        payload: TimerSwitchPayload,
+    ) -> None:
         if payload.timer_type == TimerType.OPERATION:
             if payload.order_id is None or payload.operation_id is None:
                 raise HTTPException(
@@ -256,10 +267,17 @@ class TimerService:
         if payload.order_id is not None or payload.operation_id is not None:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail="Служебные таймеры не должны быть привязаны к заказу или операции.",
+                detail=(
+                    "Служебные таймеры не должны быть привязаны "
+                    "к заказу или операции."
+                ),
             )
 
-    def _is_same_target(self, timer_session: TimerSession, payload: TimerSwitchPayload) -> bool:
+    def _is_same_target(
+        self,
+        timer_session: TimerSession,
+        payload: TimerSwitchPayload,
+    ) -> bool:
         return (
             timer_session.timer_type_code == TIMER_TYPE_TO_CODE[payload.timer_type]
             and timer_session.order_id == payload.order_id
@@ -269,6 +287,8 @@ class TimerService:
     def _refresh_work_order_totals(self, order_ids: set[int]) -> None:
         if not order_ids:
             return
+
+        self.session.flush()
 
         for order_id in order_ids:
             stmt = select(

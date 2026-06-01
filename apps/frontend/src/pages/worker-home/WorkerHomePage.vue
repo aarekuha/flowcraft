@@ -24,11 +24,15 @@ import {
   fetchAllWorkOrders,
   fetchWorkOrder,
   fetchWorkOrders,
+  fetchWorkerAssignedWorkOrders,
   updateWorkOrderAssignments,
+  updateWorkOrderDeletedStatus,
   updateWorkOrderStatus,
+  updateWorkOrderTakenStatus,
   type WorkOrderListParams,
   type WorkOrderSortBy,
   type WorkOrderSortDirection,
+  type WorkOrderStatusFilter,
   type WorkOrderDetail,
   type WorkOrderSummary,
 } from "@/shared/api/orders";
@@ -71,7 +75,8 @@ import {
 
 type TabId = "worker" | "brigadier" | "constructor" | "stats" | "users";
 type ModalMode = "create" | "copy" | "view" | null;
-type BrigadierTabId = "active" | "orders";
+type WorkOrderStatusTabId = Exclude<WorkOrderStatusFilter, "all">;
+type BrigadierTabId = "orders" | WorkOrderStatusTabId;
 type ConstructorTabId = "products" | "directories";
 type ConstructorDirectoryTabId = "leather-types";
 type ProductVisibilityFilter = "all" | "active" | "inactive";
@@ -89,6 +94,12 @@ type WorkOrderSort =
   | "completed-asc"
   | "name-asc"
   | "name-desc";
+type WorkOrderActionConfirmKind =
+  | "complete"
+  | "return_to_created"
+  | "return_to_work"
+  | "delete"
+  | "restore";
 type UserSort = "created-desc" | "created-asc" | "name-asc" | "name-desc";
 
 type FlatOperationNodeRow = {
@@ -202,6 +213,17 @@ const workOrderSortOptions: Array<{
   { field: "completed", label: "Сортировка заказов по дате выполнения", icon: "completed" },
 ];
 
+const workOrderStatusTabs: Array<{
+  id: WorkOrderStatusTabId;
+  label: string;
+  icon: string;
+}> = [
+  { id: "created", label: "Созданные", icon: "orders" },
+  { id: "in_work", label: "В работе", icon: "in-work" },
+  { id: "completed", label: "Выполненные", icon: "completed" },
+  { id: "deleted", label: "Удаленные", icon: "delete" },
+];
+
 const statisticsPeriodOptions = [7, 14, 30] as const;
 
 const ACTIVE_TAB_STORAGE_KEY = "flowcraft.active-tab";
@@ -218,7 +240,11 @@ const LEATHER_TYPE_PAGE_SIZE = PROJECT_PAGE_SIZE;
 
 const activeTab = ref<TabId>(readStoredTab<TabId>(ACTIVE_TAB_STORAGE_KEY, tabs.map((tab) => tab.id), "constructor"));
 const brigadierTab = ref<BrigadierTabId>(
-  readStoredTab<BrigadierTabId>(BRIGADIER_TAB_STORAGE_KEY, ["active", "orders"], "active"),
+  readStoredTab<BrigadierTabId>(
+    BRIGADIER_TAB_STORAGE_KEY,
+    ["orders", ...workOrderStatusTabs.map((tab) => tab.id)],
+    "orders",
+  ),
 );
 const constructorTab = ref<ConstructorTabId>(
   readStoredTab<ConstructorTabId>(
@@ -257,7 +283,6 @@ const productVisibility = ref<ProductVisibilityFilter>("all");
 const productSort = ref<ProductSort>("name-asc");
 const workOrderFilter = ref("");
 const workOrderSearchDraft = ref("");
-const showCompletedWorkOrders = ref(false);
 const workOrderSort = ref<WorkOrderSort>("created-desc");
 const leatherTypeFilter = ref("");
 const leatherTypeSearchDraft = ref("");
@@ -293,6 +318,10 @@ const brigadierOrdersLoading = ref(false);
 const brigadierOrdersError = ref("");
 const brigadierSaveLoading = ref(false);
 const isBrigadierSaveConfirmOpen = ref(false);
+const workOrderActionConfirm = ref<{
+  kind: WorkOrderActionConfirmKind;
+  order: WorkOrderSummary;
+} | null>(null);
 const workOrderDetails = ref<WorkOrderDetail[]>([]);
 const workerAssignmentsLoading = ref(false);
 const workerAssignmentsError = ref("");
@@ -341,6 +370,7 @@ let nextOperationId = 1;
 let nextUserId = 100;
 let workerClockIntervalId: number | null = null;
 let workOrdersRequestId = 0;
+let workerAssignmentsRequestId = 0;
 let leatherTypesRequestId = 0;
 const isModalOpen = computed(() => modalMode.value !== null);
 const isBrigadierOrderModalOpen = computed(() => brigadierModalMode.value !== null);
@@ -348,6 +378,9 @@ const isDeleteModalOpen = computed(() => productPendingDelete.value !== null);
 const isUserDeleteModalOpen = computed(() => userPendingDelete.value !== null);
 const isViewMode = computed(() => modalMode.value === "view");
 const printableWorkOrder = ref<WorkOrderDetail | null>(null);
+const workOrderStatusTab = computed<WorkOrderStatusTabId>(() =>
+  brigadierTab.value === "orders" ? "created" : brigadierTab.value,
+);
 const availableTabs = computed(() => {
   if (!currentSession.value) {
     return [] as Array<{ id: TabId; label: string; icon: string }>;
@@ -363,6 +396,9 @@ const canViewStatistics = computed(
     currentSession.value?.userRoles.includes("brigadier") ||
     currentSession.value?.userRoles.includes("admin") ||
     false,
+);
+const canManageWorkOrders = computed(
+  () => currentSession.value?.userRoles.includes("brigadier") ?? false,
 );
 
 const shouldShowValidation = computed(
@@ -580,12 +616,12 @@ const leatherTypeNameError = computed(() =>
 );
 
 const brigadierModalTitle = computed(() =>
-  brigadierModalMode.value === "manage" ? "Заказ в работе" : "Новый заказ",
+  brigadierModalMode.value === "manage" ? "Управление заказом" : "Новый заказ",
 );
 
 const brigadierModalDescription = computed(() =>
   brigadierModalMode.value === "manage"
-    ? "Просмотр текущего заказа с возможностью изменить назначенных исполнителей."
+    ? "Просмотр заказа с возможностью изменить количество и назначенных исполнителей."
     : "Укажите количество изделий и распределите исполнителей по операциям.",
 );
 
@@ -599,8 +635,79 @@ const brigadierSaveConfirmTitle = computed(() =>
 
 const brigadierSaveConfirmDescription = computed(() =>
   brigadierModalMode.value === "manage"
-    ? "Количество изделий и назначения исполнителей будут обновлены в заказе в работе."
-    : "Заказ будет создан и появится в списке заказов в работе.",
+    ? "Количество изделий и назначения исполнителей будут обновлены в заказе."
+    : "Заказ будет создан и появится во вкладке созданных заказов.",
+);
+
+const workOrderActionConfirmTitle = computed(() => {
+  switch (workOrderActionConfirm.value?.kind) {
+    case "complete":
+      return "Отметить заказ выполненным?";
+    case "return_to_created":
+      return "Вернуть заказ в созданные?";
+    case "return_to_work":
+      return "Вернуть заказ в работу?";
+    case "delete":
+      return "Удалить заказ?";
+    case "restore":
+      return "Восстановить заказ?";
+    default:
+      return "Подтвердить действие?";
+  }
+});
+
+const workOrderActionConfirmDescription = computed(() => {
+  switch (workOrderActionConfirm.value?.kind) {
+    case "complete":
+      return "Будет установлено текущее время выполнения заказа.";
+    case "return_to_created":
+      return "Время взятия в работу и время выполнения будут очищены. Заказ исчезнет из таймеров исполнителей.";
+    case "return_to_work":
+      return "Время выполнения будет очищено, заказ снова появится в списке заказов в работе.";
+    case "delete":
+      return "Заказ будет перенесен во вкладку удаленных. Его можно будет восстановить позже.";
+    case "restore":
+      return "Заказ будет восстановлен в состояние, соответствующее его сохраненным датам.";
+    default:
+      return "";
+  }
+});
+
+const workOrderActionConfirmLabel = computed(() => {
+  switch (workOrderActionConfirm.value?.kind) {
+    case "complete":
+      return "Выполнен";
+    case "return_to_created":
+      return "Вернуть в созданные";
+    case "return_to_work":
+      return "Вернуть в работу";
+    case "delete":
+      return "Удалить";
+    case "restore":
+      return "Восстановить";
+    default:
+      return "Подтвердить";
+  }
+});
+
+const workOrderActionConfirmIcon = computed(() => {
+  switch (workOrderActionConfirm.value?.kind) {
+    case "complete":
+      return "button-icon--check";
+    case "return_to_created":
+    case "restore":
+      return "button-icon--refresh";
+    case "return_to_work":
+      return "button-icon--in-work";
+    case "delete":
+      return "button-icon--delete";
+    default:
+      return "button-icon--check";
+  }
+});
+
+const isWorkOrderActionConfirmDanger = computed(
+  () => workOrderActionConfirm.value?.kind === "delete",
 );
 
 const brigadierOrderNumberError = computed(() => {
@@ -628,7 +735,9 @@ const brigadierQuantityError = computed(() => {
 });
 
 const firstBrigadierAssignmentError = computed(() =>
-  brigadierModalAssignments.value.find((assignment) => assignment.workerUserId === null) ?? null,
+  brigadierModalAssignments.value.find((assignment) =>
+    Boolean(getBrigadierAssignmentError(assignment)),
+  ) ?? null,
 );
 
 const brigadierSaveIssue = computed<{
@@ -665,7 +774,7 @@ const brigadierModalCanSave = computed(() => {
     !brigadierOrderNumberError.value &&
     !brigadierQuantityError.value &&
     brigadierModalAssignments.value.length > 0 &&
-    brigadierModalAssignments.value.every((assignment) => assignment.workerUserId !== null)
+    !firstBrigadierAssignmentError.value
   );
 });
 
@@ -805,6 +914,9 @@ onMounted(async () => {
 
 watch(activeTab, (value) => {
   storeTab(ACTIVE_TAB_STORAGE_KEY, value);
+  if (value === "worker" && !authInitializing.value && canLoadWorkerWorkspace()) {
+    void loadWorkerWorkspace();
+  }
 });
 
 watch(availableTabs, (nextTabs) => {
@@ -830,7 +942,7 @@ watch(constructorDirectoryTab, (value) => {
 });
 
 watch(
-  [workOrderFilter, showCompletedWorkOrders, workOrderSort],
+  [workOrderFilter, workOrderStatusTab, workOrderSort],
   () => {
     reloadWorkOrdersFromFirstPage();
   },
@@ -966,7 +1078,7 @@ function getWorkOrderListParams(): WorkOrderListParams {
 
   return {
     search: workOrderFilter.value,
-    includeCompleted: showCompletedWorkOrders.value,
+    status: workOrderStatusTab.value,
     sortBy,
     sortDirection,
     page: workOrdersPage.value,
@@ -1107,17 +1219,32 @@ async function initializePage() {
 }
 
 async function loadProtectedData() {
-  await Promise.all([
+  const protectedDataLoaders = [
     loadProducts(),
     loadUsers(),
     loadLeatherTypes(),
     loadActiveLeatherTypes(),
-    loadWorkOrders(),
-  ]);
+  ];
 
-  if (currentSession.value?.userRoles.includes("worker")) {
-    await loadWorkerTimerState();
+  if (canManageWorkOrders.value) {
+    protectedDataLoaders.push(loadWorkOrders());
   } else {
+    workOrders.value = [];
+    workOrdersTotal.value = 0;
+    workOrdersPage.value = 1;
+    workOrdersPages.value = 1;
+    brigadierOrdersError.value = "";
+    brigadierOrdersLoading.value = false;
+  }
+
+  await Promise.all(protectedDataLoaders);
+
+  if (canLoadWorkerWorkspace() && activeTab.value === "worker") {
+    await loadWorkerWorkspace();
+  } else {
+    workOrderDetails.value = [];
+    workerAssignmentsError.value = "";
+    workerAssignmentsLoading.value = false;
     resetWorkerTimerState();
   }
 
@@ -1149,8 +1276,13 @@ function redirectToAuth(message = "Требуется аутентификаци
   authNewPassword.value = "";
   authConfirmPassword.value = "";
   authError.value = message;
+  workOrderDetails.value = [];
+  workerAssignmentsError.value = "";
+  workerAssignmentsLoading.value = false;
+  resetWorkerTimerState();
   closeChangePasswordModal();
   closeBrigadierOrderModal();
+  closeWorkOrderActionConfirm();
   closeProductModal();
   closeDeleteConfirmation();
   closeUserDeleteConfirmation();
@@ -1158,6 +1290,7 @@ function redirectToAuth(message = "Требуется аутентификаци
 
 async function submitAuthentication() {
   authSubmitting.value = true;
+  authInitializing.value = true;
   authError.value = "";
 
   try {
@@ -1200,6 +1333,7 @@ async function submitAuthentication() {
     authError.value = getErrorMessage(error, "Не удалось пройти аутентификацию.");
   } finally {
     authSubmitting.value = false;
+    authInitializing.value = false;
   }
 }
 
@@ -1359,25 +1493,22 @@ async function loadActiveLeatherTypes() {
 }
 
 async function loadWorkOrders() {
+  if (!canManageWorkOrders.value) {
+    workOrders.value = [];
+    workOrdersTotal.value = 0;
+    workOrdersPage.value = 1;
+    workOrdersPages.value = 1;
+    brigadierOrdersError.value = "";
+    brigadierOrdersLoading.value = false;
+    return;
+  }
+
   const requestId = ++workOrdersRequestId;
   brigadierOrdersLoading.value = true;
   brigadierOrdersError.value = "";
-  workerAssignmentsError.value = "";
 
   try {
-    const shouldLoadWorkerOrders =
-      currentSession.value?.userRoles.includes("worker") ?? false;
-    const [ordersPage, workerOrders] = await Promise.all([
-      fetchWorkOrders(getWorkOrderListParams()),
-      shouldLoadWorkerOrders
-        ? fetchAllWorkOrders({
-            includeCompleted: false,
-            sortBy: "created",
-            sortDirection: "desc",
-            pageSize: 100,
-          })
-        : Promise.resolve([]),
-    ]);
+    const ordersPage = await fetchWorkOrders(getWorkOrderListParams());
 
     if (requestId !== workOrdersRequestId) {
       return;
@@ -1398,12 +1529,6 @@ async function loadWorkOrders() {
     workOrdersTotal.value = ordersPage.total;
     workOrdersPage.value = ordersPage.page;
     workOrdersPages.value = ordersPage.pages;
-
-    if (shouldLoadWorkerOrders) {
-      await loadWorkOrderDetails(workerOrders);
-    } else {
-      workOrderDetails.value = [];
-    }
   } catch (error) {
     if (requestId !== workOrdersRequestId) {
       return;
@@ -1414,10 +1539,6 @@ async function loadWorkOrders() {
       return;
     }
     brigadierOrdersError.value = getErrorMessage(error, "Не удалось загрузить заказы.");
-    workerAssignmentsError.value = getErrorMessage(
-      error,
-      "Не удалось загрузить назначения исполнителя.",
-    );
   } finally {
     if (requestId === workOrdersRequestId) {
       brigadierOrdersLoading.value = false;
@@ -1425,25 +1546,58 @@ async function loadWorkOrders() {
   }
 }
 
-async function loadWorkOrderDetails(orders: WorkOrderSummary[]) {
+function canLoadWorkerWorkspace(): boolean {
+  return currentSession.value?.userRoles.includes("worker") ?? false;
+}
+
+async function loadWorkerWorkspace() {
+  if (!canLoadWorkerWorkspace()) {
+    workOrderDetails.value = [];
+    workerAssignmentsError.value = "";
+    workerAssignmentsLoading.value = false;
+    resetWorkerTimerState();
+    return;
+  }
+
+  const assignmentsLoaded = await loadWorkerAssignments();
+  if (assignmentsLoaded) {
+    await loadWorkerTimerState();
+  }
+}
+
+async function loadWorkerAssignments(): Promise<boolean> {
+  const requestId = ++workerAssignmentsRequestId;
   workerAssignmentsLoading.value = true;
+  workerAssignmentsError.value = "";
 
   try {
-    workOrderDetails.value = await Promise.all(
-      orders.map((order) => fetchWorkOrder(order.id)),
-    );
+    const assignedOrders = await fetchWorkerAssignedWorkOrders();
+
+    if (requestId !== workerAssignmentsRequestId) {
+      return false;
+    }
+
+    workOrderDetails.value = assignedOrders;
+    return true;
   } catch (error) {
+    if (requestId !== workerAssignmentsRequestId) {
+      return false;
+    }
+
     if (isUnauthorizedError(error)) {
       redirectToAuth(getErrorMessage(error, "Требуется аутентификация."));
-      return;
+      return false;
     }
     workOrderDetails.value = [];
     workerAssignmentsError.value = getErrorMessage(
       error,
       "Не удалось загрузить назначения исполнителя.",
     );
+    return false;
   } finally {
-    workerAssignmentsLoading.value = false;
+    if (requestId === workerAssignmentsRequestId) {
+      workerAssignmentsLoading.value = false;
+    }
   }
 }
 
@@ -1553,6 +1707,22 @@ function openUserDeleteConfirmation(user: UserRecord) {
 
 function closeUserDeleteConfirmation() {
   userPendingDelete.value = null;
+}
+
+function openWorkOrderActionConfirm(
+  order: WorkOrderSummary,
+  kind: WorkOrderActionConfirmKind,
+) {
+  workOrderActionConfirm.value = { order, kind };
+}
+
+function closeWorkOrderActionConfirm() {
+  const pendingOrder = workOrderActionConfirm.value?.order;
+  if (pendingOrder && isWorkOrderBusy(pendingOrder.id)) {
+    return;
+  }
+
+  workOrderActionConfirm.value = null;
 }
 
 function setBrigadierTab(tabId: BrigadierTabId) {
@@ -1670,6 +1840,11 @@ function handleWindowKeydown(event: KeyboardEvent) {
     return;
   }
 
+  if (workOrderActionConfirm.value) {
+    closeWorkOrderActionConfirm();
+    return;
+  }
+
   if (editingUserId.value !== null) {
     cancelUserEdit();
     return;
@@ -1713,7 +1888,7 @@ async function startWorkerDay() {
 
   try {
     applyWorkerTimerApiState(await startWorkerDayApi());
-    await loadWorkOrders();
+    await loadWorkerAssignments();
   } catch (error) {
     if (isUnauthorizedError(error)) {
       redirectToAuth(getErrorMessage(error, "Требуется аутентификация."));
@@ -1750,7 +1925,7 @@ async function endWorkerDay() {
 
   try {
     applyWorkerTimerApiState(await endWorkerDayApi());
-    await loadWorkOrders();
+    await loadWorkerAssignments();
     closeWorkerDayEndConfirm();
   } catch (error) {
     if (isUnauthorizedError(error)) {
@@ -1790,7 +1965,7 @@ async function activateWorkerTimer(timerId: string) {
         operationId: parseOperationIdFromTimerId(timerId),
       }),
     );
-    await loadWorkOrders();
+    await loadWorkerAssignments();
     if (previousScrollY !== null) {
       await nextTick();
       window.scrollTo({ top: previousScrollY, behavior: "auto" });
@@ -2775,7 +2950,7 @@ async function openBrigadierCreateOrder(productId: number) {
     const [product, allOrders, leatherTypesForSelect] = await Promise.all([
       fetchProduct(productId),
       fetchAllWorkOrders({
-        includeCompleted: true,
+        status: "all",
         sortBy: "created",
         sortDirection: "desc",
         pageSize: 100,
@@ -2845,12 +3020,12 @@ async function openBrigadierManageOrder(order: WorkOrderSummary) {
   }
 }
 
-async function toggleWorkOrderStatus(order: WorkOrderSummary) {
+async function toggleWorkOrderTakenStatus(order: WorkOrderSummary, isTaken: boolean) {
   setWorkOrderBusy(order.id, true);
   brigadierOrdersError.value = "";
 
   try {
-    await updateWorkOrderStatus(order.id, order.completedAtTs === null);
+    await updateWorkOrderTakenStatus(order.id, isTaken);
     await loadWorkOrders();
   } catch (error) {
     if (isUnauthorizedError(error)) {
@@ -2859,7 +3034,46 @@ async function toggleWorkOrderStatus(order: WorkOrderSummary) {
     }
     brigadierOrdersError.value = getErrorMessage(
       error,
-      "Не удалось обновить статус заказа.",
+      "Не удалось обновить состояние заказа.",
+    );
+  } finally {
+    setWorkOrderBusy(order.id, false);
+  }
+}
+
+async function confirmWorkOrderAction() {
+  const pendingAction = workOrderActionConfirm.value;
+  if (!pendingAction) {
+    return;
+  }
+
+  const { order, kind } = pendingAction;
+  setWorkOrderBusy(order.id, true);
+  brigadierOrdersError.value = "";
+
+  try {
+    if (kind === "complete") {
+      await updateWorkOrderStatus(order.id, true);
+    } else if (kind === "return_to_work") {
+      await updateWorkOrderStatus(order.id, false);
+    } else if (kind === "return_to_created") {
+      await updateWorkOrderTakenStatus(order.id, false);
+    } else if (kind === "delete") {
+      await updateWorkOrderDeletedStatus(order.id, true);
+    } else {
+      await updateWorkOrderDeletedStatus(order.id, false);
+    }
+
+    await loadWorkOrders();
+    workOrderActionConfirm.value = null;
+  } catch (error) {
+    if (isUnauthorizedError(error)) {
+      redirectToAuth(getErrorMessage(error, "Требуется аутентификация."));
+      return;
+    }
+    brigadierOrdersError.value = getErrorMessage(
+      error,
+      "Не удалось выполнить действие с заказом.",
     );
   } finally {
     setWorkOrderBusy(order.id, false);
@@ -2952,7 +3166,7 @@ function mergeBrigadierAssignments(
     return {
       ...assignment,
       workerUserId: savedAssignment.workerUserId,
-      workerName: savedAssignment.workerUserName,
+      workerName: savedAssignment.workerUserName ?? "",
     };
   });
 }
@@ -3124,9 +3338,7 @@ function getBrigadierAssignmentError(assignment: BrigadierOrderAssignment): stri
     return "";
   }
 
-  return assignment.workerName.trim()
-    ? "Выберите исполнителя из списка."
-    : "Назначьте исполнителя.";
+  return assignment.workerName.trim() ? "Выберите исполнителя из списка." : "";
 }
 
 function scrollToBrigadierSaveIssue() {
@@ -3286,17 +3498,18 @@ async function saveBrigadierOrder() {
     ? Number.parseInt(brigadierModalLeatherTypeId.value, 10)
     : null;
   const assignments = brigadierModalAssignments.value.map((assignment) => ({ ...assignment }));
-  const totalSpentMinutes = estimateWorkOrderMinutes(quantity, assignments);
+  const estimatedMinutes = estimateWorkOrderMinutes(quantity, assignments);
+  const isCreateMode = brigadierModalMode.value !== "manage";
 
   try {
-    if (brigadierModalMode.value === "manage" && brigadierCurrentOrder.value) {
+    if (!isCreateMode && brigadierCurrentOrder.value) {
       await updateWorkOrderAssignments(brigadierCurrentOrder.value.id, {
         leather_type_id: leatherTypeId,
         quantity,
-        total_spent_minutes: totalSpentMinutes,
+        estimated_minutes: estimatedMinutes,
         assignments: assignments.map((assignment) => ({
           operation_id: assignment.operationId,
-          worker_user_id: assignment.workerUserId as number,
+          worker_user_id: assignment.workerUserId,
         })),
       });
     } else {
@@ -3305,16 +3518,18 @@ async function saveBrigadierOrder() {
         product_id: brigadierModalProduct.value.id,
         leather_type_id: leatherTypeId,
         quantity,
-        total_spent_minutes: totalSpentMinutes,
+        estimated_minutes: estimatedMinutes,
         assignments: assignments.map((assignment) => ({
           operation_id: assignment.operationId,
-          worker_user_id: assignment.workerUserId as number,
+          worker_user_id: assignment.workerUserId,
         })),
       });
     }
 
+    if (isCreateMode) {
+      brigadierTab.value = "created";
+    }
     await loadWorkOrders();
-    brigadierTab.value = "active";
     closeBrigadierOrderModal();
   } catch (error) {
     if (isUnauthorizedError(error)) {
@@ -3689,7 +3904,7 @@ async function handleResetUserPassword(user: UserRecord) {
 
             <div v-if="workerAssignmentsError" class="banner banner--error">
               <p>{{ workerAssignmentsError }}</p>
-              <button type="button" class="ghost-button" @click="loadWorkOrders">
+              <button type="button" class="ghost-button" @click="void loadWorkerWorkspace()">
                 <span class="button-content">
                   <span class="button-icon button-icon--refresh" aria-hidden="true" />
                   <span>Повторить</span>
@@ -3774,17 +3989,6 @@ async function handleResetUserPassword(user: UserRecord) {
               <button
                 type="button"
                 class="subtab-button"
-                :class="{ 'subtab-button--active': brigadierTab === 'active' }"
-                @click="setBrigadierTab('active')"
-              >
-                <span class="button-content">
-                  <span class="button-icon button-icon--in-work" aria-hidden="true" />
-                  <span>В работе</span>
-                </span>
-              </button>
-              <button
-                type="button"
-                class="subtab-button"
                 :class="{ 'subtab-button--active': brigadierTab === 'orders' }"
                 @click="setBrigadierTab('orders')"
               >
@@ -3793,10 +3997,27 @@ async function handleResetUserPassword(user: UserRecord) {
                   <span>Новый заказ</span>
                 </span>
               </button>
+              <button
+                v-for="statusTab in workOrderStatusTabs"
+                :key="statusTab.id"
+                type="button"
+                class="subtab-button"
+                :class="{ 'subtab-button--active': brigadierTab === statusTab.id }"
+                @click="setBrigadierTab(statusTab.id)"
+              >
+                <span class="button-content">
+                  <span
+                    class="button-icon"
+                    :class="`button-icon--${statusTab.icon}`"
+                    aria-hidden="true"
+                  />
+                  <span>{{ statusTab.label }}</span>
+                </span>
+              </button>
             </div>
           </div>
 
-          <template v-if="brigadierTab === 'active'">
+          <template v-if="brigadierTab !== 'orders'">
             <div v-if="brigadierOrdersError" class="banner banner--error">
               <p>{{ brigadierOrdersError }}</p>
               <button type="button" class="ghost-button" @click="loadWorkOrders">
@@ -3836,17 +4057,9 @@ async function handleResetUserPassword(user: UserRecord) {
                   </div>
                 </label>
 
-                <label class="checkbox-field">
-                  <input
-                    v-model="showCompletedWorkOrders"
-                    type="checkbox"
-                  />
-                  <span>Показывать выполненные</span>
-                </label>
-
                 <div class="field field--inline">
                   <span class="field__label">Сортировка</span>
-                  <div class="segmented-control segmented-control--wrap" role="group" aria-label="Сортировка заказов в работе">
+                  <div class="segmented-control segmented-control--wrap" role="group" aria-label="Сортировка заказов">
                     <button
                       v-for="option in workOrderSortOptions"
                       :key="option.field"
@@ -3885,6 +4098,7 @@ async function handleResetUserPassword(user: UserRecord) {
                       <th>Наименование</th>
                       <th>Вид кожи</th>
                       <th>Версия</th>
+                      <th>Время создания</th>
                       <th>Время взятия в работу</th>
                       <th>Время выполнения</th>
                       <th>Исполнители</th>
@@ -3899,6 +4113,7 @@ async function handleResetUserPassword(user: UserRecord) {
                       <td>{{ order.leatherTypeName ?? "вид кожи не указан" }}</td>
                       <td>{{ order.productVersion }}</td>
                       <td>{{ order.createdAt }}</td>
+                      <td>{{ order.takenAt ?? "—" }}</td>
                       <td>{{ order.completedAt ?? "—" }}</td>
                       <td>
                         <button
@@ -3921,7 +4136,7 @@ async function handleResetUserPassword(user: UserRecord) {
                         <div class="table-actions">
                           <button
                             type="button"
-                            class="secondary-button"
+                            class="action-link"
                             :disabled="isWorkOrderPrintBusy(order.id)"
                             @click="void printWorkOrder(order)"
                           >
@@ -3931,20 +4146,76 @@ async function handleResetUserPassword(user: UserRecord) {
                             </span>
                           </button>
                           <button
+                            v-if="workOrderStatusTab === 'created'"
                             type="button"
-                            class="status-button"
-                            :class="{
-                              'status-button--active': order.completedAtTs === null,
-                              'status-button--inactive': order.completedAtTs !== null,
-                            }"
+                            class="action-link"
                             :disabled="isWorkOrderBusy(order.id)"
-                            @click="void toggleWorkOrderStatus(order)"
+                            @click="void toggleWorkOrderTakenStatus(order, true)"
                           >
-                            {{
-                              order.completedAtTs === null
-                                ? "Выполнен"
-                                : "Вернуть в работу"
-                            }}
+                            <span class="button-content">
+                              <span class="button-icon button-icon--play" aria-hidden="true" />
+                              <span>Взять в работу</span>
+                            </span>
+                          </button>
+                          <button
+                            v-if="workOrderStatusTab === 'in_work'"
+                            type="button"
+                            class="action-link"
+                            :disabled="isWorkOrderBusy(order.id)"
+                            @click="openWorkOrderActionConfirm(order, 'complete')"
+                          >
+                            <span class="button-content">
+                              <span class="button-icon button-icon--check" aria-hidden="true" />
+                              <span>Выполнен</span>
+                            </span>
+                          </button>
+                          <button
+                            v-if="workOrderStatusTab === 'in_work'"
+                            type="button"
+                            class="action-link"
+                            :disabled="isWorkOrderBusy(order.id)"
+                            @click="openWorkOrderActionConfirm(order, 'return_to_created')"
+                          >
+                            <span class="button-content">
+                              <span class="button-icon button-icon--refresh" aria-hidden="true" />
+                              <span>Вернуть в созданные</span>
+                            </span>
+                          </button>
+                          <button
+                            v-if="workOrderStatusTab === 'completed'"
+                            type="button"
+                            class="action-link"
+                            :disabled="isWorkOrderBusy(order.id)"
+                            @click="openWorkOrderActionConfirm(order, 'return_to_work')"
+                          >
+                            <span class="button-content">
+                              <span class="button-icon button-icon--in-work" aria-hidden="true" />
+                              <span>Вернуть в работу</span>
+                            </span>
+                          </button>
+                          <button
+                            v-if="workOrderStatusTab === 'deleted'"
+                            type="button"
+                            class="action-link"
+                            :disabled="isWorkOrderBusy(order.id)"
+                            @click="openWorkOrderActionConfirm(order, 'restore')"
+                          >
+                            <span class="button-content">
+                              <span class="button-icon button-icon--refresh" aria-hidden="true" />
+                              <span>Восстановить</span>
+                            </span>
+                          </button>
+                          <button
+                            v-if="workOrderStatusTab !== 'deleted'"
+                            type="button"
+                            class="action-link action-link--danger"
+                            :disabled="isWorkOrderBusy(order.id)"
+                            @click="openWorkOrderActionConfirm(order, 'delete')"
+                          >
+                            <span class="button-content">
+                              <span class="button-icon button-icon--delete" aria-hidden="true" />
+                              <span>Удалить</span>
+                            </span>
                           </button>
                         </div>
                       </td>
@@ -3970,8 +4241,12 @@ async function handleResetUserPassword(user: UserRecord) {
                     <span>{{ order.productName }}</span>
                     <span>Вид кожи: {{ order.leatherTypeName ?? "вид кожи не указан" }}</span>
                     <span>Версия {{ order.productVersion }} · {{ order.quantity }} шт.</span>
-                    <span>В работе с {{ order.createdAt }}</span>
+                    <span>Создан: {{ order.createdAt }}</span>
+                    <span>В работе с {{ order.takenAt ?? "—" }}</span>
                     <span>Выполнен: {{ order.completedAt ?? "—" }}</span>
+                    <span v-if="workOrderStatusTab === 'deleted'">
+                      Удален: {{ order.deletedAt ?? "—" }}
+                    </span>
                   </div>
                   <button
                     type="button"
@@ -3985,7 +4260,7 @@ async function handleResetUserPassword(user: UserRecord) {
                   </button>
                   <button
                     type="button"
-                    class="secondary-button"
+                    class="action-link"
                     :disabled="isWorkOrderPrintBusy(order.id)"
                     @click="void printWorkOrder(order)"
                   >
@@ -3995,20 +4270,76 @@ async function handleResetUserPassword(user: UserRecord) {
                     </span>
                   </button>
                   <button
+                    v-if="workOrderStatusTab === 'created'"
                     type="button"
-                    class="status-button"
-                    :class="{
-                      'status-button--active': order.completedAtTs === null,
-                      'status-button--inactive': order.completedAtTs !== null,
-                    }"
+                    class="action-link"
                     :disabled="isWorkOrderBusy(order.id)"
-                    @click="void toggleWorkOrderStatus(order)"
+                    @click="void toggleWorkOrderTakenStatus(order, true)"
                   >
-                    {{
-                      order.completedAtTs === null
-                        ? "Выполнен"
-                        : "Вернуть в работу"
-                    }}
+                    <span class="button-content">
+                      <span class="button-icon button-icon--play" aria-hidden="true" />
+                      <span>Взять в работу</span>
+                    </span>
+                  </button>
+                  <button
+                    v-if="workOrderStatusTab === 'in_work'"
+                    type="button"
+                    class="action-link"
+                    :disabled="isWorkOrderBusy(order.id)"
+                    @click="openWorkOrderActionConfirm(order, 'complete')"
+                  >
+                    <span class="button-content">
+                      <span class="button-icon button-icon--check" aria-hidden="true" />
+                      <span>Выполнен</span>
+                    </span>
+                  </button>
+                  <button
+                    v-if="workOrderStatusTab === 'in_work'"
+                    type="button"
+                    class="action-link"
+                    :disabled="isWorkOrderBusy(order.id)"
+                    @click="openWorkOrderActionConfirm(order, 'return_to_created')"
+                  >
+                    <span class="button-content">
+                      <span class="button-icon button-icon--refresh" aria-hidden="true" />
+                      <span>Вернуть в созданные</span>
+                    </span>
+                  </button>
+                  <button
+                    v-if="workOrderStatusTab === 'completed'"
+                    type="button"
+                    class="action-link"
+                    :disabled="isWorkOrderBusy(order.id)"
+                    @click="openWorkOrderActionConfirm(order, 'return_to_work')"
+                  >
+                    <span class="button-content">
+                      <span class="button-icon button-icon--in-work" aria-hidden="true" />
+                      <span>Вернуть в работу</span>
+                    </span>
+                  </button>
+                  <button
+                    v-if="workOrderStatusTab === 'deleted'"
+                    type="button"
+                    class="action-link"
+                    :disabled="isWorkOrderBusy(order.id)"
+                    @click="openWorkOrderActionConfirm(order, 'restore')"
+                  >
+                    <span class="button-content">
+                      <span class="button-icon button-icon--refresh" aria-hidden="true" />
+                      <span>Восстановить</span>
+                    </span>
+                  </button>
+                  <button
+                    v-if="workOrderStatusTab !== 'deleted'"
+                    type="button"
+                    class="action-link action-link--danger"
+                    :disabled="isWorkOrderBusy(order.id)"
+                    @click="openWorkOrderActionConfirm(order, 'delete')"
+                  >
+                    <span class="button-content">
+                      <span class="button-icon button-icon--delete" aria-hidden="true" />
+                      <span>Удалить</span>
+                    </span>
                   </button>
                 </article>
               </div>
@@ -4578,85 +4909,86 @@ async function handleResetUserPassword(user: UserRecord) {
                     <th>Версия</th>
                     <th>Автор</th>
                     <th>Дата создания</th>
-                    <th>Активность</th>
-                    <th>Операции</th>
-                    <th>Копия</th>
-                    <th>Удаление</th>
+                    <th>Действия</th>
                   </tr>
                 </thead>
                 <tbody>
                   <tr v-for="product in filteredProducts" :key="product.id">
-                    <td>{{ product.name }}</td>
-                    <td>{{ product.version }}</td>
-                    <td>{{ product.author }}</td>
-                    <td>{{ product.createdAt }}</td>
                     <td>
                       <button
                         type="button"
-                        class="status-button"
-                        :class="{
-                          'status-button--active': product.isActive,
-                          'status-button--inactive': !product.isActive,
-                        }"
-                        :disabled="isProductBusy(product.id)"
-                        @click="toggleProductStatus(product)"
-                      >
-                        <span class="button-content">
-                          <span
-                            class="button-icon"
-                            :class="product.isActive ? 'button-icon--pause' : 'button-icon--check'"
-                            aria-hidden="true"
-                          />
-                          <span>
-                            {{
-                              isProductBusy(product.id)
-                                ? "Обновление..."
-                                : product.isActive
-                                  ? "Деактивировать"
-                                  : "Активировать"
-                            }}
-                          </span>
-                        </span>
-                      </button>
-                    </td>
-                    <td>
-                      <button
-                        type="button"
-                        class="secondary-button"
+                        class="table-link"
                         :disabled="isProductBusy(product.id)"
                         @click="startViewProduct(product.id)"
                       >
                         <span class="button-content">
-                          <span class="button-icon button-icon--view" aria-hidden="true" />
-                          <span>{{ product.operationsCount }} этапов</span>
+                          <span class="button-icon button-icon--edit" aria-hidden="true" />
+                          <span>{{ product.name }}</span>
                         </span>
                       </button>
                     </td>
+                    <td>{{ product.version }}</td>
+                    <td>{{ product.author }}</td>
+                    <td>{{ product.createdAt }}</td>
                     <td>
-                      <button
-                        type="button"
-                        class="secondary-button"
-                        :disabled="isProductBusy(product.id)"
-                        @click="startCopyProduct(product.id)"
-                      >
-                        <span class="button-content">
-                          <span class="button-icon button-icon--copy" aria-hidden="true" />
-                          <span>Копировать</span>
-                        </span>
-                      </button>
-                    </td>
-                    <td>
-                      <button
-                        type="button"
-                        class="ghost-button ghost-button--danger"
-                        :disabled="isProductBusy(product.id)"
-                        @click="openDeleteConfirmation(product)"
-                      >
-                        <span class="button-content">
-                          <span class="button-icon button-icon--delete" aria-hidden="true" />
-                          <span>Удалить</span>
-                        </span>
-                      </button>
+                      <div class="table-actions">
+                        <button
+                          type="button"
+                          class="action-link"
+                          :disabled="isProductBusy(product.id)"
+                          @click="startViewProduct(product.id)"
+                        >
+                          <span class="button-content">
+                            <span class="button-icon button-icon--view" aria-hidden="true" />
+                            <span>Просмотр ({{ product.operationsCount }} этапов)</span>
+                          </span>
+                        </button>
+                        <button
+                          type="button"
+                          class="action-link"
+                          :disabled="isProductBusy(product.id)"
+                          @click="toggleProductStatus(product)"
+                        >
+                          <span class="button-content">
+                            <span
+                              class="button-icon"
+                              :class="product.isActive ? 'button-icon--pause' : 'button-icon--check'"
+                              aria-hidden="true"
+                            />
+                            <span>
+                              {{
+                                isProductBusy(product.id)
+                                  ? "Обновление..."
+                                  : product.isActive
+                                    ? "Деактивировать"
+                                    : "Активировать"
+                              }}
+                            </span>
+                          </span>
+                        </button>
+                        <button
+                          type="button"
+                          class="action-link"
+                          :disabled="isProductBusy(product.id)"
+                          @click="startCopyProduct(product.id)"
+                        >
+                          <span class="button-content">
+                            <span class="button-icon button-icon--copy" aria-hidden="true" />
+                            <span>Копировать</span>
+                          </span>
+                        </button>
+                        <button
+                          type="button"
+                          class="action-link action-link--danger"
+                          :disabled="isProductBusy(product.id)"
+                          @click="openDeleteConfirmation(product)"
+                        >
+                          <span class="button-content">
+                            <span class="button-icon button-icon--delete" aria-hidden="true" />
+                            <span>Удалить</span>
+                          </span>
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 </tbody>
@@ -4796,40 +5128,38 @@ async function handleResetUserPassword(user: UserRecord) {
                     <thead>
                       <tr>
                         <th>Наименование</th>
-                        <th>Отображение</th>
+                        <th>Действия</th>
                       </tr>
                     </thead>
                     <tbody>
                       <tr v-for="leatherType in leatherTypes" :key="leatherType.id">
                         <td>{{ leatherType.name }}</td>
                         <td>
-                          <button
-                            type="button"
-                            class="status-button"
-                            :class="{
-                              'status-button--active': leatherType.isActive,
-                              'status-button--inactive': !leatherType.isActive,
-                            }"
-                            :disabled="isLeatherTypeBusy(leatherType.id)"
-                            @click="void toggleLeatherTypeStatus(leatherType)"
-                          >
-                            <span class="button-content">
-                              <span
-                                class="button-icon"
-                                :class="leatherType.isActive ? 'button-icon--pause' : 'button-icon--check'"
-                                aria-hidden="true"
-                              />
-                              <span>
-                                {{
-                                  isLeatherTypeBusy(leatherType.id)
-                                    ? "Обновление..."
-                                    : leatherType.isActive
-                                      ? "Деактивировать"
-                                      : "Активировать"
-                                }}
+                          <div class="table-actions">
+                            <button
+                              type="button"
+                              class="action-link"
+                              :disabled="isLeatherTypeBusy(leatherType.id)"
+                              @click="void toggleLeatherTypeStatus(leatherType)"
+                            >
+                              <span class="button-content">
+                                <span
+                                  class="button-icon"
+                                  :class="leatherType.isActive ? 'button-icon--pause' : 'button-icon--check'"
+                                  aria-hidden="true"
+                                />
+                                <span>
+                                  {{
+                                    isLeatherTypeBusy(leatherType.id)
+                                      ? "Обновление..."
+                                      : leatherType.isActive
+                                        ? "Деактивировать"
+                                        : "Активировать"
+                                  }}
+                                </span>
                               </span>
-                            </span>
-                          </button>
+                            </button>
+                          </div>
                         </td>
                       </tr>
                     </tbody>
@@ -5073,40 +5403,45 @@ async function handleResetUserPassword(user: UserRecord) {
                     </div>
                   </td>
                   <td>
-                    <button
-                      type="button"
-                      class="status-button"
+                    <span
+                      class="user-status"
                       :class="{
-                        'status-button--active': getDisplayedUser(user).isActive,
-                        'status-button--inactive': !getDisplayedUser(user).isActive,
+                        'user-status--active': getDisplayedUser(user).isActive,
+                        'user-status--inactive': !getDisplayedUser(user).isActive,
                       }"
-                      :disabled="isUserLocked(user.id)"
-                      @click="handleUserStatusAction(user)"
                     >
-                      <span class="button-content">
-                        <span
-                          class="button-icon"
-                          :class="getDisplayedUser(user).isActive ? 'button-icon--pause' : 'button-icon--check'"
-                          aria-hidden="true"
-                        />
-                        <span>
-                          {{
-                            getDisplayedUser(user).isActive
-                              ? "Деактивировать"
-                              : "Активировать"
-                          }}
-                        </span>
-                      </span>
-                    </button>
+                      {{ getDisplayedUser(user).isActive ? "Активен" : "Деактивирован" }}
+                    </span>
                   </td>
                   <td>{{ getDisplayedUser(user).createdAt || "—" }}</td>
                   <td>{{ getDisplayedUser(user).updatedAt || "—" }}</td>
                   <td>
                     <div class="table-actions">
                       <button
+                        type="button"
+                        class="action-link"
+                        :disabled="isUserLocked(user.id)"
+                        @click="handleUserStatusAction(user)"
+                      >
+                        <span class="button-content">
+                          <span
+                            class="button-icon"
+                            :class="getDisplayedUser(user).isActive ? 'button-icon--pause' : 'button-icon--check'"
+                            aria-hidden="true"
+                          />
+                          <span>
+                            {{
+                              getDisplayedUser(user).isActive
+                                ? "Деактивировать"
+                                : "Активировать"
+                            }}
+                          </span>
+                        </span>
+                      </button>
+                      <button
                         v-if="getDisplayedUser(user).passwordHash"
                         type="button"
-                        class="ghost-button"
+                        class="action-link"
                         :disabled="isUserLocked(user.id)"
                         @click="void handleResetUserPassword(user)"
                       >
@@ -5117,7 +5452,7 @@ async function handleResetUserPassword(user: UserRecord) {
                       </button>
                       <button
                         type="button"
-                        class="ghost-button ghost-button--danger"
+                        class="action-link action-link--danger"
                         :disabled="isUserLocked(user.id)"
                         @click="openUserDeleteConfirmation(user)"
                       >
@@ -5129,7 +5464,7 @@ async function handleResetUserPassword(user: UserRecord) {
                       <button
                         v-if="isEditingUser(user.id)"
                         type="button"
-                        class="secondary-button"
+                        class="action-link"
                         :disabled="!canSaveUser(user)"
                         @click="saveUserChanges(user)"
                       >
@@ -5141,7 +5476,7 @@ async function handleResetUserPassword(user: UserRecord) {
                       <button
                         v-if="isEditingUser(user.id)"
                         type="button"
-                        class="ghost-button"
+                        class="action-link"
                         @click="cancelUserEdit"
                       >
                         <span class="button-content">
@@ -5563,6 +5898,74 @@ async function handleResetUserPassword(user: UserRecord) {
             <span class="button-content">
               <span class="button-icon button-icon--save" aria-hidden="true" />
               <span>{{ brigadierSaveLoading ? "Сохранение..." : "Подтвердить" }}</span>
+            </span>
+          </button>
+        </div>
+      </section>
+    </div>
+
+    <div
+      v-if="workOrderActionConfirm"
+      class="modal-backdrop"
+      @click.self="closeWorkOrderActionConfirm"
+    >
+      <section class="confirm-modal" role="dialog" aria-modal="true">
+        <div class="confirm-modal__content">
+          <p class="confirm-modal__eyebrow">Подтверждение действия</p>
+          <h2>{{ workOrderActionConfirmTitle }}</h2>
+          <dl class="confirm-modal__details">
+            <div>
+              <dt>Заказ</dt>
+              <dd>{{ workOrderActionConfirm.order.orderNumber }}</dd>
+            </div>
+            <div>
+              <dt>Изделие</dt>
+              <dd>
+                {{ workOrderActionConfirm.order.productName }}
+                · {{ workOrderActionConfirm.order.productVersion }}
+              </dd>
+            </div>
+            <div>
+              <dt>Вид кожи</dt>
+              <dd>{{ workOrderActionConfirm.order.leatherTypeName ?? "вид кожи не указан" }}</dd>
+            </div>
+            <div>
+              <dt>Количество</dt>
+              <dd>{{ workOrderActionConfirm.order.quantity }} шт.</dd>
+            </div>
+          </dl>
+          <p class="confirm-modal__description">
+            {{ workOrderActionConfirmDescription }}
+          </p>
+        </div>
+
+        <div class="confirm-modal__actions">
+          <button
+            type="button"
+            class="ghost-button"
+            :disabled="isWorkOrderBusy(workOrderActionConfirm.order.id)"
+            @click="closeWorkOrderActionConfirm"
+          >
+            <span class="button-content">
+              <span class="button-icon button-icon--close" aria-hidden="true" />
+              <span>Отменить</span>
+            </span>
+          </button>
+          <button
+            type="button"
+            :class="isWorkOrderActionConfirmDanger
+              ? 'ghost-button ghost-button--danger confirm-modal__delete'
+              : 'primary-button'"
+            :disabled="isWorkOrderBusy(workOrderActionConfirm.order.id)"
+            @click="void confirmWorkOrderAction()"
+          >
+            <span class="button-content">
+              <span
+                class="button-icon"
+                :class="workOrderActionConfirmIcon"
+                aria-hidden="true"
+              />
+              <span>{{ workOrderActionConfirmLabel }}</span>
             </span>
           </button>
         </div>
@@ -6058,7 +6461,7 @@ async function handleResetUserPassword(user: UserRecord) {
             :key="assignment.id"
           >
             <td>{{ assignment.operationName }}</td>
-            <td>{{ assignment.workerUserName }}</td>
+            <td>{{ assignment.workerUserName ?? "" }}</td>
           </tr>
           <tr v-if="printableWorkOrder.assignments.length === 0">
             <td colspan="2">Операции с исполнителями не назначены.</td>
@@ -6840,6 +7243,52 @@ h2 {
   color: var(--color-danger);
 }
 
+.action-link {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  padding: 4px 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--color-primary-hover);
+  font: inherit;
+  font-weight: 700;
+  line-height: 1.25;
+  text-align: left;
+  text-decoration: underline;
+  text-decoration-color: rgba(36, 94, 142, 0.32);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 4px;
+  cursor: pointer;
+  transition:
+    color 0.18s ease,
+    opacity 0.18s ease,
+    text-decoration-color 0.18s ease,
+    transform 0.18s ease;
+}
+
+.action-link:hover {
+  color: var(--color-primary);
+  text-decoration-color: currentColor;
+  transform: translateY(-1px);
+}
+
+.action-link:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+  transform: none;
+}
+
+.action-link--danger {
+  color: var(--color-danger);
+  text-decoration-color: rgba(197, 107, 107, 0.36);
+}
+
+.action-link--danger:hover {
+  color: #a84d4d;
+}
+
 .toolbar {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto auto;
@@ -7252,6 +7701,27 @@ h2 {
   color: var(--color-text-secondary);
 }
 
+.user-status {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  min-width: 118px;
+  padding: 8px 12px;
+  border-radius: 999px;
+  font-size: 0.86rem;
+  font-weight: 700;
+}
+
+.user-status--active {
+  background: rgba(94, 143, 116, 0.16);
+  color: var(--color-text);
+}
+
+.user-status--inactive {
+  background: rgba(138, 150, 163, 0.14);
+  color: var(--color-text-secondary);
+}
+
 .empty-table-state {
   margin-top: 16px;
   padding: 14px 16px;
@@ -7426,9 +7896,14 @@ h2 {
 }
 
 .table-actions {
-  display: flex;
-  gap: 10px;
-  flex-wrap: wrap;
+  display: grid;
+  gap: 8px;
+  align-items: start;
+  justify-items: start;
+}
+
+.table-actions .action-link {
+  white-space: nowrap;
 }
 
 .subtabs {
@@ -7554,6 +8029,10 @@ h2 {
   gap: 4px;
   color: var(--color-text-secondary);
   font-size: 0.92rem;
+}
+
+.mobile-card > .action-link {
+  justify-self: start;
 }
 
 .mobile-card__version {
