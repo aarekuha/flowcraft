@@ -22,15 +22,17 @@ def test_create_and_get_product(client: TestClient) -> None:
         "name": "Кошелек Daily Fold",
         "version": "1.0",
         "author_user_id": author_user["id"],
+        "material_cost_cents": 125000,
         "operations": [
             {
                 "name": "Крой",
+                "price_cents": 15000,
                 "children": [
-                    {"name": "Фасад", "children": []},
+                    {"name": "Фасад", "price_cents": 5000, "children": []},
                     {"name": "Подклад", "children": []},
                 ],
             },
-            {"name": "Пошив", "children": []},
+            {"name": "Пошив", "price_cents": 25000, "children": []},
         ],
     }
 
@@ -41,8 +43,12 @@ def test_create_and_get_product(client: TestClient) -> None:
     assert created_product["name"] == payload["name"]
     assert created_product["version"] == payload["version"]
     assert created_product["author"] == author_user["name"]
+    assert created_product["material_cost_cents"] == 125000
     assert len(created_product["operations"]) == 2
+    assert created_product["operations"][0]["price_cents"] == 15000
     assert created_product["operations"][0]["children"][0]["name"] == "Фасад"
+    assert created_product["operations"][0]["children"][0]["price_cents"] == 5000
+    assert created_product["operations"][0]["children"][1]["price_cents"] is None
 
     product_id = created_product["id"]
 
@@ -51,6 +57,106 @@ def test_create_and_get_product(client: TestClient) -> None:
     assert get_response.status_code == 200
     fetched_product = get_response.json()
     assert fetched_product == created_product
+
+
+def test_update_product_costs(client: TestClient) -> None:
+    author_user = create_author_user(client)
+    create_response = client.post(
+        "/api/products",
+        json={
+            "name": "Портмоне Price Line",
+            "version": "1.0",
+            "author_user_id": author_user["id"],
+            "operations": [
+                {
+                    "name": "Крой",
+                    "children": [
+                        {"name": "Фасад", "children": []},
+                    ],
+                },
+                {"name": "Пошив", "children": []},
+            ],
+        },
+    )
+    assert create_response.status_code == 201
+    product = create_response.json()
+    root_operation = product["operations"][0]
+    child_operation = root_operation["children"][0]
+    second_operation = product["operations"][1]
+
+    patch_response = client.patch(
+        f"/api/products/{product['id']}/costs",
+        json={
+            "material_cost_cents": 99000,
+            "operations": [
+                {
+                    "id": root_operation["id"],
+                    "price_cents": 12000,
+                    "children": [
+                        {
+                            "id": child_operation["id"],
+                            "price_cents": 7000,
+                            "children": [],
+                        },
+                    ],
+                },
+                {
+                    "id": second_operation["id"],
+                    "price_cents": None,
+                    "children": [],
+                },
+            ],
+        },
+    )
+
+    assert patch_response.status_code == 200
+    updated_product = patch_response.json()
+    assert updated_product["material_cost_cents"] == 99000
+    assert updated_product["operations"][0]["price_cents"] == 12000
+    assert updated_product["operations"][0]["children"][0]["price_cents"] == 7000
+    assert updated_product["operations"][1]["price_cents"] is None
+
+    get_response = client.get(f"/api/products/{product['id']}")
+    assert get_response.status_code == 200
+    assert get_response.json()["material_cost_cents"] == 99000
+
+
+def test_update_product_costs_requires_every_operation(client: TestClient) -> None:
+    author_user = create_author_user(client)
+    create_response = client.post(
+        "/api/products",
+        json={
+            "name": "Клатч Cost Guard",
+            "version": "1.0",
+            "author_user_id": author_user["id"],
+            "operations": [
+                {"name": "Крой", "children": []},
+                {"name": "Пошив", "children": []},
+            ],
+        },
+    )
+    assert create_response.status_code == 201
+    product = create_response.json()
+
+    patch_response = client.patch(
+        f"/api/products/{product['id']}/costs",
+        json={
+            "material_cost_cents": 50000,
+            "operations": [
+                {
+                    "id": product["operations"][0]["id"],
+                    "price_cents": 10000,
+                    "children": [],
+                },
+            ],
+        },
+    )
+
+    assert patch_response.status_code == 422
+    assert (
+        patch_response.json()["detail"]
+        == "Operation prices must cover every product operation."
+    )
 
 
 def test_list_products_returns_operations_count(client: TestClient) -> None:
@@ -84,7 +190,9 @@ def test_list_products_returns_operations_count(client: TestClient) -> None:
     assert products[0]["operations_count"] == 3
 
 
-def test_create_product_rejects_duplicate_sibling_operations(client: TestClient) -> None:
+def test_create_product_rejects_duplicate_sibling_operations(
+    client: TestClient,
+) -> None:
     author_user = create_author_user(client)
     response = client.post(
         "/api/products",
@@ -118,7 +226,10 @@ def test_create_product_rejects_duplicate_name_and_version(client: TestClient) -
     second_response = client.post("/api/products", json=payload)
 
     assert second_response.status_code == 422
-    assert second_response.json()["detail"] == "Product with this name and version already exists."
+    assert (
+        second_response.json()["detail"]
+        == "Product with this name and version already exists."
+    )
 
 
 def test_create_product_rejects_empty_operation_name(client: TestClient) -> None:
@@ -136,7 +247,10 @@ def test_create_product_rejects_empty_operation_name(client: TestClient) -> None
     )
 
     assert response.status_code == 422
-    assert response.json()["detail"][0]["msg"] == "Value error, Operation name must not be empty."
+    assert (
+        response.json()["detail"][0]["msg"]
+        == "Value error, Operation name must not be empty."
+    )
 
 
 def test_delete_product_removes_it(client: TestClient) -> None:

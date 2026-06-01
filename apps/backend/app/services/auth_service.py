@@ -49,7 +49,10 @@ class AuthService:
                 user_name=user.name,
             )
 
-        if not payload.password or not verify_password(payload.password, user.password_hash):
+        if not payload.password or not verify_password(
+            payload.password,
+            user.password_hash,
+        ):
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Неверный номер телефона или пароль.",
@@ -64,7 +67,11 @@ class AuthService:
             user_name=user.name,
         )
 
-    def setup_password(self, payload: AuthSetupPassword, response: Response) -> AuthSessionRead:
+    def setup_password(
+        self,
+        payload: AuthSetupPassword,
+        response: Response,
+    ) -> AuthSessionRead:
         user = self._get_user_by_phone(payload.phone)
         self._ensure_user_can_authenticate(user)
 
@@ -89,12 +96,13 @@ class AuthService:
             )
 
         auth_session = self._get_auth_session_or_401(token)
+        user = auth_session.user
         return AuthenticatedSession(
             session_id=auth_session.id,
             token=auth_session.token,
             user_id=auth_session.user_id,
-            user_name=auth_session.user_name,
-            user_roles=list(auth_session.user_roles),
+            user_name=user.name,
+            user_roles=list(user.roles),
             expires_at=auth_session.expires_at,
             idle_expires_at=auth_session.idle_expires_at,
         )

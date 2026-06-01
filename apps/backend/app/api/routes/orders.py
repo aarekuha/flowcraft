@@ -1,17 +1,24 @@
 from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.orm import Session
 
-from app.api.dependencies import get_authenticated_session, get_session
+from app.api.dependencies import (
+    get_authenticated_session,
+    get_session,
+    require_any_role,
+)
 from app.schemas.order import (
     SortDirection,
     WorkOrderCreate,
     WorkOrderDeletedStatusUpdate,
     WorkOrderDetail,
     WorkOrderPage,
+    WorkOrderQualityControlAccept,
+    WorkOrderQualityControlStatusUpdate,
     WorkOrderSortField,
     WorkOrderStatusFilter,
     WorkOrderStatusUpdate,
     WorkOrderTakenStatusUpdate,
+    WorkOrderTimeBreakdown,
     WorkOrderUpdateAssignments,
 )
 from app.services.auth_service import AuthenticatedSession
@@ -65,6 +72,18 @@ def get_order(
     return OrderService(session).get_order(order_id)
 
 
+@router.get(
+    "/{order_id}/time-breakdown",
+    response_model=WorkOrderTimeBreakdown,
+    summary="Get work order time breakdown",
+)
+def get_order_time_breakdown(
+    order_id: int,
+    session: Session = Depends(get_session),
+) -> WorkOrderTimeBreakdown:
+    return OrderService(session).get_order_time_breakdown(order_id)
+
+
 @router.post(
     "",
     response_model=WorkOrderDetail,
@@ -102,6 +121,38 @@ def update_order_status(
     session: Session = Depends(get_session),
 ) -> WorkOrderDetail:
     return OrderService(session).update_order_status(order_id, payload)
+
+
+@router.patch(
+    "/{order_id}/quality-control-status",
+    response_model=WorkOrderDetail,
+    summary="Update work order quality control status",
+)
+def update_order_quality_control_status(
+    order_id: int,
+    payload: WorkOrderQualityControlStatusUpdate,
+    session: Session = Depends(get_session),
+) -> WorkOrderDetail:
+    return OrderService(session).update_order_quality_control_status(
+        order_id,
+        payload,
+    )
+
+
+@router.patch(
+    "/{order_id}/quality-control-acceptance",
+    response_model=WorkOrderDetail,
+    summary="Accept work order quality control",
+)
+def accept_order_quality_control(
+    order_id: int,
+    payload: WorkOrderQualityControlAccept,
+    _auth_session: AuthenticatedSession = Depends(
+        require_any_role("quality_control")
+    ),
+    session: Session = Depends(get_session),
+) -> WorkOrderDetail:
+    return OrderService(session).accept_order_quality_control(order_id, payload)
 
 
 @router.patch(

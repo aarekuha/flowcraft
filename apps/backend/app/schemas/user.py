@@ -9,6 +9,7 @@ class UserRole(StrEnum):
     WORKER = "worker"
     BRIGADIER = "brigadier"
     CONSTRUCTOR = "constructor"
+    QUALITY_CONTROL = "quality_control"
     ADMIN = "admin"
 
 

@@ -1,6 +1,11 @@
 import { apiFetch, createRequestError, handleJsonResponse } from "@/shared/api/http";
 
-export type UserRole = "worker" | "brigadier" | "constructor" | "admin";
+export type UserRole =
+  | "worker"
+  | "brigadier"
+  | "constructor"
+  | "quality_control"
+  | "admin";
 
 export type UserRecord = {
   id: number;

@@ -10,8 +10,10 @@ from app.models.operation import Operation
 from app.models.product import Product
 from app.models.user import User
 from app.schemas.product import (
+    OperationCostUpdate,
     OperationCreate,
     OperationRead,
+    ProductCostsUpdate,
     ProductCreate,
     ProductDetail,
     ProductListItem,
@@ -24,7 +26,10 @@ class ProductService:
 
     def list_products(self) -> list[ProductListItem]:
         operations_count = (
-            select(Operation.product_id, func.count(Operation.id).label("operations_count"))
+            select(
+                Operation.product_id,
+                func.count(Operation.id).label("operations_count"),
+            )
             .group_by(Operation.product_id)
             .subquery()
         )
@@ -36,9 +41,12 @@ class ProductService:
                 Product.version,
                 Product.author,
                 Product.author_user_id,
+                Product.material_cost_cents,
                 Product.is_active,
                 Product.created_at,
-                func.coalesce(operations_count.c.operations_count, 0).label("operations_count"),
+                func.coalesce(operations_count.c.operations_count, 0).label(
+                    "operations_count"
+                ),
             )
             .outerjoin(operations_count, Product.id == operations_count.c.product_id)
             .order_by(Product.created_at.desc(), Product.id.desc())
@@ -55,9 +63,13 @@ class ProductService:
             version=product.version,
             author=product.author,
             author_user_id=product.author_user_id,
+            material_cost_cents=product.material_cost_cents,
             is_active=product.is_active,
             created_at=product.created_at,
-            operations=[self._serialize_operation(operation) for operation in product.operations],
+            operations=[
+                self._serialize_operation(operation)
+                for operation in product.operations
+            ],
         )
 
     def create_product(self, payload: ProductCreate) -> ProductDetail:
@@ -70,6 +82,7 @@ class ProductService:
             version=payload.version,
             author=author_user.name,
             author_user_id=author_user.id,
+            material_cost_cents=payload.material_cost_cents,
             is_active=True,
             created_at=int(datetime.now(UTC).timestamp() * 1000),
         )
@@ -89,12 +102,42 @@ class ProductService:
 
         return self.get_product(product.id)
 
+    def update_product_costs(
+        self,
+        product_id: int,
+        payload: ProductCostsUpdate,
+    ) -> ProductDetail:
+        product = self._get_product_or_404(product_id)
+        operation_prices = self._collect_operation_prices(payload.operations)
+        operations = self.session.scalars(
+            select(Operation).where(Operation.product_id == product.id)
+        ).all()
+        operations_by_id = {operation.id: operation for operation in operations}
+
+        if set(operation_prices) != set(operations_by_id):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Operation prices must cover every product operation.",
+            )
+
+        product.material_cost_cents = payload.material_cost_cents
+        for operation_id, price_cents in operation_prices.items():
+            operations_by_id[operation_id].price_cents = price_cents
+
+        self.session.commit()
+        self.session.refresh(product)
+        return self.get_product(product.id)
+
     def delete_product(self, product_id: int) -> None:
         product = self._get_product_or_404(product_id)
         self.session.delete(product)
         self.session.commit()
 
-    def update_product_status(self, product_id: int, is_active: bool) -> ProductListItem:
+    def update_product_status(
+        self,
+        product_id: int,
+        is_active: bool,
+    ) -> ProductListItem:
         product = self._get_product_or_404(product_id)
         product.is_active = is_active
         self.session.commit()
@@ -106,6 +149,7 @@ class ProductService:
             version=product.version,
             author=product.author,
             author_user_id=product.author_user_id,
+            material_cost_cents=product.material_cost_cents,
             is_active=product.is_active,
             created_at=product.created_at,
             operations_count=self._count_operations(product.operations),
@@ -135,6 +179,7 @@ class ProductService:
     ) -> Operation:
         operation = Operation(
             name=payload.name,
+            price_cents=payload.price_cents,
             sort_order=sort_order,
             product=product,
         )
@@ -180,16 +225,42 @@ class ProductService:
                 detail="Product with this name and version already exists.",
             )
 
+    def _collect_operation_prices(
+        self,
+        operations: Sequence[OperationCostUpdate],
+    ) -> dict[int, int | None]:
+        prices: dict[int, int | None] = {}
+
+        def walk(nodes: Sequence[OperationCostUpdate]) -> None:
+            for operation in nodes:
+                if operation.id in prices:
+                    raise HTTPException(
+                        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                        detail=(
+                            "Operation prices must reference each operation only once."
+                        ),
+                    )
+
+                prices[operation.id] = operation.price_cents
+                walk(operation.children)
+
+        walk(operations)
+        return prices
+
     def _serialize_operation(self, operation: Operation) -> OperationRead:
         ordered_children = sorted(operation.children, key=lambda item: item.sort_order)
         return OperationRead(
             id=operation.id,
             name=operation.name,
+            price_cents=operation.price_cents,
             children=[self._serialize_operation(child) for child in ordered_children],
         )
 
     def _count_operations(self, operations: Sequence[Operation]) -> int:
-        return sum(1 + self._count_operations(operation.children) for operation in operations)
+        return sum(
+            1 + self._count_operations(operation.children)
+            for operation in operations
+        )
 
     def _build_list_item(self, row: Any) -> ProductListItem:
         return ProductListItem(
@@ -198,6 +269,7 @@ class ProductService:
             version=row.version,
             author=row.author,
             author_user_id=row.author_user_id,
+            material_cost_cents=row.material_cost_cents,
             is_active=row.is_active,
             created_at=row.created_at,
             operations_count=row.operations_count,

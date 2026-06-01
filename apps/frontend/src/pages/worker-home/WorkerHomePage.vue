@@ -20,13 +20,16 @@ import {
   type LeatherTypeSortDirection,
 } from "@/shared/api/leatherTypes";
 import {
+  acceptWorkOrderQualityControl,
   createWorkOrder,
   fetchAllWorkOrders,
   fetchWorkOrder,
+  fetchWorkOrderTimeBreakdown,
   fetchWorkOrders,
   fetchWorkerAssignedWorkOrders,
   updateWorkOrderAssignments,
   updateWorkOrderDeletedStatus,
+  updateWorkOrderQualityControlStatus,
   updateWorkOrderStatus,
   updateWorkOrderTakenStatus,
   type WorkOrderListParams,
@@ -35,15 +38,18 @@ import {
   type WorkOrderStatusFilter,
   type WorkOrderDetail,
   type WorkOrderSummary,
+  type WorkOrderTimeBreakdown,
 } from "@/shared/api/orders";
 import {
   createProduct,
   deleteProduct,
   fetchProduct,
   fetchProducts,
+  updateProductCosts,
   updateProductStatus,
   type OperationNode,
   type ProductCreatePayload,
+  type ProductCostsUpdatePayload,
   type ProductDetail,
   type ProductSummary,
 } from "@/shared/api/products";
@@ -95,9 +101,10 @@ type WorkOrderSort =
   | "name-asc"
   | "name-desc";
 type WorkOrderActionConfirmKind =
-  | "complete"
+  | "send_to_quality_control"
   | "return_to_created"
   | "return_to_work"
+  | "return_to_quality_control"
   | "delete"
   | "restore";
 type UserSort = "created-desc" | "created-asc" | "name-asc" | "name-desc";
@@ -105,6 +112,7 @@ type UserSort = "created-desc" | "created-asc" | "name-asc" | "name-desc";
 type FlatOperationNodeRow = {
   id: number;
   name: string;
+  priceCents: number | null;
   level: number;
   isGroup: boolean;
   canMoveUp: boolean;
@@ -157,7 +165,7 @@ const tabs: Array<{ id: TabId; label: string; icon: string }> = [
 
 const tabRoles: Record<TabId, UserRole[]> = {
   worker: ["worker"],
-  brigadier: ["brigadier"],
+  brigadier: ["brigadier", "quality_control"],
   constructor: ["constructor"],
   stats: ["brigadier", "admin"],
   users: ["admin"],
@@ -191,6 +199,7 @@ const userRoleOptions: Array<{
   { value: "worker", label: "Исполнитель", icon: "worker" },
   { value: "brigadier", label: "Бригадир", icon: "brigadier" },
   { value: "constructor", label: "Конструктор", icon: "constructor" },
+  { value: "quality_control", label: "ОТК", icon: "quality-control" },
   { value: "admin", label: "Администратор", icon: "admin" },
 ];
 
@@ -220,7 +229,8 @@ const workOrderStatusTabs: Array<{
 }> = [
   { id: "created", label: "Созданные", icon: "orders" },
   { id: "in_work", label: "В работе", icon: "in-work" },
-  { id: "completed", label: "Выполненные", icon: "completed" },
+  { id: "quality_control", label: "ОТК", icon: "search" },
+  { id: "completed", label: "Выполненные", icon: "check" },
   { id: "deleted", label: "Удаленные", icon: "delete" },
 ];
 
@@ -261,6 +271,7 @@ const constructorDirectoryTab = ref<ConstructorDirectoryTabId>(
   ),
 );
 const modalMode = ref<ModalMode>(null);
+const modalProductId = ref<number | null>(null);
 const currentSession = ref<AuthSession | null>(null);
 const products = ref<ProductSummary[]>([]);
 const busyProductIds = ref<number[]>([]);
@@ -296,16 +307,18 @@ const userVisibility = ref<ProductVisibilityFilter>("all");
 const userSort = ref<UserSort>("name-asc");
 const productName = ref("");
 const productVersion = ref("");
+const productMaterialCostCents = ref<number | null>(null);
 const operationTree = ref<OperationNode[]>([]);
 const productPendingDelete = ref<ProductSummary | null>(null);
 const userPendingDelete = ref<UserRecord | null>(null);
 const editingUserId = ref<number | null>(null);
 const editingUserDraft = ref<UserRecord | null>(null);
-const brigadierModalMode = ref<"create" | "manage" | null>(null);
+const brigadierModalMode = ref<"create" | "manage" | "quality_control" | null>(null);
 const brigadierModalProduct = ref<ProductDetail | null>(null);
 const brigadierModalOrderId = ref<number | null>(null);
 const brigadierModalAssignments = ref<BrigadierOrderAssignment[]>([]);
 const brigadierModalQuantity = ref("1");
+const brigadierModalDefectQuantity = ref("0");
 const brigadierModalOrderNumber = ref("");
 const brigadierModalLeatherTypeId = ref("");
 const brigadierOpenAssignmentDropdownId = ref<number | null>(null);
@@ -322,6 +335,12 @@ const workOrderActionConfirm = ref<{
   kind: WorkOrderActionConfirmKind;
   order: WorkOrderSummary;
 } | null>(null);
+const workOrderTimeBreakdownModal = ref<{
+  order: WorkOrderSummary;
+  breakdown: WorkOrderTimeBreakdown | null;
+} | null>(null);
+const workOrderTimeBreakdownLoading = ref(false);
+const workOrderTimeBreakdownError = ref("");
 const workOrderDetails = ref<WorkOrderDetail[]>([]);
 const workerAssignmentsLoading = ref(false);
 const workerAssignmentsError = ref("");
@@ -372,8 +391,12 @@ let workerClockIntervalId: number | null = null;
 let workOrdersRequestId = 0;
 let workerAssignmentsRequestId = 0;
 let leatherTypesRequestId = 0;
+let workOrderTimeBreakdownRequestId = 0;
 const isModalOpen = computed(() => modalMode.value !== null);
 const isBrigadierOrderModalOpen = computed(() => brigadierModalMode.value !== null);
+const isQualityControlOrderModal = computed(
+  () => brigadierModalMode.value === "quality_control",
+);
 const isDeleteModalOpen = computed(() => productPendingDelete.value !== null);
 const isUserDeleteModalOpen = computed(() => userPendingDelete.value !== null);
 const isViewMode = computed(() => modalMode.value === "view");
@@ -398,7 +421,13 @@ const canViewStatistics = computed(
     false,
 );
 const canManageWorkOrders = computed(
-  () => currentSession.value?.userRoles.includes("brigadier") ?? false,
+  () =>
+    currentSession.value?.userRoles.includes("brigadier") ||
+    currentSession.value?.userRoles.includes("quality_control") ||
+    false,
+);
+const canAcceptQualityControl = computed(
+  () => currentSession.value?.userRoles.includes("quality_control") ?? false,
 );
 
 const shouldShowValidation = computed(
@@ -418,6 +447,12 @@ const productNameError = computed(() =>
 
 const productVersionError = computed(() =>
   productVersion.value.trim() ? "" : "Укажите версию изделия.",
+);
+
+const productMaterialCostError = computed(() =>
+  productMaterialCostCents.value === null || productMaterialCostCents.value >= 0
+    ? ""
+    : "Стоимость материала не может быть отрицательной.",
 );
 
 const productIdentityError = computed(() => {
@@ -442,13 +477,24 @@ const operationTreeError = computed(() =>
 );
 
 const canSaveProduct = computed(
-  () =>
-    !isViewMode.value &&
-    !productNameError.value &&
-    !productVersionError.value &&
-    !productIdentityError.value &&
-    !operationTreeError.value &&
-    !hasOperationErrors.value,
+  () => {
+    if (isViewMode.value) {
+      return (
+        modalProductId.value !== null &&
+        !productMaterialCostError.value &&
+        !hasOperationErrors.value
+      );
+    }
+
+    return (
+      !productNameError.value &&
+      !productVersionError.value &&
+      !productMaterialCostError.value &&
+      !productIdentityError.value &&
+      !operationTreeError.value &&
+      !hasOperationErrors.value
+    );
+  },
 );
 
 const saveBlockIssue = computed<{
@@ -476,6 +522,13 @@ const saveBlockIssue = computed<{
     };
   }
 
+  if (productMaterialCostError.value) {
+    return {
+      message: productMaterialCostError.value,
+      selector: '[data-field="product-material-cost"]',
+    };
+  }
+
   if (hasOperationErrors.value && firstOperationErrorRow.value) {
     return {
       message: operationErrors.value[firstOperationErrorRow.value.id],
@@ -499,7 +552,7 @@ const modalTitle = computed(() => {
   }
 
   if (modalMode.value === "view") {
-    return "Просмотр изделия";
+    return "Карточка изделия";
   }
 
   return "Новое изделие";
@@ -511,7 +564,7 @@ const modalDescription = computed(() => {
   }
 
   if (modalMode.value === "view") {
-    return "Просмотр состава операций без возможности редактирования.";
+    return "Структура изделия доступна для просмотра, стоимость материала и цены операций можно изменить.";
   }
 
   return "Заполните карточку изделия и задайте дерево производственных операций.";
@@ -616,37 +669,51 @@ const leatherTypeNameError = computed(() =>
 );
 
 const brigadierModalTitle = computed(() =>
-  brigadierModalMode.value === "manage" ? "Управление заказом" : "Новый заказ",
+  brigadierModalMode.value === "create" ? "Новый заказ" : "Управление заказом",
 );
 
 const brigadierModalDescription = computed(() =>
-  brigadierModalMode.value === "manage"
-    ? "Просмотр заказа с возможностью изменить количество и назначенных исполнителей."
+  brigadierModalMode.value === "quality_control"
+    ? "Проверьте заказ и укажите количество брака."
+    : brigadierModalMode.value === "manage"
+    ? "Просмотр заказа с возможностью изменить вид кожи и назначенных исполнителей."
     : "Укажите количество изделий и распределите исполнителей по операциям.",
 );
 
 const brigadierModalSaveLabel = computed(() =>
-  brigadierModalMode.value === "manage" ? "Сохранить изменения" : "Сохранить заказ",
+  brigadierModalMode.value === "quality_control"
+    ? "Заказ выполнен"
+    : brigadierModalMode.value === "manage"
+      ? "Сохранить изменения"
+      : "Сохранить заказ",
 );
 
 const brigadierSaveConfirmTitle = computed(() =>
-  brigadierModalMode.value === "manage" ? "Сохранить изменения заказа?" : "Создать заказ?",
+  brigadierModalMode.value === "quality_control"
+    ? "Принять заказ после ОТК?"
+    : brigadierModalMode.value === "manage"
+      ? "Сохранить изменения заказа?"
+      : "Создать заказ?",
 );
 
 const brigadierSaveConfirmDescription = computed(() =>
-  brigadierModalMode.value === "manage"
-    ? "Количество изделий и назначения исполнителей будут обновлены в заказе."
+  brigadierModalMode.value === "quality_control"
+    ? "Будет сохранено количество брака и установлено время выполнения заказа."
+    : brigadierModalMode.value === "manage"
+    ? "Вид кожи и назначения исполнителей будут обновлены в заказе."
     : "Заказ будет создан и появится во вкладке созданных заказов.",
 );
 
 const workOrderActionConfirmTitle = computed(() => {
   switch (workOrderActionConfirm.value?.kind) {
-    case "complete":
-      return "Отметить заказ выполненным?";
+    case "send_to_quality_control":
+      return "Передать заказ в ОТК?";
     case "return_to_created":
       return "Вернуть заказ в созданные?";
     case "return_to_work":
       return "Вернуть заказ в работу?";
+    case "return_to_quality_control":
+      return "Вернуть заказ на ОТК?";
     case "delete":
       return "Удалить заказ?";
     case "restore":
@@ -658,12 +725,14 @@ const workOrderActionConfirmTitle = computed(() => {
 
 const workOrderActionConfirmDescription = computed(() => {
   switch (workOrderActionConfirm.value?.kind) {
-    case "complete":
-      return "Будет установлено текущее время выполнения заказа.";
+    case "send_to_quality_control":
+      return "Будет установлена дата передачи в ОТК. Заказ исчезнет из таймеров исполнителей.";
     case "return_to_created":
-      return "Время взятия в работу и время выполнения будут очищены. Заказ исчезнет из таймеров исполнителей.";
+      return "Время взятия в работу, ОТК и время выполнения будут очищены. Заказ исчезнет из таймеров исполнителей.";
     case "return_to_work":
-      return "Время выполнения будет очищено, заказ снова появится в списке заказов в работе.";
+      return "Дата передачи в ОТК и количество брака будут очищены, заказ снова появится в работе.";
+    case "return_to_quality_control":
+      return "Время выполнения будет очищено, заказ вернется во вкладку ОТК.";
     case "delete":
       return "Заказ будет перенесен во вкладку удаленных. Его можно будет восстановить позже.";
     case "restore":
@@ -675,12 +744,14 @@ const workOrderActionConfirmDescription = computed(() => {
 
 const workOrderActionConfirmLabel = computed(() => {
   switch (workOrderActionConfirm.value?.kind) {
-    case "complete":
-      return "Выполнен";
+    case "send_to_quality_control":
+      return "Передать в ОТК";
     case "return_to_created":
       return "Вернуть в созданные";
     case "return_to_work":
       return "Вернуть в работу";
+    case "return_to_quality_control":
+      return "Вернуть на ОТК";
     case "delete":
       return "Удалить";
     case "restore":
@@ -692,13 +763,15 @@ const workOrderActionConfirmLabel = computed(() => {
 
 const workOrderActionConfirmIcon = computed(() => {
   switch (workOrderActionConfirm.value?.kind) {
-    case "complete":
+    case "send_to_quality_control":
       return "button-icon--check";
     case "return_to_created":
     case "restore":
       return "button-icon--refresh";
     case "return_to_work":
       return "button-icon--in-work";
+    case "return_to_quality_control":
+      return "button-icon--check";
     case "delete":
       return "button-icon--delete";
     default:
@@ -734,6 +807,25 @@ const brigadierQuantityError = computed(() => {
     : "Укажите количество изделий больше нуля.";
 });
 
+const brigadierDefectQuantityError = computed(() => {
+  if (!isQualityControlOrderModal.value) {
+    return "";
+  }
+
+  const defectQuantity = Number.parseInt(brigadierModalDefectQuantity.value, 10);
+  const orderQuantity = Number.parseInt(brigadierModalQuantity.value, 10);
+
+  if (!Number.isInteger(defectQuantity) || defectQuantity < 0) {
+    return "Укажите количество брака целым числом от 0.";
+  }
+
+  if (Number.isInteger(orderQuantity) && defectQuantity > orderQuantity) {
+    return "Количество брака не может превышать количество изделий в заказе.";
+  }
+
+  return "";
+});
+
 const firstBrigadierAssignmentError = computed(() =>
   brigadierModalAssignments.value.find((assignment) =>
     Boolean(getBrigadierAssignmentError(assignment)),
@@ -744,6 +836,15 @@ const brigadierSaveIssue = computed<{
   message: string;
   selector: string;
 } | null>(() => {
+  if (isQualityControlOrderModal.value) {
+    return brigadierDefectQuantityError.value
+      ? {
+          message: brigadierDefectQuantityError.value,
+          selector: '[data-field="brigadier-defect-quantity"]',
+        }
+      : null;
+  }
+
   if (brigadierOrderNumberError.value) {
     return {
       message: brigadierOrderNumberError.value,
@@ -758,6 +859,13 @@ const brigadierSaveIssue = computed<{
     };
   }
 
+  if (brigadierDefectQuantityError.value) {
+    return {
+      message: brigadierDefectQuantityError.value,
+      selector: '[data-field="brigadier-defect-quantity"]',
+    };
+  }
+
   if (firstBrigadierAssignmentError.value) {
     return {
       message: getBrigadierAssignmentError(firstBrigadierAssignmentError.value),
@@ -769,6 +877,14 @@ const brigadierSaveIssue = computed<{
 });
 
 const brigadierModalCanSave = computed(() => {
+  if (isQualityControlOrderModal.value) {
+    return (
+      Boolean(brigadierModalProduct.value) &&
+      brigadierModalOrderId.value !== null &&
+      !brigadierDefectQuantityError.value
+    );
+  }
+
   return (
     Boolean(brigadierModalProduct.value) &&
     !brigadierOrderNumberError.value &&
@@ -1640,8 +1756,10 @@ async function loadStatistics() {
 function resetForm() {
   hasAttemptedSubmit.value = false;
   modalError.value = "";
+  modalProductId.value = null;
   productName.value = "";
   productVersion.value = "";
+  productMaterialCostCents.value = null;
   operationTree.value = [];
   nextOperationId = 1;
 }
@@ -1683,6 +1801,7 @@ async function openProductModal(productId: number, mode: Exclude<ModalMode, "cre
 
 function closeProductModal() {
   modalMode.value = null;
+  modalProductId.value = null;
   modalLoading.value = false;
   saveLoading.value = false;
   hasAttemptedSubmit.value = false;
@@ -1723,6 +1842,51 @@ function closeWorkOrderActionConfirm() {
   }
 
   workOrderActionConfirm.value = null;
+}
+
+async function openWorkOrderTimeBreakdown(order: WorkOrderSummary) {
+  const requestId = ++workOrderTimeBreakdownRequestId;
+  workOrderTimeBreakdownModal.value = {
+    order,
+    breakdown: null,
+  };
+  workOrderTimeBreakdownLoading.value = true;
+  workOrderTimeBreakdownError.value = "";
+
+  try {
+    const breakdown = await fetchWorkOrderTimeBreakdown(order.id);
+    if (
+      requestId !== workOrderTimeBreakdownRequestId ||
+      workOrderTimeBreakdownModal.value?.order.id !== order.id
+    ) {
+      return;
+    }
+
+    workOrderTimeBreakdownModal.value = {
+      order,
+      breakdown,
+    };
+  } catch (error) {
+    if (requestId !== workOrderTimeBreakdownRequestId) {
+      return;
+    }
+
+    workOrderTimeBreakdownError.value = getErrorMessage(
+      error,
+      "Не удалось загрузить детализацию времени.",
+    );
+  } finally {
+    if (requestId === workOrderTimeBreakdownRequestId) {
+      workOrderTimeBreakdownLoading.value = false;
+    }
+  }
+}
+
+function closeWorkOrderTimeBreakdown() {
+  workOrderTimeBreakdownRequestId += 1;
+  workOrderTimeBreakdownModal.value = null;
+  workOrderTimeBreakdownLoading.value = false;
+  workOrderTimeBreakdownError.value = "";
 }
 
 function setBrigadierTab(tabId: BrigadierTabId) {
@@ -1845,6 +2009,11 @@ function handleWindowKeydown(event: KeyboardEvent) {
     return;
   }
 
+  if (workOrderTimeBreakdownModal.value) {
+    closeWorkOrderTimeBreakdown();
+    return;
+  }
+
   if (editingUserId.value !== null) {
     cancelUserEdit();
     return;
@@ -1872,8 +2041,10 @@ function handleWindowKeydown(event: KeyboardEvent) {
 
 function fillFormFromProduct(product: ProductDetail) {
   hasAttemptedSubmit.value = false;
+  modalProductId.value = product.id;
   productName.value = product.name;
   productVersion.value = product.version;
+  productMaterialCostCents.value = product.materialCostCents;
   operationTree.value = cloneOperations(product.operations);
   nextOperationId = getMaxOperationId(operationTree.value) + 1;
 }
@@ -2314,10 +2485,25 @@ async function saveProductToApi() {
   modalError.value = "";
 
   try {
+    if (isViewMode.value) {
+      if (modalProductId.value === null) {
+        throw new Error("Не удалось определить изделие для сохранения.");
+      }
+
+      await updateProductCosts(modalProductId.value, {
+        material_cost_cents: productMaterialCostCents.value,
+        operations: serializeOperationCosts(operationTree.value),
+      });
+      await loadProducts();
+      closeProductModal();
+      return;
+    }
+
     const payload: ProductCreatePayload = {
       name: productName.value.trim(),
       version: productVersion.value.trim(),
       author_user_id: currentSession.value?.userId ?? null,
+      material_cost_cents: productMaterialCostCents.value,
       operations: serializeOperations(operationTree.value),
     };
 
@@ -2375,6 +2561,50 @@ function handleOperationNameInput(operationId: number, event: Event) {
   }
 
   operationTree.value = renameOperation(operationTree.value, operationId, target.value);
+}
+
+function handleProductMaterialCostInput(event: Event) {
+  const target = event.target;
+
+  if (!(target instanceof HTMLInputElement)) {
+    return;
+  }
+
+  productMaterialCostCents.value = parseMoneyInputToCents(target.value);
+}
+
+function handleOperationPriceInput(operationId: number, event: Event) {
+  const target = event.target;
+
+  if (!(target instanceof HTMLInputElement)) {
+    return;
+  }
+
+  operationTree.value = updateOperationPrice(
+    operationTree.value,
+    operationId,
+    parseMoneyInputToCents(target.value),
+  );
+}
+
+function updateOperationPrice(
+  operations: OperationNode[],
+  operationId: number,
+  priceCents: number | null,
+): OperationNode[] {
+  return operations.map((operation) => {
+    if (operation.id === operationId) {
+      return {
+        ...operation,
+        priceCents,
+      };
+    }
+
+    return {
+      ...operation,
+      children: updateOperationPrice(operation.children, operationId, priceCents),
+    };
+  });
 }
 
 function shouldShowFieldError(value: string, error: string): boolean {
@@ -2491,6 +2721,7 @@ function createOperationNode(): OperationNode {
   return {
     id: operationId,
     name: "",
+    priceCents: null,
     children: [],
   };
 }
@@ -2647,6 +2878,7 @@ function flattenOperations(
       {
         id: operation.id,
         name: operation.name,
+        priceCents: operation.priceCents,
         level,
         isGroup: operation.children.length > 0,
         canMoveUp: index > 0,
@@ -2720,6 +2952,8 @@ function validateOperationTree(
       } else if ((counts.get(normalizedName) ?? 0) > 1) {
         errors[node.id] =
           "Имя операции должно быть уникальным на текущем уровне.";
+      } else if (node.priceCents !== null && node.priceCents < 0) {
+        errors[node.id] = "Цена операции не может быть отрицательной.";
       }
 
       walk(node.children);
@@ -2734,6 +2968,7 @@ function cloneOperations(operations: OperationNode[]): OperationNode[] {
   return operations.map((operation) => ({
     id: operation.id,
     name: operation.name,
+    priceCents: operation.priceCents,
     children: cloneOperations(operation.children),
   }));
 }
@@ -2751,7 +2986,18 @@ function serializeOperations(
 ): ProductCreatePayload["operations"] {
   return operations.map((operation) => ({
     name: operation.name.trim(),
+    price_cents: operation.priceCents,
     children: serializeOperations(operation.children),
+  }));
+}
+
+function serializeOperationCosts(
+  operations: OperationNode[],
+): ProductCostsUpdatePayload["operations"] {
+  return operations.map((operation) => ({
+    id: operation.id,
+    price_cents: operation.priceCents,
+    children: serializeOperationCosts(operation.children),
   }));
 }
 
@@ -2814,6 +3060,8 @@ function formatUserRole(role: UserRole): string {
       return "Бригадир";
     case "constructor":
       return "Конструктор";
+    case "quality_control":
+      return "ОТК";
     case "admin":
       return "Администратор";
   }
@@ -2821,6 +3069,33 @@ function formatUserRole(role: UserRole): string {
 
 function normalizeName(value: string): string {
   return value.trim().toLowerCase();
+}
+
+function parseMoneyInputToCents(value: string): number | null {
+  const normalizedValue = value.trim().replace(",", ".");
+
+  if (!normalizedValue) {
+    return null;
+  }
+
+  const parsedValue = Number(normalizedValue);
+
+  if (!Number.isFinite(parsedValue)) {
+    return null;
+  }
+
+  return Math.round(parsedValue * 100);
+}
+
+function formatMoneyInput(cents: number | null): string {
+  if (cents === null) {
+    return "";
+  }
+
+  const value = cents / 100;
+  return Number.isInteger(value)
+    ? String(value)
+    : value.toFixed(2).replace(/0+$/, "").replace(/\.$/, "");
 }
 
 function formatWorkerGroupProductMeta(group: WorkerTimerGroup): string {
@@ -2942,6 +3217,7 @@ async function openBrigadierCreateOrder(productId: number) {
   brigadierModalError.value = "";
   brigadierSaveLoading.value = false;
   brigadierModalQuantity.value = "1";
+  brigadierModalDefectQuantity.value = "0";
   brigadierModalOrderNumber.value = "";
   brigadierModalLeatherTypeId.value = "";
   brigadierModalAssignments.value = [];
@@ -2983,6 +3259,7 @@ async function openBrigadierManageOrder(order: WorkOrderSummary) {
   brigadierModalError.value = "";
   brigadierSaveLoading.value = false;
   brigadierModalQuantity.value = String(order.quantity);
+  brigadierModalDefectQuantity.value = String(order.defectQuantity);
   brigadierModalOrderNumber.value = order.orderNumber;
   brigadierModalLeatherTypeId.value =
     order.leatherTypeId === null ? "" : String(order.leatherTypeId);
@@ -3020,6 +3297,71 @@ async function openBrigadierManageOrder(order: WorkOrderSummary) {
   }
 }
 
+async function openQualityControlOrder(order: WorkOrderSummary) {
+  brigadierModalMode.value = "quality_control";
+  brigadierModalOrderId.value = order.id;
+  brigadierModalLoading.value = true;
+  brigadierModalError.value = "";
+  brigadierSaveLoading.value = false;
+  brigadierModalQuantity.value = String(order.quantity);
+  brigadierModalDefectQuantity.value = String(order.defectQuantity ?? 0);
+  brigadierModalOrderNumber.value = order.orderNumber;
+  brigadierModalLeatherTypeId.value =
+    order.leatherTypeId === null ? "" : String(order.leatherTypeId);
+  brigadierModalAssignments.value = [];
+
+  try {
+    const [product, orderDetail, leatherTypesForSelect] = await Promise.all([
+      fetchProduct(order.productId),
+      fetchWorkOrder(order.id),
+      fetchAllLeatherTypes({
+        includeInactive: true,
+        sortDirection: "asc",
+        pageSize: 100,
+      }),
+    ]);
+    brigadierModalProduct.value = product;
+    activeLeatherTypes.value = leatherTypesForSelect.filter(
+      (leatherType) =>
+        leatherType.isActive || leatherType.id === orderDetail.leatherTypeId,
+    );
+    brigadierModalQuantity.value = String(orderDetail.quantity);
+    brigadierModalDefectQuantity.value = String(orderDetail.defectQuantity);
+    brigadierModalLeatherTypeId.value =
+      orderDetail.leatherTypeId === null ? "" : String(orderDetail.leatherTypeId);
+    brigadierModalAssignments.value = mergeBrigadierAssignments(
+      buildBrigadierAssignments(product.operations),
+      orderDetail,
+    );
+  } catch (error) {
+    if (isUnauthorizedError(error)) {
+      redirectToAuth(getErrorMessage(error, "Требуется аутентификация."));
+      return;
+    }
+    brigadierModalError.value = getErrorMessage(error, "Не удалось загрузить заказ.");
+  } finally {
+    brigadierModalLoading.value = false;
+  }
+
+  if (
+    brigadierModalMode.value === "quality_control" &&
+    brigadierModalOrderId.value === order.id &&
+    !brigadierModalError.value
+  ) {
+    await focusBrigadierDefectQuantityInput();
+  }
+}
+
+async function focusBrigadierDefectQuantityInput() {
+  await nextTick();
+
+  const input = document.querySelector<HTMLInputElement>(
+    '[data-field="brigadier-defect-quantity"]',
+  );
+  input?.focus();
+  input?.select();
+}
+
 async function toggleWorkOrderTakenStatus(order: WorkOrderSummary, isTaken: boolean) {
   setWorkOrderBusy(order.id, true);
   brigadierOrdersError.value = "";
@@ -3052,9 +3394,11 @@ async function confirmWorkOrderAction() {
   brigadierOrdersError.value = "";
 
   try {
-    if (kind === "complete") {
-      await updateWorkOrderStatus(order.id, true);
+    if (kind === "send_to_quality_control") {
+      await updateWorkOrderQualityControlStatus(order.id, true);
     } else if (kind === "return_to_work") {
+      await updateWorkOrderQualityControlStatus(order.id, false);
+    } else if (kind === "return_to_quality_control") {
       await updateWorkOrderStatus(order.id, false);
     } else if (kind === "return_to_created") {
       await updateWorkOrderTakenStatus(order.id, false);
@@ -3119,6 +3463,7 @@ function closeBrigadierOrderModal() {
   brigadierModalOrderId.value = null;
   brigadierModalAssignments.value = [];
   brigadierModalQuantity.value = "1";
+  brigadierModalDefectQuantity.value = "0";
   brigadierModalOrderNumber.value = "";
   brigadierModalLeatherTypeId.value = "";
   brigadierModalLoading.value = false;
@@ -3172,6 +3517,10 @@ function mergeBrigadierAssignments(
 }
 
 function handleBrigadierQuantityInput(event: Event) {
+  if (brigadierModalMode.value !== "create") {
+    return;
+  }
+
   const target = event.target;
 
   if (!(target instanceof HTMLInputElement)) {
@@ -3179,6 +3528,16 @@ function handleBrigadierQuantityInput(event: Event) {
   }
 
   brigadierModalQuantity.value = target.value.replace(/[^\d]/g, "");
+}
+
+function handleBrigadierDefectQuantityInput(event: Event) {
+  const target = event.target;
+
+  if (!(target instanceof HTMLInputElement)) {
+    return;
+  }
+
+  brigadierModalDefectQuantity.value = target.value.replace(/[^\d]/g, "");
 }
 
 function handleBrigadierOrderNumberInput(event: Event) {
@@ -3407,6 +3766,14 @@ function formatDurationCompact(totalMs: number): string {
   return `${hours}ч ${minutes}м`;
 }
 
+function formatQualityControlDuration(order: WorkOrderSummary): string {
+  if (order.qualityControlAtTs === null || order.completedAtTs === null) {
+    return "—";
+  }
+
+  return formatDurationCompact(order.completedAtTs - order.qualityControlAtTs);
+}
+
 function formatPercentage(value: number): string {
   return `${Math.round(value * 100)}%`;
 }
@@ -3499,10 +3866,16 @@ async function saveBrigadierOrder() {
     : null;
   const assignments = brigadierModalAssignments.value.map((assignment) => ({ ...assignment }));
   const estimatedMinutes = estimateWorkOrderMinutes(quantity, assignments);
-  const isCreateMode = brigadierModalMode.value !== "manage";
+  const isCreateMode = brigadierModalMode.value === "create";
 
   try {
-    if (!isCreateMode && brigadierCurrentOrder.value) {
+    if (isQualityControlOrderModal.value && brigadierCurrentOrder.value) {
+      await acceptWorkOrderQualityControl(
+        brigadierCurrentOrder.value.id,
+        Number.parseInt(brigadierModalDefectQuantity.value, 10),
+      );
+      brigadierTab.value = "completed";
+    } else if (!isCreateMode && brigadierCurrentOrder.value) {
       await updateWorkOrderAssignments(brigadierCurrentOrder.value.id, {
         leather_type_id: leatherTypeId,
         quantity,
@@ -3985,7 +4358,11 @@ async function handleResetUserPassword(user: UserRecord) {
               <h2>Управление заказами</h2>
             </div>
 
-            <div class="subtabs" role="tablist" aria-label="Разделы бригадира">
+            <div
+              class="subtabs subtabs--work-orders"
+              role="tablist"
+              aria-label="Разделы бригадира"
+            >
               <button
                 type="button"
                 class="subtab-button"
@@ -4098,11 +4475,22 @@ async function handleResetUserPassword(user: UserRecord) {
                       <th>Наименование</th>
                       <th>Вид кожи</th>
                       <th>Версия</th>
-                      <th>Время создания</th>
-                      <th>Время взятия в работу</th>
-                      <th>Время выполнения</th>
-                      <th>Исполнители</th>
-                      <th>Суммарное время</th>
+                      <th v-if="workOrderStatusTab === 'quality_control'">
+                        Дата передачи в ОТК
+                      </th>
+                      <template v-else>
+                        <th>Время создания</th>
+                        <th>Время взятия в работу</th>
+                        <th>Время выполнения</th>
+                        <th v-if="workOrderStatusTab === 'completed'">
+                          Время проведения ОТК
+                        </th>
+                        <th v-if="workOrderStatusTab === 'completed'">
+                          Количество брака
+                        </th>
+                        <th>Исполнители</th>
+                        <th>Суммарное время</th>
+                      </template>
                       <th>Действия</th>
                     </tr>
                   </thead>
@@ -4112,29 +4500,46 @@ async function handleResetUserPassword(user: UserRecord) {
                       <td>{{ order.productName }}</td>
                       <td>{{ order.leatherTypeName ?? "вид кожи не указан" }}</td>
                       <td>{{ order.productVersion }}</td>
-                      <td>{{ order.createdAt }}</td>
-                      <td>{{ order.takenAt ?? "—" }}</td>
-                      <td>{{ order.completedAt ?? "—" }}</td>
-                      <td>
-                        <button
-                          type="button"
-                          class="secondary-button"
-                          @click="openBrigadierManageOrder(order)"
-                        >
-                          <span class="button-content">
-                            <span class="button-icon button-icon--people" aria-hidden="true" />
-                            <span>{{ order.assignmentsCount }} назначений</span>
-                          </span>
-                        </button>
+                      <td v-if="workOrderStatusTab === 'quality_control'">
+                        {{ order.qualityControlAt ?? "—" }}
                       </td>
-                      <td>
-                        <span class="duration-badge">
-                          {{ formatDuration(order.totalSpentMinutes) }}
-                        </span>
-                      </td>
+                      <template v-else>
+                        <td>{{ order.createdAt }}</td>
+                        <td>{{ order.takenAt ?? "—" }}</td>
+                        <td>{{ order.completedAt ?? "—" }}</td>
+                        <td v-if="workOrderStatusTab === 'completed'">
+                          {{ formatQualityControlDuration(order) }}
+                        </td>
+                        <td v-if="workOrderStatusTab === 'completed'">
+                          {{ order.defectQuantity }} шт.
+                        </td>
+                        <td>
+                          <button
+                            type="button"
+                            class="secondary-button"
+                            @click="openBrigadierManageOrder(order)"
+                          >
+                            <span class="button-content">
+                              <span class="button-icon button-icon--people" aria-hidden="true" />
+                              <span>{{ order.assignmentsCount }} назначений</span>
+                            </span>
+                          </button>
+                        </td>
+                        <td>
+                          <button
+                            type="button"
+                            class="duration-badge duration-badge--button"
+                            :aria-label="`Показать детализацию времени заказа ${order.orderNumber}`"
+                            @click="void openWorkOrderTimeBreakdown(order)"
+                          >
+                            {{ formatDuration(order.totalSpentMinutes) }}
+                          </button>
+                        </td>
+                      </template>
                       <td>
                         <div class="table-actions">
                           <button
+                            v-if="workOrderStatusTab !== 'quality_control'"
                             type="button"
                             class="action-link"
                             :disabled="isWorkOrderPrintBusy(order.id)"
@@ -4162,11 +4567,35 @@ async function handleResetUserPassword(user: UserRecord) {
                             type="button"
                             class="action-link"
                             :disabled="isWorkOrderBusy(order.id)"
-                            @click="openWorkOrderActionConfirm(order, 'complete')"
+                            @click="openWorkOrderActionConfirm(order, 'send_to_quality_control')"
                           >
                             <span class="button-content">
                               <span class="button-icon button-icon--check" aria-hidden="true" />
-                              <span>Выполнен</span>
+                              <span>Передать в ОТК</span>
+                            </span>
+                          </button>
+                          <button
+                            v-if="workOrderStatusTab === 'quality_control'"
+                            type="button"
+                            class="action-link"
+                            :disabled="!canAcceptQualityControl || isWorkOrderBusy(order.id)"
+                            @click="openQualityControlOrder(order)"
+                          >
+                            <span class="button-content">
+                              <span class="button-icon button-icon--check" aria-hidden="true" />
+                              <span>Принять</span>
+                            </span>
+                          </button>
+                          <button
+                            v-if="workOrderStatusTab === 'quality_control'"
+                            type="button"
+                            class="action-link"
+                            :disabled="isWorkOrderBusy(order.id)"
+                            @click="openWorkOrderActionConfirm(order, 'return_to_work')"
+                          >
+                            <span class="button-content">
+                              <span class="button-icon button-icon--in-work" aria-hidden="true" />
+                              <span>Вернуть в работу</span>
                             </span>
                           </button>
                           <button
@@ -4186,11 +4615,11 @@ async function handleResetUserPassword(user: UserRecord) {
                             type="button"
                             class="action-link"
                             :disabled="isWorkOrderBusy(order.id)"
-                            @click="openWorkOrderActionConfirm(order, 'return_to_work')"
+                            @click="openWorkOrderActionConfirm(order, 'return_to_quality_control')"
                           >
                             <span class="button-content">
-                              <span class="button-icon button-icon--in-work" aria-hidden="true" />
-                              <span>Вернуть в работу</span>
+                              <span class="button-icon button-icon--check" aria-hidden="true" />
+                              <span>Вернуть на ОТК</span>
                             </span>
                           </button>
                           <button
@@ -4206,7 +4635,7 @@ async function handleResetUserPassword(user: UserRecord) {
                             </span>
                           </button>
                           <button
-                            v-if="workOrderStatusTab !== 'deleted'"
+                            v-if="workOrderStatusTab !== 'deleted' && workOrderStatusTab !== 'quality_control'"
                             type="button"
                             class="action-link action-link--danger"
                             :disabled="isWorkOrderBusy(order.id)"
@@ -4235,7 +4664,14 @@ async function handleResetUserPassword(user: UserRecord) {
                 >
                   <div class="mobile-card__head">
                     <strong>{{ order.orderNumber }}</strong>
-                    <span class="duration-badge">{{ formatDuration(order.totalSpentMinutes) }}</span>
+                    <button
+                      type="button"
+                      class="duration-badge duration-badge--button"
+                      :aria-label="`Показать детализацию времени заказа ${order.orderNumber}`"
+                      @click="void openWorkOrderTimeBreakdown(order)"
+                    >
+                      {{ formatDuration(order.totalSpentMinutes) }}
+                    </button>
                   </div>
                   <div class="mobile-card__meta">
                     <span>{{ order.productName }}</span>
@@ -4243,12 +4679,22 @@ async function handleResetUserPassword(user: UserRecord) {
                     <span>Версия {{ order.productVersion }} · {{ order.quantity }} шт.</span>
                     <span>Создан: {{ order.createdAt }}</span>
                     <span>В работе с {{ order.takenAt ?? "—" }}</span>
+                    <span v-if="workOrderStatusTab === 'quality_control'">
+                      Передан в ОТК: {{ order.qualityControlAt ?? "—" }}
+                    </span>
                     <span>Выполнен: {{ order.completedAt ?? "—" }}</span>
+                    <span v-if="workOrderStatusTab === 'completed'">
+                      Время ОТК: {{ formatQualityControlDuration(order) }}
+                    </span>
+                    <span v-if="workOrderStatusTab === 'completed'">
+                      Брак: {{ order.defectQuantity }} шт.
+                    </span>
                     <span v-if="workOrderStatusTab === 'deleted'">
                       Удален: {{ order.deletedAt ?? "—" }}
                     </span>
                   </div>
                   <button
+                    v-if="workOrderStatusTab !== 'quality_control'"
                     type="button"
                     class="secondary-button"
                     @click="openBrigadierManageOrder(order)"
@@ -4259,6 +4705,7 @@ async function handleResetUserPassword(user: UserRecord) {
                     </span>
                   </button>
                   <button
+                    v-if="workOrderStatusTab !== 'quality_control'"
                     type="button"
                     class="action-link"
                     :disabled="isWorkOrderPrintBusy(order.id)"
@@ -4286,11 +4733,35 @@ async function handleResetUserPassword(user: UserRecord) {
                     type="button"
                     class="action-link"
                     :disabled="isWorkOrderBusy(order.id)"
-                    @click="openWorkOrderActionConfirm(order, 'complete')"
+                    @click="openWorkOrderActionConfirm(order, 'send_to_quality_control')"
                   >
                     <span class="button-content">
                       <span class="button-icon button-icon--check" aria-hidden="true" />
-                      <span>Выполнен</span>
+                      <span>Передать в ОТК</span>
+                    </span>
+                  </button>
+                  <button
+                    v-if="workOrderStatusTab === 'quality_control'"
+                    type="button"
+                    class="action-link"
+                    :disabled="!canAcceptQualityControl || isWorkOrderBusy(order.id)"
+                    @click="openQualityControlOrder(order)"
+                  >
+                    <span class="button-content">
+                      <span class="button-icon button-icon--check" aria-hidden="true" />
+                      <span>Принять</span>
+                    </span>
+                  </button>
+                  <button
+                    v-if="workOrderStatusTab === 'quality_control'"
+                    type="button"
+                    class="action-link"
+                    :disabled="isWorkOrderBusy(order.id)"
+                    @click="openWorkOrderActionConfirm(order, 'return_to_work')"
+                  >
+                    <span class="button-content">
+                      <span class="button-icon button-icon--in-work" aria-hidden="true" />
+                      <span>Вернуть в работу</span>
                     </span>
                   </button>
                   <button
@@ -4310,11 +4781,11 @@ async function handleResetUserPassword(user: UserRecord) {
                     type="button"
                     class="action-link"
                     :disabled="isWorkOrderBusy(order.id)"
-                    @click="openWorkOrderActionConfirm(order, 'return_to_work')"
+                    @click="openWorkOrderActionConfirm(order, 'return_to_quality_control')"
                   >
                     <span class="button-content">
-                      <span class="button-icon button-icon--in-work" aria-hidden="true" />
-                      <span>Вернуть в работу</span>
+                      <span class="button-icon button-icon--check" aria-hidden="true" />
+                      <span>Вернуть на ОТК</span>
                     </span>
                   </button>
                   <button
@@ -4330,7 +4801,7 @@ async function handleResetUserPassword(user: UserRecord) {
                     </span>
                   </button>
                   <button
-                    v-if="workOrderStatusTab !== 'deleted'"
+                    v-if="workOrderStatusTab !== 'deleted' && workOrderStatusTab !== 'quality_control'"
                     type="button"
                     class="action-link action-link--danger"
                     :disabled="isWorkOrderBusy(order.id)"
@@ -5623,12 +6094,12 @@ async function handleResetUserPassword(user: UserRecord) {
                       readonly
                       autocomplete="off"
                       placeholder="Не выбран"
-                      @focus="openBrigadierLeatherTypeDropdown"
-                      @click="openBrigadierLeatherTypeDropdown"
-                      @blur="scheduleBrigadierLeatherTypeDropdownClose"
+                      @focus="!isQualityControlOrderModal && openBrigadierLeatherTypeDropdown()"
+                      @click="!isQualityControlOrderModal && openBrigadierLeatherTypeDropdown()"
+                      @blur="!isQualityControlOrderModal && scheduleBrigadierLeatherTypeDropdownClose()"
                     />
                     <button
-                      v-if="brigadierModalLeatherTypeId"
+                      v-if="brigadierModalLeatherTypeId && !isQualityControlOrderModal"
                       type="button"
                       class="field-action field-action--right"
                       aria-label="Очистить вид кожи"
@@ -5639,7 +6110,7 @@ async function handleResetUserPassword(user: UserRecord) {
                       <span class="field-action__icon" aria-hidden="true" />
                     </button>
                     <div
-                      v-if="isBrigadierLeatherTypeDropdownOpen"
+                      v-if="isBrigadierLeatherTypeDropdownOpen && !isQualityControlOrderModal"
                       class="assignment-dropdown"
                     >
                       <button
@@ -5677,6 +6148,27 @@ async function handleResetUserPassword(user: UserRecord) {
                     </div>
                   </div>
                 </label>
+                <label
+                  v-if="isQualityControlOrderModal"
+                  class="field summary-card__field"
+                >
+                  <span class="field__label">Количество брака</span>
+                  <input
+                    :value="brigadierModalDefectQuantity"
+                    type="number"
+                    min="0"
+                    step="1"
+                    :max="brigadierModalQuantity"
+                    inputmode="numeric"
+                    class="text-input"
+                    data-field="brigadier-defect-quantity"
+                    placeholder="0"
+                    @input="handleBrigadierDefectQuantityInput"
+                  />
+                  <p v-if="brigadierDefectQuantityError" class="field-error">
+                    {{ brigadierDefectQuantityError }}
+                  </p>
+                </label>
               </div>
             </div>
 
@@ -5688,7 +6180,7 @@ async function handleResetUserPassword(user: UserRecord) {
                   type="text"
                   class="text-input"
                   data-field="brigadier-order-number"
-                  :readonly="brigadierModalMode === 'manage'"
+                  :readonly="brigadierModalMode !== 'create'"
                   placeholder="Например, FC-0001"
                   @input="handleBrigadierOrderNumberInput"
                 />
@@ -5705,6 +6197,7 @@ async function handleResetUserPassword(user: UserRecord) {
                   inputmode="numeric"
                   class="text-input"
                   data-field="brigadier-quantity"
+                  :readonly="brigadierModalMode !== 'create'"
                   placeholder="Например, 12"
                   @input="handleBrigadierQuantityInput"
                 />
@@ -5749,15 +6242,16 @@ async function handleResetUserPassword(user: UserRecord) {
                       type="text"
                       class="text-input text-input--with-clear"
                       autocomplete="off"
+                      :readonly="isQualityControlOrderModal"
                       :data-brigadier-operation-id="assignment.operationId"
                       placeholder="Выберите исполнителя"
-                      @input="handleBrigadierAssignmentInput(assignment.operationId, $event)"
-                      @focus="openBrigadierAssignmentDropdown(assignment.operationId)"
-                      @click="openBrigadierAssignmentDropdown(assignment.operationId)"
-                      @blur="scheduleBrigadierAssignmentDropdownClose(assignment.operationId)"
+                      @input="!isQualityControlOrderModal && handleBrigadierAssignmentInput(assignment.operationId, $event)"
+                      @focus="!isQualityControlOrderModal && openBrigadierAssignmentDropdown(assignment.operationId)"
+                      @click="!isQualityControlOrderModal && openBrigadierAssignmentDropdown(assignment.operationId)"
+                      @blur="!isQualityControlOrderModal && scheduleBrigadierAssignmentDropdownClose(assignment.operationId)"
                     />
                     <button
-                      v-if="assignment.workerName"
+                      v-if="assignment.workerName && !isQualityControlOrderModal"
                       type="button"
                       class="field-action field-action--right"
                       aria-label="Очистить исполнителя"
@@ -5768,7 +6262,7 @@ async function handleResetUserPassword(user: UserRecord) {
                       <span class="field-action__icon" aria-hidden="true" />
                     </button>
                     <div
-                      v-if="isBrigadierAssignmentDropdownOpen(assignment.operationId)"
+                      v-if="isBrigadierAssignmentDropdownOpen(assignment.operationId) && !isQualityControlOrderModal"
                       class="assignment-dropdown"
                     >
                       <button
@@ -5870,6 +6364,10 @@ async function handleResetUserPassword(user: UserRecord) {
             <div>
               <dt>Количество</dt>
               <dd>{{ brigadierModalQuantity }} шт.</dd>
+            </div>
+            <div v-if="isQualityControlOrderModal">
+              <dt>Брак</dt>
+              <dd>{{ brigadierModalDefectQuantity || "0" }} шт.</dd>
             </div>
           </dl>
           <p class="confirm-modal__description">
@@ -5973,6 +6471,90 @@ async function handleResetUserPassword(user: UserRecord) {
     </div>
 
     <div
+      v-if="workOrderTimeBreakdownModal"
+      class="modal-backdrop"
+      @click.self="closeWorkOrderTimeBreakdown"
+    >
+      <section class="modal time-breakdown-modal" role="dialog" aria-modal="true">
+        <div class="modal__head">
+          <div>
+            <p class="modal__eyebrow">Суммарное время</p>
+            <h2>Детализация времени</h2>
+            <p class="modal__description">
+              Заказ {{ workOrderTimeBreakdownModal.order.orderNumber }} ·
+              {{ workOrderTimeBreakdownModal.order.productName }}
+              · {{ workOrderTimeBreakdownModal.order.productVersion }}
+            </p>
+          </div>
+
+          <button type="button" class="ghost-button" @click="closeWorkOrderTimeBreakdown">
+            <span class="button-content">
+              <span class="button-icon button-icon--close" aria-hidden="true" />
+              <span>Закрыть</span>
+            </span>
+          </button>
+        </div>
+
+        <div v-if="workOrderTimeBreakdownError" class="banner banner--error">
+          <p>{{ workOrderTimeBreakdownError }}</p>
+          <button
+            type="button"
+            class="ghost-button"
+            :disabled="workOrderTimeBreakdownLoading"
+            @click="void openWorkOrderTimeBreakdown(workOrderTimeBreakdownModal.order)"
+          >
+            <span class="button-content">
+              <span class="button-icon button-icon--refresh" aria-hidden="true" />
+              <span>Повторить</span>
+            </span>
+          </button>
+        </div>
+
+        <div v-else-if="workOrderTimeBreakdownLoading" class="banner">
+          <p>Загрузка детализации времени...</p>
+        </div>
+
+        <template v-else-if="workOrderTimeBreakdownModal.breakdown">
+          <div
+            v-if="workOrderTimeBreakdownModal.breakdown.items.length > 0"
+            class="table-wrap time-breakdown-table-wrap"
+          >
+            <table class="products-table time-breakdown-table">
+              <thead>
+                <tr>
+                  <th>Операция</th>
+                  <th>Исполнитель</th>
+                  <th>Время</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr
+                  v-for="item in workOrderTimeBreakdownModal.breakdown.items"
+                  :key="`${item.operationId ?? 'deleted'}:${item.workerUserId}`"
+                >
+                  <td>{{ item.operationName }}</td>
+                  <td>{{ item.workerUserName }}</td>
+                  <td>{{ formatTimerDuration(item.elapsedMs) }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div v-else class="empty-table-state">
+            <p>По заказу пока нет завершенных таймеров операций.</p>
+          </div>
+
+          <div class="time-breakdown-total">
+            <span>Итого</span>
+            <strong>
+              {{ formatTimerDuration(workOrderTimeBreakdownModal.breakdown.totalElapsedMs) }}
+            </strong>
+          </div>
+        </template>
+      </section>
+    </div>
+
+    <div
       v-if="isModalOpen"
       class="modal-backdrop"
       @click.self="closeProductModal"
@@ -6042,6 +6624,23 @@ async function handleResetUserPassword(user: UserRecord) {
                   {{ productVersionError }}
                 </p>
               </label>
+
+              <label class="field">
+                <span class="field__label">Стоимость материала, ₽</span>
+                <input
+                  :value="formatMoneyInput(productMaterialCostCents)"
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  class="text-input"
+                  data-field="product-material-cost"
+                  placeholder="Не указана"
+                  @input="handleProductMaterialCostInput"
+                />
+                <p v-if="productMaterialCostError" class="field-error">
+                  {{ productMaterialCostError }}
+                </p>
+              </label>
             </div>
 
             <p v-if="productIdentityError" class="field-error field-error--inline">
@@ -6081,6 +6680,7 @@ async function handleResetUserPassword(user: UserRecord) {
                   <tr>
                     <th>Операция</th>
                     <th>Тип</th>
+                    <th>Цена, ₽</th>
                     <th>Действия</th>
                   </tr>
                 </thead>
@@ -6132,9 +6732,26 @@ async function handleResetUserPassword(user: UserRecord) {
                       </span>
                     </td>
                     <td>
+                      <input
+                        :value="formatMoneyInput(row.priceCents)"
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        class="operation-input operation-input--price"
+                        :aria-label="`Цена операции ${row.name || row.id}`"
+                        @input="handleOperationPriceInput(row.id, $event)"
+                      />
+                      <p
+                        v-if="operationErrors[row.id]?.startsWith('Цена')"
+                        class="field-error"
+                      >
+                        {{ operationErrors[row.id] }}
+                      </p>
+                    </td>
+                    <td>
                       <div class="operation-actions">
                         <span v-if="isViewMode" class="readonly-note">
-                          Только просмотр
+                          Структура без изменений
                         </span>
                         <template v-else>
                           <button
@@ -6254,7 +6871,7 @@ async function handleResetUserPassword(user: UserRecord) {
 
           <div class="modal__actions">
             <button
-              v-if="saveBlockIssue && !isViewMode"
+              v-if="saveBlockIssue"
               type="button"
               class="field-error-link field-error--actions"
               @click="scrollToSaveBlockIssue"
@@ -6263,7 +6880,6 @@ async function handleResetUserPassword(user: UserRecord) {
             </button>
 
             <button
-              v-if="!isViewMode"
               type="submit"
               class="primary-button"
               :class="{ 'primary-button--blocked': !canSaveProduct && !saveLoading }"
@@ -6272,14 +6888,22 @@ async function handleResetUserPassword(user: UserRecord) {
             >
               <span class="button-content">
                 <span class="button-icon button-icon--save" aria-hidden="true" />
-                <span>{{ saveLoading ? "Сохранение..." : "Сохранить изделие" }}</span>
+                <span>
+                  {{
+                    saveLoading
+                      ? "Сохранение..."
+                      : isViewMode
+                        ? "Сохранить стоимость"
+                        : "Сохранить изделие"
+                  }}
+                </span>
               </span>
             </button>
 
             <button type="button" class="ghost-button" @click="closeProductModal">
               <span class="button-content">
                 <span class="button-icon button-icon--close" aria-hidden="true" />
-                <span>{{ isViewMode ? "Закрыть просмотр" : "Отменить" }}</span>
+                <span>{{ isViewMode ? "Закрыть" : "Отменить" }}</span>
               </span>
             </button>
           </div>
@@ -7794,6 +8418,15 @@ h2 {
   color: var(--color-text-muted);
 }
 
+.modal__eyebrow {
+  margin: 0 0 6px;
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--color-text-muted);
+}
+
 .confirm-modal__description {
   margin: 0;
   color: var(--color-text-secondary);
@@ -7950,12 +8583,32 @@ h2 {
   display: inline-flex;
   align-items: center;
   padding: 10px 12px;
+  border: 0;
   border-radius: 999px;
   background: var(--color-surface-soft);
   color: var(--color-primary-hover);
   font-weight: 700;
   white-space: nowrap;
   font-family: "Sora", "Inter", sans-serif;
+}
+
+.duration-badge--button {
+  cursor: pointer;
+  transition:
+    background 0.18s ease,
+    color 0.18s ease,
+    transform 0.18s ease;
+}
+
+.duration-badge--button:hover {
+  background: var(--color-primary);
+  color: #fff;
+  transform: translateY(-1px);
+}
+
+.duration-badge--button:focus-visible {
+  outline: 3px solid rgba(47, 110, 163, 0.22);
+  outline-offset: 3px;
 }
 
 .pagination-bar {
@@ -8076,6 +8729,42 @@ h2 {
 
 .brigadier-modal {
   width: min(980px, calc(100vw - 48px));
+}
+
+.time-breakdown-modal {
+  width: min(720px, calc(100vw - 48px));
+}
+
+.time-breakdown-table-wrap {
+  margin-top: 0;
+}
+
+.time-breakdown-table th:last-child,
+.time-breakdown-table td:last-child {
+  text-align: right;
+  white-space: nowrap;
+}
+
+.time-breakdown-total {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-top: 18px;
+  padding: 16px 18px;
+  border-radius: 18px;
+  background: var(--color-surface-soft);
+  color: var(--color-text);
+  font-family: "Sora", "Inter", sans-serif;
+}
+
+.time-breakdown-total span {
+  color: var(--color-text-secondary);
+  font-weight: 700;
+}
+
+.time-breakdown-total strong {
+  font-size: 1.15rem;
 }
 
 .order-form {
@@ -8368,6 +9057,25 @@ h2 {
   border-radius: 999px;
 }
 
+.role-icon--quality-control::before {
+  top: 2px;
+  left: 2px;
+  width: 10px;
+  height: 10px;
+  background: transparent;
+  border: 2px solid currentColor;
+  border-radius: 999px;
+}
+
+.role-icon--quality-control::after {
+  top: 12px;
+  left: 11px;
+  width: 6px;
+  height: 2px;
+  transform: rotate(45deg);
+  transform-origin: left center;
+}
+
 .role-icon--stats::before {
   bottom: 2px;
   left: 2px;
@@ -8460,6 +9168,25 @@ h2 {
   width: 9px;
   height: 2px;
   transform: rotate(-45deg);
+}
+
+.button-icon--search::before {
+  top: 2px;
+  left: 2px;
+  width: 9px;
+  height: 9px;
+  border: 2px solid currentColor;
+  background: transparent;
+  border-radius: 999px;
+}
+
+.button-icon--search::after {
+  top: 11px;
+  left: 10px;
+  width: 6px;
+  height: 2px;
+  transform: rotate(45deg);
+  transform-origin: left center;
 }
 
 .button-icon--print::before {
@@ -9071,6 +9798,25 @@ h2 {
   .work-orders-mobile-list.mobile-only {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  }
+}
+
+@media (min-width: 761px) and (max-width: 995px) {
+  .subtabs--work-orders {
+    width: 100%;
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .subtabs--work-orders .subtab-button {
+    justify-content: center;
+    min-width: 0;
+    padding: 12px 10px;
+  }
+
+  .subtabs--work-orders .button-content {
+    justify-content: center;
+    text-align: center;
   }
 }
 

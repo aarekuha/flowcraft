@@ -29,6 +29,8 @@ class WorkOrder(Base):
     created_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
     updated_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
     taken_at: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    quality_control_at: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    defect_quantity: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     completed_at: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     deleted_at: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
 

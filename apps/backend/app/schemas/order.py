@@ -18,6 +18,7 @@ class WorkOrderStatusFilter(StrEnum):
     ALL = "all"
     CREATED = "created"
     IN_WORK = "in_work"
+    QUALITY_CONTROL = "quality_control"
     COMPLETED = "completed"
     DELETED = "deleted"
 
@@ -65,6 +66,14 @@ class WorkOrderStatusUpdate(BaseModel):
     is_completed: bool
 
 
+class WorkOrderQualityControlStatusUpdate(BaseModel):
+    is_in_quality_control: bool
+
+
+class WorkOrderQualityControlAccept(BaseModel):
+    defect_quantity: int = Field(default=0, ge=0)
+
+
 class WorkOrderTakenStatusUpdate(BaseModel):
     is_taken: bool
 
@@ -90,6 +99,8 @@ class WorkOrderListItem(BaseModel):
     created_at: int
     updated_at: int
     taken_at: int | None
+    quality_control_at: int | None
+    defect_quantity: int
     completed_at: int | None
     deleted_at: int | None
 
@@ -118,6 +129,22 @@ class WorkOrderDetail(BaseModel):
     created_at: int
     updated_at: int
     taken_at: int | None
+    quality_control_at: int | None
+    defect_quantity: int
     completed_at: int | None
     deleted_at: int | None
     assignments: list[WorkOrderAssignmentRead] = Field(default_factory=list)
+
+
+class WorkOrderTimeBreakdownItem(BaseModel):
+    operation_id: int | None
+    operation_name: str
+    worker_user_id: int
+    worker_user_name: str
+    elapsed_ms: int
+
+
+class WorkOrderTimeBreakdown(BaseModel):
+    order_id: int
+    items: list[WorkOrderTimeBreakdownItem] = Field(default_factory=list)
+    total_elapsed_ms: int

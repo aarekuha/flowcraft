@@ -10,6 +10,7 @@ from sqlalchemy.sql.elements import ColumnElement
 from app.models.leather_type import LeatherType
 from app.models.operation import Operation
 from app.models.product import Product
+from app.models.timer_session import TimerSession
 from app.models.user import User
 from app.models.work_order import WorkOrder, WorkOrderAssignment
 from app.schemas.order import (
@@ -21,12 +22,18 @@ from app.schemas.order import (
     WorkOrderDetail,
     WorkOrderListItem,
     WorkOrderPage,
+    WorkOrderQualityControlAccept,
+    WorkOrderQualityControlStatusUpdate,
     WorkOrderSortField,
     WorkOrderStatusFilter,
     WorkOrderStatusUpdate,
     WorkOrderTakenStatusUpdate,
+    WorkOrderTimeBreakdown,
+    WorkOrderTimeBreakdownItem,
     WorkOrderUpdateAssignments,
 )
+from app.schemas.timer import TimerType
+from app.services.timer_service import TIMER_TYPE_TO_CODE
 
 
 class OrderService:
@@ -72,6 +79,8 @@ class OrderService:
                 WorkOrder.created_at,
                 WorkOrder.updated_at,
                 WorkOrder.taken_at,
+                WorkOrder.quality_control_at,
+                WorkOrder.defect_quantity,
                 WorkOrder.completed_at,
                 WorkOrder.deleted_at,
                 func.coalesce(assignments_count.c.assignments_count, 0).label(
@@ -114,6 +123,8 @@ class OrderService:
                 created_at=row.created_at,
                 updated_at=row.updated_at,
                 taken_at=row.taken_at,
+                quality_control_at=row.quality_control_at,
+                defect_quantity=row.defect_quantity,
                 completed_at=row.completed_at,
                 deleted_at=row.deleted_at,
             )
@@ -150,6 +161,7 @@ class OrderService:
                 [
                     WorkOrder.deleted_at.is_(None),
                     WorkOrder.completed_at.is_(None),
+                    WorkOrder.quality_control_at.is_(None),
                     WorkOrder.taken_at.is_(None),
                 ]
             )
@@ -158,7 +170,16 @@ class OrderService:
                 [
                     WorkOrder.deleted_at.is_(None),
                     WorkOrder.completed_at.is_(None),
+                    WorkOrder.quality_control_at.is_(None),
                     WorkOrder.taken_at.is_not(None),
+                ]
+            )
+        elif status_filter == WorkOrderStatusFilter.QUALITY_CONTROL:
+            filters.extend(
+                [
+                    WorkOrder.deleted_at.is_(None),
+                    WorkOrder.completed_at.is_(None),
+                    WorkOrder.quality_control_at.is_not(None),
                 ]
             )
         elif status_filter == WorkOrderStatusFilter.COMPLETED:
@@ -177,6 +198,7 @@ class OrderService:
                 [
                     WorkOrder.deleted_at.is_(None),
                     WorkOrder.completed_at.is_(None),
+                    WorkOrder.quality_control_at.is_(None),
                 ]
             )
 
@@ -237,6 +259,54 @@ class OrderService:
         product = self._get_product_or_404(order.product_id)
         return self._serialize_order(order, product)
 
+    def get_order_time_breakdown(self, order_id: int) -> WorkOrderTimeBreakdown:
+        self._get_order_or_404(order_id)
+
+        stmt = (
+            select(
+                TimerSession.operation_id,
+                func.coalesce(Operation.name, "Операция удалена").label(
+                    "operation_name",
+                ),
+                TimerSession.user_id,
+                User.name.label("worker_user_name"),
+                func.coalesce(
+                    func.sum(TimerSession.ended_at - TimerSession.started_at),
+                    0,
+                ).label("elapsed_ms"),
+            )
+            .join(User, User.id == TimerSession.user_id)
+            .outerjoin(Operation, Operation.id == TimerSession.operation_id)
+            .where(
+                TimerSession.order_id == order_id,
+                TimerSession.timer_type_code == TIMER_TYPE_TO_CODE[TimerType.OPERATION],
+                TimerSession.ended_at.is_not(None),
+            )
+            .group_by(
+                TimerSession.operation_id,
+                Operation.name,
+                TimerSession.user_id,
+                User.name,
+            )
+            .order_by(Operation.name.asc(), User.name.asc(), TimerSession.user_id.asc())
+        )
+        items = [
+            WorkOrderTimeBreakdownItem(
+                operation_id=row.operation_id,
+                operation_name=row.operation_name,
+                worker_user_id=row.user_id,
+                worker_user_name=row.worker_user_name,
+                elapsed_ms=int(row.elapsed_ms),
+            )
+            for row in self.session.execute(stmt).all()
+        ]
+
+        return WorkOrderTimeBreakdown(
+            order_id=order_id,
+            items=items,
+            total_elapsed_ms=sum(item.elapsed_ms for item in items),
+        )
+
     def list_worker_assigned_orders(self, worker_user_id: int) -> list[WorkOrderDetail]:
         stmt: Select[tuple[WorkOrder]] = (
             select(WorkOrder)
@@ -255,6 +325,7 @@ class OrderService:
             .where(
                 WorkOrder.deleted_at.is_(None),
                 WorkOrder.completed_at.is_(None),
+                WorkOrder.quality_control_at.is_(None),
                 WorkOrder.taken_at.is_not(None),
                 WorkOrderAssignment.worker_user_id == worker_user_id,
             )
@@ -309,9 +380,13 @@ class OrderService:
             current_leather_type_id=order.leather_type_id,
         )
         self._validate_assignments(product.id, payload.assignments)
+        if payload.quantity != order.quantity:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Order quantity cannot be changed after creation.",
+            )
 
         order.leather_type_id = payload.leather_type_id
-        order.quantity = payload.quantity
         order.estimated_minutes = payload.estimated_minutes
         order.updated_at = self._now_ts()
         self._sync_assignments(order, payload.assignments)
@@ -328,12 +403,76 @@ class OrderService:
         order = self._get_order_or_404(order_id)
         now = self._now_ts()
         self._validate_order_is_not_deleted(order)
-        if payload.is_completed and order.taken_at is None:
+        if payload.is_completed:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail="Only orders in work can be completed.",
+                detail="Use quality control acceptance to complete order.",
             )
-        order.completed_at = now if payload.is_completed else None
+        if not payload.is_completed and order.completed_at is not None:
+            order.quality_control_at = order.quality_control_at or now
+
+        order.completed_at = None
+        order.updated_at = now
+
+        self.session.commit()
+        self.session.refresh(order)
+        return self.get_order(order.id)
+
+    def update_order_quality_control_status(
+        self,
+        order_id: int,
+        payload: WorkOrderQualityControlStatusUpdate,
+    ) -> WorkOrderDetail:
+        order = self._get_order_or_404(order_id)
+        now = self._now_ts()
+        self._validate_order_is_not_deleted(order)
+
+        if payload.is_in_quality_control:
+            if order.taken_at is None:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="Only orders in work can be sent to quality control.",
+                )
+            if order.completed_at is not None:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="Completed order cannot be sent to quality control.",
+                )
+
+            order.quality_control_at = order.quality_control_at or now
+        else:
+            order.quality_control_at = None
+            order.completed_at = None
+            order.defect_quantity = 0
+
+        order.updated_at = now
+        self.session.commit()
+        self.session.refresh(order)
+        return self.get_order(order.id)
+
+    def accept_order_quality_control(
+        self,
+        order_id: int,
+        payload: WorkOrderQualityControlAccept,
+    ) -> WorkOrderDetail:
+        order = self._get_order_or_404(order_id)
+        now = self._now_ts()
+        self._validate_order_is_not_deleted(order)
+
+        if order.quality_control_at is None or order.completed_at is not None:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Only orders in quality control can be accepted.",
+            )
+
+        if payload.defect_quantity > order.quantity:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Defect quantity cannot exceed order quantity.",
+            )
+
+        order.defect_quantity = payload.defect_quantity
+        order.completed_at = now
         order.updated_at = now
 
         self.session.commit()
@@ -352,7 +491,9 @@ class OrderService:
             order.taken_at = order.taken_at or now
         else:
             order.taken_at = None
+            order.quality_control_at = None
             order.completed_at = None
+            order.defect_quantity = 0
         order.updated_at = now
 
         self.session.commit()
@@ -592,6 +733,8 @@ class OrderService:
             created_at=order.created_at,
             updated_at=order.updated_at,
             taken_at=order.taken_at,
+            quality_control_at=order.quality_control_at,
+            defect_quantity=order.defect_quantity,
             completed_at=order.completed_at,
             deleted_at=order.deleted_at,
             assignments=[

@@ -3,6 +3,7 @@ import { apiFetch, createRequestError, handleJsonResponse } from "@/shared/api/h
 export type OperationNode = {
   id: number;
   name: string;
+  priceCents: number | null;
   children: OperationNode[];
 };
 
@@ -12,6 +13,7 @@ export type ProductSummary = {
   version: string;
   author: string;
   authorUserId: number | null;
+  materialCostCents: number | null;
   isActive: boolean;
   createdAt: string;
   createdAtTs: number;
@@ -24,6 +26,7 @@ export type ProductDetail = {
   version: string;
   author: string;
   authorUserId: number | null;
+  materialCostCents: number | null;
   isActive: boolean;
   createdAt: string;
   createdAtTs: number;
@@ -34,10 +37,28 @@ export type ProductCreatePayload = {
   name: string;
   version: string;
   author_user_id?: number | null;
+  material_cost_cents?: number | null;
   operations: Array<{
     name: string;
+    price_cents?: number | null;
     children: ProductCreatePayload["operations"];
   }>;
+};
+
+export type ProductCostsUpdatePayload = {
+  material_cost_cents?: number | null;
+  operations: Array<{
+    id: number;
+    price_cents?: number | null;
+    children: ProductCostsUpdatePayload["operations"];
+  }>;
+};
+
+type OperationNodeApi = {
+  id: number;
+  name: string;
+  price_cents: number | null;
+  children: OperationNodeApi[];
 };
 
 type ProductSummaryApi = {
@@ -46,6 +67,7 @@ type ProductSummaryApi = {
   version: string;
   author: string;
   author_user_id: number | null;
+  material_cost_cents: number | null;
   is_active: boolean;
   created_at: number;
   operations_count: number;
@@ -57,9 +79,10 @@ type ProductDetailApi = {
   version: string;
   author: string;
   author_user_id: number | null;
+  material_cost_cents: number | null;
   is_active: boolean;
   created_at: number;
-  operations: OperationNode[];
+  operations: OperationNodeApi[];
 };
 
 export async function fetchProducts(): Promise<ProductSummary[]> {
@@ -80,6 +103,21 @@ export async function createProduct(
 ): Promise<ProductDetail> {
   const response = await apiFetch("/api/products", {
     method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(payload),
+  });
+
+  return handleJsonResponse<ProductDetailApi>(response).then(mapProductDetail);
+}
+
+export async function updateProductCosts(
+  productId: number,
+  payload: ProductCostsUpdatePayload,
+): Promise<ProductDetail> {
+  const response = await apiFetch(`/api/products/${productId}/costs`, {
+    method: "PATCH",
     headers: {
       "Content-Type": "application/json",
     },
@@ -121,6 +159,7 @@ function mapProductSummary(product: ProductSummaryApi): ProductSummary {
     version: product.version,
     author: product.author,
     authorUserId: product.author_user_id,
+    materialCostCents: product.material_cost_cents,
     isActive: product.is_active,
     createdAt: formatDate(product.created_at),
     createdAtTs: product.created_at,
@@ -135,10 +174,20 @@ function mapProductDetail(product: ProductDetailApi): ProductDetail {
     version: product.version,
     author: product.author,
     authorUserId: product.author_user_id,
+    materialCostCents: product.material_cost_cents,
     isActive: product.is_active,
     createdAt: formatDate(product.created_at),
     createdAtTs: product.created_at,
-    operations: product.operations,
+    operations: product.operations.map(mapOperationNode),
+  };
+}
+
+function mapOperationNode(operation: OperationNodeApi): OperationNode {
+  return {
+    id: operation.id,
+    name: operation.name,
+    priceCents: operation.price_cents,
+    children: operation.children.map(mapOperationNode),
   };
 }
 

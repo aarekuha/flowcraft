@@ -1,4 +1,11 @@
 from fastapi.testclient import TestClient
+from sqlalchemy.orm import Session, sessionmaker
+
+from app.models.timer_session import TimerSession
+from app.models.user import User
+from app.models.work_shift import WorkShift
+from app.schemas.timer import TimerType
+from app.services.timer_service import TIMER_TYPE_TO_CODE
 
 
 def create_author_user(client: TestClient, name: str = "Марина Волкова") -> dict:
@@ -24,6 +31,24 @@ def create_worker_user(client: TestClient, name: str = "Ирина Соколо�
             "name": name,
             "phone": f"+7999333{phone_suffix:04d}",
             "roles": ["worker"],
+            "is_active": True,
+        },
+    )
+    assert response.status_code == 201
+    return response.json()
+
+
+def create_quality_control_user(
+    client: TestClient,
+    name: str = "ОТК Контролер",
+) -> dict:
+    phone_suffix = (sum(ord(char) for char in name) + 7000) % 10_000
+    response = client.post(
+        "/api/users",
+        json={
+            "name": name,
+            "phone": f"+7999444{phone_suffix:04d}",
+            "roles": ["quality_control"],
             "is_active": True,
         },
     )
@@ -112,6 +137,8 @@ def test_create_order_and_get_it(client: TestClient) -> None:
     assert created_order["estimated_minutes"] == 210
     assert created_order["total_spent_minutes"] == 0
     assert created_order["taken_at"] is None
+    assert created_order["quality_control_at"] is None
+    assert created_order["defect_quantity"] == 0
     assert created_order["completed_at"] is None
     assert created_order["deleted_at"] is None
     assert len(created_order["assignments"]) == 3
@@ -193,6 +220,127 @@ def test_list_orders_returns_assignments_count(client: TestClient) -> None:
     assert payload["items"][0]["deleted_at"] is None
 
 
+def test_get_order_time_breakdown_returns_operation_worker_totals(
+    client: TestClient,
+    db_session: sessionmaker[Session],
+) -> None:
+    author = create_author_user(client)
+    first_worker = create_worker_user(client, "Ирина Соколова")
+    second_worker = create_worker_user(client, "Петр Орлов")
+    product = create_product_with_leaf_operations(client, author["id"])
+    leaf_ids = collect_leaf_operation_ids(product)
+
+    create_response = client.post(
+        "/api/orders",
+        json={
+            "order_number": "FC-0140",
+            "product_id": product["id"],
+            "quantity": 5,
+            "assignments": [
+                {"operation_id": leaf_ids[0], "worker_user_id": first_worker["id"]},
+                {"operation_id": leaf_ids[1], "worker_user_id": first_worker["id"]},
+                {"operation_id": leaf_ids[2], "worker_user_id": second_worker["id"]},
+            ],
+        },
+    )
+    assert create_response.status_code == 201
+    order_id = create_response.json()["id"]
+
+    session = db_session()
+    try:
+        first_shift = WorkShift(
+            user_id=first_worker["id"],
+            started_at=1_000,
+            ended_at=301_000,
+            business_date="2026-06-01",
+            created_at=1_000,
+        )
+        second_shift = WorkShift(
+            user_id=second_worker["id"],
+            started_at=1_000,
+            ended_at=181_000,
+            business_date="2026-06-01",
+            created_at=1_000,
+        )
+        session.add_all([first_shift, second_shift])
+        session.flush()
+        session.add_all(
+            [
+                TimerSession(
+                    shift_id=first_shift.id,
+                    user_id=first_worker["id"],
+                    timer_type_code=TIMER_TYPE_TO_CODE[TimerType.OPERATION],
+                    order_id=order_id,
+                    operation_id=leaf_ids[0],
+                    started_at=1_000,
+                    ended_at=121_000,
+                    created_at=1_000,
+                ),
+                TimerSession(
+                    shift_id=first_shift.id,
+                    user_id=first_worker["id"],
+                    timer_type_code=TIMER_TYPE_TO_CODE[TimerType.OPERATION],
+                    order_id=order_id,
+                    operation_id=leaf_ids[0],
+                    started_at=121_000,
+                    ended_at=151_000,
+                    created_at=121_000,
+                ),
+                TimerSession(
+                    shift_id=second_shift.id,
+                    user_id=second_worker["id"],
+                    timer_type_code=TIMER_TYPE_TO_CODE[TimerType.OPERATION],
+                    order_id=order_id,
+                    operation_id=leaf_ids[2],
+                    started_at=1_000,
+                    ended_at=61_000,
+                    created_at=1_000,
+                ),
+                TimerSession(
+                    shift_id=second_shift.id,
+                    user_id=second_worker["id"],
+                    timer_type_code=TIMER_TYPE_TO_CODE[TimerType.PREPARATION],
+                    order_id=None,
+                    operation_id=None,
+                    started_at=61_000,
+                    ended_at=121_000,
+                    created_at=61_000,
+                ),
+                TimerSession(
+                    shift_id=first_shift.id,
+                    user_id=first_worker["id"],
+                    timer_type_code=TIMER_TYPE_TO_CODE[TimerType.OPERATION],
+                    order_id=order_id,
+                    operation_id=leaf_ids[1],
+                    started_at=151_000,
+                    ended_at=None,
+                    created_at=151_000,
+                ),
+            ]
+        )
+        session.commit()
+    finally:
+        session.close()
+
+    response = client.get(f"/api/orders/{order_id}/time-breakdown")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["order_id"] == order_id
+    assert payload["total_elapsed_ms"] == 210_000
+    rows = {
+        (item["operation_id"], item["worker_user_id"]): item
+        for item in payload["items"]
+    }
+    assert rows[(leaf_ids[0], first_worker["id"])]["operation_name"] == "Фронт"
+    assert rows[(leaf_ids[0], first_worker["id"])]["worker_user_name"] == first_worker[
+        "name"
+    ]
+    assert rows[(leaf_ids[0], first_worker["id"])]["elapsed_ms"] == 150_000
+    assert rows[(leaf_ids[2], second_worker["id"])]["elapsed_ms"] == 60_000
+    assert (leaf_ids[1], first_worker["id"]) not in rows
+
+
 def test_worker_assignments_returns_current_worker_in_work_orders(
     client: TestClient,
 ) -> None:
@@ -219,7 +367,7 @@ def test_worker_assignments_returns_current_worker_in_work_orders(
         first_operation_worker_id: int,
         *,
         is_taken: bool,
-        is_completed: bool = False,
+        is_quality_control: bool = False,
     ) -> dict:
         response = client.post(
             "/api/orders",
@@ -250,19 +398,19 @@ def test_worker_assignments_returns_current_worker_in_work_orders(
             )
             assert taken_response.status_code == 200
 
-        if is_completed:
-            completed_response = client.patch(
-                f"/api/orders/{order['id']}/status",
-                json={"is_completed": True},
+        if is_quality_control:
+            quality_control_response = client.patch(
+                f"/api/orders/{order['id']}/quality-control-status",
+                json={"is_in_quality_control": True},
             )
-            assert completed_response.status_code == 200
+            assert quality_control_response.status_code == 200
 
         return order
 
     create_order("FC-WA-1", worker["id"], is_taken=True)
     create_order("FC-WA-2", worker["id"], is_taken=False)
     create_order("FC-WA-3", other_worker["id"], is_taken=True)
-    create_order("FC-WA-4", worker["id"], is_taken=True, is_completed=True)
+    create_order("FC-WA-4", worker["id"], is_taken=True, is_quality_control=True)
 
     response = client.get("/api/orders/worker-assignments")
 
@@ -283,6 +431,7 @@ def test_worker_assignments_returns_current_worker_in_work_orders(
 def test_list_orders_filters_sorts_and_paginates(client: TestClient) -> None:
     author = create_author_user(client)
     worker = create_worker_user(client)
+    quality_control_user = create_quality_control_user(client, "ОТК Сортировка")
 
     def create_order(order_number: str, product_name: str) -> dict:
         product = create_product_with_leaf_operations(
@@ -317,9 +466,24 @@ def test_list_orders_filters_sorts_and_paginates(client: TestClient) -> None:
         json={"is_taken": True},
     )
     assert taken_response.status_code == 200
+    quality_control_response = client.patch(
+        f"/api/orders/{completed_order['id']}/quality-control-status",
+        json={"is_in_quality_control": True},
+    )
+    assert quality_control_response.status_code == 200
+
+    setup_response = client.post(
+        "/api/auth/setup-password",
+        json={
+            "phone": quality_control_user["phone"],
+            "new_password": "password123",
+        },
+    )
+    assert setup_response.status_code == 200
+
     completed_response = client.patch(
-        f"/api/orders/{completed_order['id']}/status",
-        json={"is_completed": True},
+        f"/api/orders/{completed_order['id']}/quality-control-acceptance",
+        json={"defect_quantity": 0},
     )
     assert completed_response.status_code == 200
 
@@ -507,7 +671,7 @@ def test_update_order_assignments_changes_worker(client: TestClient) -> None:
     update_response = client.put(
         f"/api/orders/{order_id}/assignments",
         json={
-            "quantity": 9,
+            "quantity": 7,
             "estimated_minutes": 480,
             "assignments": [
                 {"operation_id": leaf_ids[0], "worker_user_id": second_worker["id"]},
@@ -519,7 +683,7 @@ def test_update_order_assignments_changes_worker(client: TestClient) -> None:
 
     assert update_response.status_code == 200
     payload = update_response.json()
-    assert payload["quantity"] == 9
+    assert payload["quantity"] == 7
     assert payload["estimated_minutes"] == 480
     assert payload["total_spent_minutes"] == 0
     assert all(
@@ -577,6 +741,49 @@ def test_update_order_allows_empty_operation_workers(client: TestClient) -> None
     )
 
 
+def test_update_order_rejects_quantity_change(client: TestClient) -> None:
+    author = create_author_user(client)
+    first_worker = create_worker_user(client, name="Полина Кузнецова")
+    second_worker = create_worker_user(client, name="Мария Тихонова")
+    product = create_product_with_leaf_operations(client, author["id"])
+    leaf_ids = collect_leaf_operation_ids(product)
+
+    create_response = client.post(
+        "/api/orders",
+        json={
+            "order_number": "FC-0113",
+            "product_id": product["id"],
+            "quantity": 7,
+            "assignments": [
+                {"operation_id": leaf_ids[0], "worker_user_id": first_worker["id"]},
+                {"operation_id": leaf_ids[1], "worker_user_id": first_worker["id"]},
+                {"operation_id": leaf_ids[2], "worker_user_id": first_worker["id"]},
+            ],
+        },
+    )
+    assert create_response.status_code == 201
+    order_id = create_response.json()["id"]
+
+    update_response = client.put(
+        f"/api/orders/{order_id}/assignments",
+        json={
+            "quantity": 8,
+            "estimated_minutes": 480,
+            "assignments": [
+                {"operation_id": leaf_ids[0], "worker_user_id": second_worker["id"]},
+                {"operation_id": leaf_ids[1], "worker_user_id": second_worker["id"]},
+                {"operation_id": leaf_ids[2], "worker_user_id": second_worker["id"]},
+            ],
+        },
+    )
+
+    assert update_response.status_code == 422
+    assert (
+        update_response.json()["detail"]
+        == "Order quantity cannot be changed after creation."
+    )
+
+
 def test_update_order_allows_existing_inactive_leather_type(client: TestClient) -> None:
     author = create_author_user(client)
     worker = create_worker_user(client, name="Вера Павлова")
@@ -611,7 +818,7 @@ def test_update_order_allows_existing_inactive_leather_type(client: TestClient) 
         f"/api/orders/{order_id}/assignments",
         json={
             "leather_type_id": leather_type["id"],
-            "quantity": 3,
+            "quantity": 2,
             "estimated_minutes": 120,
             "assignments": [
                 {"operation_id": leaf_ids[0], "worker_user_id": worker["id"]},
@@ -623,7 +830,7 @@ def test_update_order_allows_existing_inactive_leather_type(client: TestClient) 
 
     assert update_response.status_code == 200
     payload = update_response.json()
-    assert payload["quantity"] == 3
+    assert payload["quantity"] == 2
     assert payload["leather_type_id"] == leather_type["id"]
 
 
@@ -658,7 +865,7 @@ def test_update_order_status_marks_completed_and_returns_to_work(
     assert created_completion_response.status_code == 422
     assert (
         created_completion_response.json()["detail"]
-        == "Only orders in work can be completed."
+        == "Use quality control acceptance to complete order."
     )
 
     taken_response = client.patch(
@@ -673,9 +880,120 @@ def test_update_order_status_marks_completed_and_returns_to_work(
         f"/api/orders/{order_id}/status",
         json={"is_completed": True},
     )
+    assert completed_response.status_code == 422
+    assert (
+        completed_response.json()["detail"]
+        == "Use quality control acceptance to complete order."
+    )
+
+    quality_control_response = client.patch(
+        f"/api/orders/{order_id}/quality-control-status",
+        json={"is_in_quality_control": True},
+    )
+    assert quality_control_response.status_code == 200
+    assert quality_control_response.json()["quality_control_at"] is not None
+    assert quality_control_response.json()["completed_at"] is None
+
+    returned_response = client.patch(
+        f"/api/orders/{order_id}/quality-control-status",
+        json={"is_in_quality_control": False},
+    )
+    assert returned_response.status_code == 200
+    assert returned_response.json()["completed_at"] is None
+    assert returned_response.json()["quality_control_at"] is None
+    assert returned_response.json()["taken_at"] == taken_response.json()["taken_at"]
+
+
+def test_quality_control_lifecycle_and_permissions(client: TestClient) -> None:
+    author = create_author_user(client)
+    worker = create_worker_user(client, name="Екатерина Селезнева")
+    quality_control_user = create_quality_control_user(client)
+    product = create_product_with_leaf_operations(client, author["id"])
+    leaf_ids = collect_leaf_operation_ids(product)
+
+    create_response = client.post(
+        "/api/orders",
+        json={
+            "order_number": "FC-0114",
+            "product_id": product["id"],
+            "quantity": 4,
+            "assignments": [
+                {"operation_id": leaf_ids[0], "worker_user_id": worker["id"]},
+                {"operation_id": leaf_ids[1], "worker_user_id": worker["id"]},
+                {"operation_id": leaf_ids[2], "worker_user_id": worker["id"]},
+            ],
+        },
+    )
+    assert create_response.status_code == 201
+    order_id = create_response.json()["id"]
+
+    taken_response = client.patch(
+        f"/api/orders/{order_id}/taken-status",
+        json={"is_taken": True},
+    )
+    assert taken_response.status_code == 200
+
+    quality_control_response = client.patch(
+        f"/api/orders/{order_id}/quality-control-status",
+        json={"is_in_quality_control": True},
+    )
+    assert quality_control_response.status_code == 200
+    quality_control_payload = quality_control_response.json()
+    assert quality_control_payload["quality_control_at"] is not None
+    assert quality_control_payload["completed_at"] is None
+    assert quality_control_payload["defect_quantity"] == 0
+
+    in_work_response = client.get("/api/orders?status=in_work&search=0114")
+    assert in_work_response.status_code == 200
+    assert in_work_response.json()["total"] == 0
+
+    quality_control_list_response = client.get(
+        "/api/orders?status=quality_control&search=0114"
+    )
+    assert quality_control_list_response.status_code == 200
+    assert quality_control_list_response.json()["total"] == 1
+
+    forbidden_accept_response = client.patch(
+        f"/api/orders/{order_id}/quality-control-acceptance",
+        json={"defect_quantity": 1},
+    )
+    assert forbidden_accept_response.status_code == 403
+
+    setup_response = client.post(
+        "/api/auth/setup-password",
+        json={
+            "phone": quality_control_user["phone"],
+            "new_password": "password123",
+        },
+    )
+    assert setup_response.status_code == 200
+
+    invalid_accept_response = client.patch(
+        f"/api/orders/{order_id}/quality-control-acceptance",
+        json={"defect_quantity": 5},
+    )
+    assert invalid_accept_response.status_code == 422
+    assert (
+        invalid_accept_response.json()["detail"]
+        == "Defect quantity cannot exceed order quantity."
+    )
+
+    accept_response = client.patch(
+        f"/api/orders/{order_id}/quality-control-acceptance",
+        json={"defect_quantity": 1},
+    )
+    assert accept_response.status_code == 200
+    accepted_payload = accept_response.json()
+    assert accepted_payload["completed_at"] is not None
+    assert (
+        accepted_payload["quality_control_at"]
+        == quality_control_payload["quality_control_at"]
+    )
+    assert accepted_payload["defect_quantity"] == 1
+
+    completed_response = client.get("/api/orders?status=completed&search=0114")
     assert completed_response.status_code == 200
-    assert completed_response.json()["completed_at"] is not None
-    assert completed_response.json()["taken_at"] == taken_response.json()["taken_at"]
+    assert completed_response.json()["total"] == 1
 
     returned_response = client.patch(
         f"/api/orders/{order_id}/status",
@@ -683,7 +1001,86 @@ def test_update_order_status_marks_completed_and_returns_to_work(
     )
     assert returned_response.status_code == 200
     assert returned_response.json()["completed_at"] is None
-    assert returned_response.json()["taken_at"] == taken_response.json()["taken_at"]
+    assert (
+        returned_response.json()["quality_control_at"]
+        == quality_control_payload["quality_control_at"]
+    )
+
+    return_to_work_response = client.patch(
+        f"/api/orders/{order_id}/quality-control-status",
+        json={"is_in_quality_control": False},
+    )
+    assert return_to_work_response.status_code == 200
+    assert return_to_work_response.json()["quality_control_at"] is None
+    assert return_to_work_response.json()["defect_quantity"] == 0
+
+
+def test_quality_control_acceptance_uses_current_user_roles(
+    client: TestClient,
+    db_session: sessionmaker[Session],
+) -> None:
+    author = create_author_user(client)
+    worker = create_worker_user(client, name="Наталья Федорова")
+    quality_control_user = create_quality_control_user(client, name="ОТК Без Роли")
+    product = create_product_with_leaf_operations(client, author["id"])
+    leaf_ids = collect_leaf_operation_ids(product)
+
+    create_response = client.post(
+        "/api/orders",
+        json={
+            "order_number": "FC-0115",
+            "product_id": product["id"],
+            "quantity": 4,
+            "assignments": [
+                {"operation_id": leaf_ids[0], "worker_user_id": worker["id"]},
+                {"operation_id": leaf_ids[1], "worker_user_id": worker["id"]},
+                {"operation_id": leaf_ids[2], "worker_user_id": worker["id"]},
+            ],
+        },
+    )
+    assert create_response.status_code == 201
+    order_id = create_response.json()["id"]
+
+    taken_response = client.patch(
+        f"/api/orders/{order_id}/taken-status",
+        json={"is_taken": True},
+    )
+    assert taken_response.status_code == 200
+
+    quality_control_response = client.patch(
+        f"/api/orders/{order_id}/quality-control-status",
+        json={"is_in_quality_control": True},
+    )
+    assert quality_control_response.status_code == 200
+
+    setup_response = client.post(
+        "/api/auth/setup-password",
+        json={
+            "phone": quality_control_user["phone"],
+            "new_password": "password123",
+        },
+    )
+    assert setup_response.status_code == 200
+    assert "quality_control" in setup_response.json()["user_roles"]
+
+    session = db_session()
+    try:
+        user = session.get(User, quality_control_user["id"])
+        assert user is not None
+        user.roles = ["worker"]
+        session.commit()
+    finally:
+        session.close()
+
+    me_response = client.get("/api/auth/me")
+    assert me_response.status_code == 200
+    assert me_response.json()["user_roles"] == ["worker"]
+
+    accept_response = client.patch(
+        f"/api/orders/{order_id}/quality-control-acceptance",
+        json={"defect_quantity": 1},
+    )
+    assert accept_response.status_code == 403
 
 
 def test_order_lifecycle_filters_and_soft_delete(client: TestClient) -> None:
