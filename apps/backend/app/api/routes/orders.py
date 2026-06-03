@@ -8,6 +8,7 @@ from app.api.dependencies import (
 )
 from app.schemas.order import (
     SortDirection,
+    WorkerAssignedWorkOrderList,
     WorkOrderCreate,
     WorkOrderDeletedStatusUpdate,
     WorkOrderDetail,
@@ -20,6 +21,7 @@ from app.schemas.order import (
     WorkOrderTakenStatusUpdate,
     WorkOrderTimeBreakdown,
     WorkOrderUpdateAssignments,
+    WorkOrderVisibilityUpdate,
 )
 from app.services.auth_service import AuthenticatedSession
 from app.services.order_service import OrderService
@@ -54,14 +56,18 @@ def list_orders(
 
 @router.get(
     "/worker-assignments",
-    response_model=list[WorkOrderDetail],
+    response_model=WorkerAssignedWorkOrderList,
     summary="List current worker assigned orders",
 )
 def list_worker_assignments(
+    include_hidden: bool = Query(default=False),
     auth_session: AuthenticatedSession = Depends(get_authenticated_session),
     session: Session = Depends(get_session),
-) -> list[WorkOrderDetail]:
-    return OrderService(session).list_worker_assigned_orders(auth_session.user_id)
+) -> WorkerAssignedWorkOrderList:
+    return OrderService(session).list_worker_assigned_orders(
+        auth_session.user_id,
+        include_hidden=include_hidden,
+    )
 
 
 @router.get("/{order_id}", response_model=WorkOrderDetail, summary="Get work order")
@@ -153,6 +159,24 @@ def accept_order_quality_control(
     session: Session = Depends(get_session),
 ) -> WorkOrderDetail:
     return OrderService(session).accept_order_quality_control(order_id, payload)
+
+
+@router.patch(
+    "/{order_id}/visibility",
+    response_model=WorkOrderDetail,
+    summary="Update current worker order visibility",
+)
+def update_order_visibility(
+    order_id: int,
+    payload: WorkOrderVisibilityUpdate,
+    auth_session: AuthenticatedSession = Depends(get_authenticated_session),
+    session: Session = Depends(get_session),
+) -> WorkOrderDetail:
+    return OrderService(session).update_worker_order_visibility(
+        auth_session.user_id,
+        order_id,
+        payload,
+    )
 
 
 @router.patch(

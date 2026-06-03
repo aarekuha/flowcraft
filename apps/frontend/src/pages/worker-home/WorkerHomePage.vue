@@ -32,6 +32,7 @@ import {
   updateWorkOrderQualityControlStatus,
   updateWorkOrderStatus,
   updateWorkOrderTakenStatus,
+  updateWorkerAssignedWorkOrderVisibility,
   type WorkOrderListParams,
   type WorkOrderSortBy,
   type WorkOrderSortDirection,
@@ -133,11 +134,13 @@ type WorkerTimerDefinition = {
   id: string;
   label: string;
   kind: WorkerTimerKind;
+  orderId?: number;
   orderGroupKey?: string;
   productLabel?: string;
   productQuantity?: number;
   leatherTypeName?: string | null;
   orderNumber?: string;
+  hidden?: boolean;
 };
 
 type WorkerTimerState = WorkerTimerDefinition & {
@@ -146,12 +149,14 @@ type WorkerTimerState = WorkerTimerDefinition & {
 };
 
 type WorkerTimerGroup = {
+  orderId: number;
   groupKey: string;
   orderNumber: string;
   productLabel: string;
   leatherTypeName: string | null;
   quantity: number;
   timers: WorkerTimerDefinition[];
+  hidden: boolean;
 };
 
 const tabs: Array<{ id: TabId; label: string; icon: string }> = [
@@ -344,6 +349,9 @@ const workOrderTimeBreakdownError = ref("");
 const workOrderDetails = ref<WorkOrderDetail[]>([]);
 const workerAssignmentsLoading = ref(false);
 const workerAssignmentsError = ref("");
+const showHiddenWorkerAssignments = ref(false);
+const workerHiddenAssignmentsCount = ref(0);
+const busyWorkerVisibilityIds = ref<number[]>([]);
 const workerTimerSubmitting = ref(false);
 const workerDayStartedAt = ref<number | null>(null);
 const isWorkerDayEndConfirmOpen = ref(false);
@@ -998,11 +1006,13 @@ const assignedWorkerTimerDefinitions = computed<WorkerTimerDefinition[]>(() => {
         id: `worker:operation:${order.id}:${assignment.operationId}`,
         label: assignment.operationName,
         kind: "operation" as const,
+        orderId: order.id,
         orderGroupKey: String(order.id),
         productLabel: `${order.productName} · ${order.productVersion}`,
         productQuantity: order.quantity,
         leatherTypeName: order.leatherTypeName,
         orderNumber: order.orderNumber,
+        hidden: order.hidden,
       })),
   );
 });
@@ -1027,12 +1037,14 @@ const workerTimerGroups = computed<WorkerTimerGroup[]>(() => {
     }
 
     groups.set(timer.orderGroupKey, {
+      orderId: timer.orderId ?? Number.parseInt(timer.orderGroupKey, 10),
       groupKey: timer.orderGroupKey,
       orderNumber: timer.orderNumber,
       productLabel: timer.productLabel,
       leatherTypeName: timer.leatherTypeName ?? null,
       quantity: timer.productQuantity ?? 0,
       timers: [timer],
+      hidden: timer.hidden ?? false,
     });
   }
 
@@ -1097,6 +1109,12 @@ onMounted(async () => {
 watch(activeTab, (value) => {
   storeTab(ACTIVE_TAB_STORAGE_KEY, value);
   if (value === "worker" && !authInitializing.value && canLoadWorkerWorkspace()) {
+    void loadWorkerWorkspace();
+  }
+});
+
+watch(showHiddenWorkerAssignments, () => {
+  if (activeTab.value === "worker" && !authInitializing.value && canLoadWorkerWorkspace()) {
     void loadWorkerWorkspace();
   }
 });
@@ -1427,6 +1445,8 @@ async function loadProtectedData() {
     workOrderDetails.value = [];
     workerAssignmentsError.value = "";
     workerAssignmentsLoading.value = false;
+    workerHiddenAssignmentsCount.value = 0;
+    busyWorkerVisibilityIds.value = [];
     resetWorkerTimerState();
   }
 
@@ -1461,6 +1481,8 @@ function redirectToAuth(message = "Требуется аутентификаци
   workOrderDetails.value = [];
   workerAssignmentsError.value = "";
   workerAssignmentsLoading.value = false;
+  workerHiddenAssignmentsCount.value = 0;
+  busyWorkerVisibilityIds.value = [];
   resetWorkerTimerState();
   closeChangePasswordModal();
   closeBrigadierOrderModal();
@@ -1737,6 +1759,8 @@ async function loadWorkerWorkspace() {
     workOrderDetails.value = [];
     workerAssignmentsError.value = "";
     workerAssignmentsLoading.value = false;
+    workerHiddenAssignmentsCount.value = 0;
+    busyWorkerVisibilityIds.value = [];
     resetWorkerTimerState();
     return;
   }
@@ -1753,13 +1777,16 @@ async function loadWorkerAssignments(): Promise<boolean> {
   workerAssignmentsError.value = "";
 
   try {
-    const assignedOrders = await fetchWorkerAssignedWorkOrders();
+    const assignedOrders = await fetchWorkerAssignedWorkOrders(
+      showHiddenWorkerAssignments.value,
+    );
 
     if (requestId !== workerAssignmentsRequestId) {
       return false;
     }
 
-    workOrderDetails.value = assignedOrders;
+    workOrderDetails.value = assignedOrders.items;
+    workerHiddenAssignmentsCount.value = assignedOrders.hiddenCount;
     return true;
   } catch (error) {
     if (requestId !== workerAssignmentsRequestId) {
@@ -1771,6 +1798,7 @@ async function loadWorkerAssignments(): Promise<boolean> {
       return false;
     }
     workOrderDetails.value = [];
+    workerHiddenAssignmentsCount.value = 0;
     workerAssignmentsError.value = getErrorMessage(
       error,
       "Не удалось загрузить назначения исполнителя.",
@@ -2245,6 +2273,75 @@ function toggleWorkerGroup(groupKey: string) {
     ...workerGroupExpanded.value,
     [groupKey]: !workerGroupExpanded.value[groupKey],
   };
+}
+
+async function toggleWorkerOrderHidden(workOrderId: number, event: Event) {
+  const target = event.target as HTMLInputElement;
+  const hidden = target.checked;
+  const previousOrder = workOrderDetails.value.find((order) => order.id === workOrderId);
+  const wasHidden = previousOrder?.hidden ?? false;
+
+  setWorkerVisibilityBusy(workOrderId, true);
+  workerAssignmentsError.value = "";
+
+  try {
+    const updatedOrder = await updateWorkerAssignedWorkOrderVisibility(
+      workOrderId,
+      hidden,
+    );
+
+    if (updatedOrder.hidden !== wasHidden) {
+      workerHiddenAssignmentsCount.value = Math.max(
+        0,
+        workerHiddenAssignmentsCount.value + (updatedOrder.hidden ? 1 : -1),
+      );
+    }
+
+    if (updatedOrder.hidden && !showHiddenWorkerAssignments.value) {
+      workOrderDetails.value = workOrderDetails.value.filter(
+        (order) => order.id !== workOrderId,
+      );
+      return;
+    }
+
+    workOrderDetails.value = workOrderDetails.value.map((order) =>
+      order.id === workOrderId ? updatedOrder : order,
+    );
+  } catch (error) {
+    target.checked = wasHidden;
+
+    if (isUnauthorizedError(error)) {
+      redirectToAuth(getErrorMessage(error, "Требуется аутентификация."));
+      return;
+    }
+
+    workerAssignmentsError.value = getErrorMessage(
+      error,
+      "Не удалось обновить видимость заказа.",
+    );
+  } finally {
+    setWorkerVisibilityBusy(workOrderId, false);
+  }
+}
+
+function isWorkerVisibilityBusy(workOrderId: number): boolean {
+  return busyWorkerVisibilityIds.value.includes(workOrderId);
+}
+
+function setWorkerVisibilityBusy(workOrderId: number, isBusy: boolean) {
+  if (isBusy) {
+    if (!busyWorkerVisibilityIds.value.includes(workOrderId)) {
+      busyWorkerVisibilityIds.value = [
+        ...busyWorkerVisibilityIds.value,
+        workOrderId,
+      ];
+    }
+    return;
+  }
+
+  busyWorkerVisibilityIds.value = busyWorkerVisibilityIds.value.filter(
+    (id) => id !== workOrderId,
+  );
 }
 
 async function toggleProductStatus(product: ProductSummary) {
@@ -4384,6 +4481,20 @@ async function handleResetUserPassword(user: UserRecord) {
               </button>
             </div>
 
+            <div class="worker-visibility-toolbar">
+              <label class="checkbox-field worker-visibility-toolbar__toggle">
+                <input
+                  v-model="showHiddenWorkerAssignments"
+                  type="checkbox"
+                  :disabled="workerAssignmentsLoading"
+                />
+                <span>Показывать скрытые</span>
+              </label>
+              <span class="worker-hidden-counter">
+                Скрытые: {{ workerHiddenAssignmentsCount }}
+              </span>
+            </div>
+
             <div v-if="workerAssignmentsError" class="banner banner--error">
               <p>{{ workerAssignmentsError }}</p>
               <button type="button" class="ghost-button" @click="void loadWorkerWorkspace()">
@@ -4399,7 +4510,13 @@ async function handleResetUserPassword(user: UserRecord) {
             </div>
 
             <div v-else-if="workerTimerGroups.length === 0" class="empty-table-state">
-              <p>Для текущего исполнителя пока нет назначенных операций.</p>
+              <p>
+                {{
+                  workerHiddenAssignmentsCount > 0 && !showHiddenWorkerAssignments
+                    ? "Все назначенные операции скрыты."
+                    : "Для текущего исполнителя пока нет назначенных операций."
+                }}
+              </p>
             </div>
 
             <div v-else class="worker-groups">
@@ -4407,27 +4524,40 @@ async function handleResetUserPassword(user: UserRecord) {
                 v-for="group in workerTimerGroups"
                 :key="group.groupKey"
                 class="worker-group"
+                :class="{ 'worker-group--hidden': group.hidden }"
               >
-                <button
-                  type="button"
-                  class="worker-group__head"
-                  @click="toggleWorkerGroup(group.groupKey)"
-                >
-                  <span class="worker-group__title">
-                    <span class="button-icon button-icon--package" aria-hidden="true" />
-                    <h3>
-                      {{ group.orderNumber }} · {{ group.productLabel }} ({{ formatWorkerGroupProductMeta(group) }})
-                    </h3>
-                  </span>
-                  <span
-                    class="worker-group__chevron"
-                    :class="{
-                      'worker-group__chevron--expanded':
-                        workerGroupExpanded[group.groupKey],
-                    }"
-                    aria-hidden="true"
-                  />
-                </button>
+                <div class="worker-group__head">
+                  <button
+                    type="button"
+                    class="worker-group__toggle"
+                    @click="toggleWorkerGroup(group.groupKey)"
+                  >
+                    <span class="worker-group__title">
+                      <span class="button-icon button-icon--package" aria-hidden="true" />
+                      <h3>
+                        {{ group.orderNumber }} · {{ group.productLabel }} ({{ formatWorkerGroupProductMeta(group) }})
+                      </h3>
+                    </span>
+                    <span
+                      class="worker-group__chevron"
+                      :class="{
+                        'worker-group__chevron--expanded':
+                          workerGroupExpanded[group.groupKey],
+                      }"
+                      aria-hidden="true"
+                    />
+                  </button>
+
+                  <label class="checkbox-field worker-group__hidden-toggle">
+                    <input
+                      type="checkbox"
+                      :checked="group.hidden"
+                      :disabled="isWorkerVisibilityBusy(group.orderId)"
+                      @change="void toggleWorkerOrderHidden(group.orderId, $event)"
+                    />
+                    <span>Скрыть</span>
+                  </label>
+                </div>
 
                 <div
                   v-if="workerGroupExpanded[group.groupKey]"
@@ -7584,6 +7714,30 @@ h2 {
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
+.worker-visibility-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+
+.worker-visibility-toolbar__toggle {
+  align-self: center;
+}
+
+.worker-hidden-counter {
+  display: inline-flex;
+  align-items: center;
+  min-height: 46px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  background: var(--color-surface-alt);
+  border: 1px solid var(--color-border);
+  color: var(--color-text-secondary);
+  font-weight: 700;
+}
+
 .worker-groups {
   display: grid;
   gap: 18px;
@@ -7598,8 +7752,21 @@ h2 {
   border: 1px solid var(--color-border);
 }
 
+.worker-group--hidden {
+  opacity: 0.72;
+}
+
 .worker-group__head {
   width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.worker-group__toggle {
+  min-width: 0;
+  flex: 1 1 auto;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -7612,7 +7779,7 @@ h2 {
   text-align: left;
 }
 
-.worker-group__head h3 {
+.worker-group__toggle h3 {
   margin: 0;
   color: var(--color-text);
   font-size: 1.05rem;
@@ -7622,6 +7789,18 @@ h2 {
   display: inline-flex;
   align-items: center;
   gap: 12px;
+  min-width: 0;
+}
+
+.worker-group__title h3 {
+  overflow-wrap: anywhere;
+}
+
+.worker-group__hidden-toggle {
+  min-height: 40px;
+  flex: 0 0 auto;
+  align-self: center;
+  padding: 8px 12px;
 }
 
 .worker-group__chevron {
@@ -10218,6 +10397,27 @@ h2 {
 
   .worker-summary {
     grid-template-columns: 1fr;
+  }
+
+  .worker-visibility-toolbar,
+  .worker-group__head,
+  .worker-group__toggle {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .worker-hidden-counter,
+  .worker-visibility-toolbar__toggle,
+  .worker-group__hidden-toggle {
+    width: 100%;
+  }
+
+  .worker-group__toggle {
+    gap: 12px;
+  }
+
+  .worker-group__chevron {
+    align-self: flex-start;
   }
 
   .worker-timer-button--operation {
