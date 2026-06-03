@@ -1,4 +1,11 @@
-from sqlalchemy import BigInteger, ForeignKey, Integer, String, UniqueConstraint
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    ForeignKey,
+    Integer,
+    String,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
@@ -74,3 +81,20 @@ class WorkOrderAssignment(Base):
     work_order = relationship("WorkOrder", back_populates="assignments")
     operation = relationship("Operation", lazy="joined")
     worker_user = relationship("User", lazy="joined")
+
+
+class UserWorkOrderVisibility(Base):
+    __tablename__ = "user_work_order_visibility"
+
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    work_order_id: Mapped[int] = mapped_column(
+        ForeignKey("work_orders.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    hidden: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+    user = relationship("User", lazy="joined")
+    work_order = relationship("WorkOrder", lazy="joined")

@@ -82,6 +82,10 @@ class WorkOrderDeletedStatusUpdate(BaseModel):
     is_deleted: bool
 
 
+class WorkOrderVisibilityUpdate(BaseModel):
+    hidden: bool
+
+
 class WorkOrderListItem(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -136,6 +140,12 @@ class WorkOrderDetail(BaseModel):
     completed_at: int | None
     deleted_at: int | None
     assignments: list[WorkOrderAssignmentRead] = Field(default_factory=list)
+    hidden: bool = False
+
+
+class WorkerAssignedWorkOrderList(BaseModel):
+    items: list[WorkOrderDetail]
+    hidden_count: int
 
 
 class WorkOrderTimeBreakdownItem(BaseModel):

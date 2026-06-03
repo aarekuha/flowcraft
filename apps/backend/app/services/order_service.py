@@ -3,7 +3,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import HTTPException, status
-from sqlalchemy import Select, func, or_, select
+from sqlalchemy import Select, and_, distinct, func, or_, select
 from sqlalchemy.orm import Session, selectinload
 from sqlalchemy.sql.elements import ColumnElement
 
@@ -12,9 +12,14 @@ from app.models.operation import Operation
 from app.models.product import Product
 from app.models.timer_session import TimerSession
 from app.models.user import User
-from app.models.work_order import WorkOrder, WorkOrderAssignment
+from app.models.work_order import (
+    UserWorkOrderVisibility,
+    WorkOrder,
+    WorkOrderAssignment,
+)
 from app.schemas.order import (
     SortDirection,
+    WorkerAssignedWorkOrderList,
     WorkOrderAssignmentCreate,
     WorkOrderAssignmentRead,
     WorkOrderCreate,
@@ -31,6 +36,7 @@ from app.schemas.order import (
     WorkOrderTimeBreakdown,
     WorkOrderTimeBreakdownItem,
     WorkOrderUpdateAssignments,
+    WorkOrderVisibilityUpdate,
 )
 from app.schemas.timer import TimerType
 from app.services.timer_service import TIMER_TYPE_TO_CODE
@@ -316,7 +322,143 @@ class OrderService:
             total_elapsed_ms=sum(item.elapsed_ms for item in items),
         )
 
-    def list_worker_assigned_orders(self, worker_user_id: int) -> list[WorkOrderDetail]:
+    def list_worker_assigned_orders(
+        self,
+        worker_user_id: int,
+        *,
+        include_hidden: bool = False,
+    ) -> WorkerAssignedWorkOrderList:
+        stmt: Select[tuple[WorkOrder, bool | None]] = (
+            select(WorkOrder, UserWorkOrderVisibility.hidden)
+            .join(
+                WorkOrderAssignment,
+                WorkOrderAssignment.work_order_id == WorkOrder.id,
+            )
+            .outerjoin(
+                UserWorkOrderVisibility,
+                and_(
+                    UserWorkOrderVisibility.user_id == worker_user_id,
+                    UserWorkOrderVisibility.work_order_id == WorkOrder.id,
+                ),
+            )
+            .options(
+                selectinload(WorkOrder.assignments).selectinload(
+                    WorkOrderAssignment.operation
+                ),
+                selectinload(WorkOrder.assignments).selectinload(
+                    WorkOrderAssignment.worker_user
+                ),
+            )
+            .where(*self._build_worker_assignment_filters(worker_user_id))
+            .order_by(WorkOrder.created_at.desc(), WorkOrder.id.desc())
+        )
+
+        if not include_hidden:
+            stmt = stmt.where(
+                or_(
+                    UserWorkOrderVisibility.hidden.is_(None),
+                    UserWorkOrderVisibility.hidden.is_(False),
+                )
+            )
+
+        rows = self.session.execute(stmt).unique().all()
+        orders: list[tuple[WorkOrder, bool]] = []
+        seen_order_ids: set[int] = set()
+
+        for order, hidden in rows:
+            if order.id in seen_order_ids:
+                continue
+
+            orders.append((order, bool(hidden)))
+            seen_order_ids.add(order.id)
+
+        return WorkerAssignedWorkOrderList(
+            items=[
+                self._serialize_order(
+                    order,
+                    order.product,
+                    assignment_worker_user_id=worker_user_id,
+                    hidden=hidden,
+                )
+                for order, hidden in orders
+            ],
+            hidden_count=self._count_worker_hidden_orders(worker_user_id),
+        )
+
+    def update_worker_order_visibility(
+        self,
+        worker_user_id: int,
+        work_order_id: int,
+        payload: WorkOrderVisibilityUpdate,
+    ) -> WorkOrderDetail:
+        order = self._get_worker_assigned_active_order_or_404(
+            worker_user_id,
+            work_order_id,
+        )
+        visibility = self.session.get(
+            UserWorkOrderVisibility,
+            (worker_user_id, work_order_id),
+        )
+
+        if visibility is None:
+            visibility = UserWorkOrderVisibility(
+                user_id=worker_user_id,
+                work_order_id=work_order_id,
+                hidden=payload.hidden,
+            )
+            self.session.add(visibility)
+        else:
+            visibility.hidden = payload.hidden
+
+        self.session.commit()
+        self.session.refresh(order)
+
+        return self._serialize_order(
+            order,
+            order.product,
+            assignment_worker_user_id=worker_user_id,
+            hidden=visibility.hidden,
+        )
+
+    def _build_worker_assignment_filters(
+        self,
+        worker_user_id: int,
+    ) -> list[ColumnElement[bool]]:
+        return [
+            WorkOrder.deleted_at.is_(None),
+            WorkOrder.completed_at.is_(None),
+            WorkOrder.quality_control_at.is_(None),
+            WorkOrder.taken_at.is_not(None),
+            WorkOrderAssignment.worker_user_id == worker_user_id,
+        ]
+
+    def _count_worker_hidden_orders(self, worker_user_id: int) -> int:
+        stmt = (
+            select(func.count(distinct(WorkOrder.id)))
+            .join(
+                WorkOrderAssignment,
+                WorkOrderAssignment.work_order_id == WorkOrder.id,
+            )
+            .join(
+                UserWorkOrderVisibility,
+                and_(
+                    UserWorkOrderVisibility.user_id == worker_user_id,
+                    UserWorkOrderVisibility.work_order_id == WorkOrder.id,
+                ),
+            )
+            .where(
+                *self._build_worker_assignment_filters(worker_user_id),
+                UserWorkOrderVisibility.hidden.is_(True),
+            )
+        )
+
+        return int(self.session.scalar(stmt) or 0)
+
+    def _get_worker_assigned_active_order_or_404(
+        self,
+        worker_user_id: int,
+        work_order_id: int,
+    ) -> WorkOrder:
         stmt: Select[tuple[WorkOrder]] = (
             select(WorkOrder)
             .join(
@@ -332,24 +474,19 @@ class OrderService:
                 ),
             )
             .where(
-                WorkOrder.deleted_at.is_(None),
-                WorkOrder.completed_at.is_(None),
-                WorkOrder.quality_control_at.is_(None),
-                WorkOrder.taken_at.is_not(None),
-                WorkOrderAssignment.worker_user_id == worker_user_id,
+                WorkOrder.id == work_order_id,
+                *self._build_worker_assignment_filters(worker_user_id),
             )
-            .order_by(WorkOrder.created_at.desc(), WorkOrder.id.desc())
         )
-        orders = self.session.scalars(stmt).unique().all()
+        order = self.session.scalars(stmt).unique().one_or_none()
 
-        return [
-            self._serialize_order(
-                order,
-                order.product,
-                assignment_worker_user_id=worker_user_id,
+        if order is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Order not found for current worker.",
             )
-            for order in orders
-        ]
+
+        return order
 
     def create_order(self, payload: WorkOrderCreate) -> WorkOrderDetail:
         self._validate_order_number(payload.order_number)
@@ -806,6 +943,7 @@ class OrderService:
         product: Product,
         *,
         assignment_worker_user_id: int | None = None,
+        hidden: bool = False,
     ) -> WorkOrderDetail:
         assignments = [
             assignment
@@ -849,6 +987,7 @@ class OrderService:
                 )
                 for assignment in assignments
             ],
+            hidden=hidden,
         )
 
     def _now_ts(self) -> int:
