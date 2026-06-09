@@ -1,12 +1,10 @@
 from __future__ import annotations
 
-from fastapi import Request
-from fastapi import HTTPException
-from fastapi.responses import JSONResponse, Response
-from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
+from fastapi import HTTPException, Request
+from fastapi.responses import JSONResponse
+from starlette.types import ASGIApp, Receive, Scope, Send
 
-from app.services.auth_service import AuthService, SESSION_COOKIE_NAME
-
+from app.services.auth_service import SESSION_COOKIE_NAME, AuthService
 
 PUBLIC_PATH_PREFIXES = (
     "/api/health",
@@ -18,14 +16,26 @@ PUBLIC_PATH_PREFIXES = (
 )
 
 
-class AuthSessionMiddleware(BaseHTTPMiddleware):
-    async def dispatch(
+class AuthSessionMiddleware:
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(
         self,
-        request: Request,
-        call_next: RequestResponseEndpoint,
-    ) -> Response:
-        if request.method == "OPTIONS" or request.url.path.startswith(PUBLIC_PATH_PREFIXES):
-            return await call_next(request)
+        scope: Scope,
+        receive: Receive,
+        send: Send,
+    ) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        request = Request(scope, receive=receive)
+        if request.method == "OPTIONS" or request.url.path.startswith(
+            PUBLIC_PATH_PREFIXES,
+        ):
+            await self.app(scope, receive, send)
+            return
 
         session_factory = request.app.state.session_factory
         token = request.cookies.get(SESSION_COOKIE_NAME)
@@ -34,6 +44,7 @@ class AuthSessionMiddleware(BaseHTTPMiddleware):
             auth_service = AuthService(session)
             try:
                 auth_session = auth_service.get_session(token)
+                auth_service.touch_session(auth_session.session_id)
             except HTTPException:
                 response = JSONResponse(
                     status_code=401,
@@ -46,13 +57,8 @@ class AuthSessionMiddleware(BaseHTTPMiddleware):
                     secure=False,
                     path="/",
                 )
-                return response
+                await response(scope, receive, send)
+                return
 
-        request.state.auth_session = auth_session
-        response = await call_next(request)
-
-        if response.status_code < 400:
-            with session_factory() as session:
-                AuthService(session).touch_session(auth_session.session_id)
-
-        return response
+        scope.setdefault("state", {})["auth_session"] = auth_session
+        await self.app(scope, receive, send)

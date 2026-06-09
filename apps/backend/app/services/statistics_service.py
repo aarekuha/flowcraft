@@ -7,6 +7,7 @@ from datetime import UTC, datetime, timedelta
 from sqlalchemy import Select, select
 from sqlalchemy.orm import Session, joinedload
 
+from app.models.operation import Operation
 from app.models.timer_session import TimerSession
 from app.models.work_order import WorkOrder
 from app.schemas.statistics import (
@@ -85,7 +86,9 @@ class StatisticsService:
             preparation_ms=preparation_ms,
             break_ms=break_ms,
             idle_ms=idle_ms,
-            productive_ratio=(operation_ms / total_tracked_ms) if total_tracked_ms else 0.0,
+            productive_ratio=(operation_ms / total_tracked_ms)
+            if total_tracked_ms
+            else 0.0,
             active_orders_count=len(orders_touched),
         )
 
@@ -174,10 +177,13 @@ class StatisticsService:
             .options(
                 joinedload(TimerSession.user),
                 joinedload(TimerSession.order).joinedload(WorkOrder.product),
-                joinedload(TimerSession.operation),
+                joinedload(TimerSession.operation).joinedload(Operation.catalog_entry),
             )
             .where(TimerSession.started_at < now)
-            .where((TimerSession.ended_at.is_(None)) | (TimerSession.ended_at > period_start))
+            .where(
+                (TimerSession.ended_at.is_(None))
+                | (TimerSession.ended_at > period_start)
+            )
         )
 
         sessions = self.session.scalars(stmt).all()
@@ -193,15 +199,23 @@ class StatisticsService:
             user = timer_session.user
             windowed_sessions.append(
                 _WindowedSession(
-                    timer_type=self._timer_type_from_code(timer_session.timer_type_code),
+                    timer_type=self._timer_type_from_code(
+                        timer_session.timer_type_code
+                    ),
                     user_id=user.id,
                     user_name=user.name,
                     order_id=timer_session.order_id,
                     order_number=order.order_number if order is not None else None,
                     product_name=order.product.name if order is not None else None,
-                    product_version=order.product.version if order is not None else None,
+                    product_version=order.product.version
+                    if order is not None
+                    else None,
                     operation_id=timer_session.operation_id,
-                    operation_name=operation.name if operation is not None else None,
+                    operation_name=(
+                        self._get_operation_name(operation)
+                        if operation is not None
+                        else None
+                    ),
                     started_at=clipped_start,
                     ended_at=clipped_end,
                     elapsed_ms=clipped_end - clipped_start,
@@ -228,7 +242,10 @@ class StatisticsService:
         top_operations: dict[int, dict[str, int | str]],
         timer_session: _WindowedSession,
     ) -> None:
-        if timer_session.timer_type != TimerType.OPERATION or timer_session.operation_id is None:
+        if (
+            timer_session.timer_type != TimerType.OPERATION
+            or timer_session.operation_id is None
+        ):
             return
 
         entry = top_operations.setdefault(
@@ -279,7 +296,9 @@ class StatisticsService:
         )
         entry["total_ms"] = int(entry["total_ms"]) + timer_session.elapsed_ms
         if timer_session.timer_type == TimerType.OPERATION:
-            entry["operation_ms"] = int(entry["operation_ms"]) + timer_session.elapsed_ms
+            entry["operation_ms"] = (
+                int(entry["operation_ms"]) + timer_session.elapsed_ms
+            )
         if timer_session.timer_type == TimerType.IDLE:
             entry["idle_ms"] = int(entry["idle_ms"]) + timer_session.elapsed_ms
 
@@ -311,7 +330,9 @@ class StatisticsService:
 
     def _period_start(self, now: int, days: int) -> int:
         current_datetime = datetime.fromtimestamp(now / 1000, UTC)
-        midnight_today = datetime.combine(current_datetime.date(), datetime.min.time(), UTC)
+        midnight_today = datetime.combine(
+            current_datetime.date(), datetime.min.time(), UTC
+        )
         start_datetime = midnight_today - timedelta(days=days - 1)
         return int(start_datetime.timestamp() * 1000)
 
@@ -320,6 +341,11 @@ class StatisticsService:
             if code == timer_type_code:
                 return timer_type
         raise ValueError(f"Unsupported timer type code: {timer_type_code}")
+
+    def _get_operation_name(self, operation: Operation) -> str:
+        if operation.catalog_entry is not None:
+            return operation.catalog_entry.name
+        return operation.name
 
     def _now_ts(self) -> int:
         return int(datetime.now(UTC).timestamp() * 1000)

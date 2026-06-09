@@ -1,11 +1,4 @@
-from sqlalchemy import (
-    BigInteger,
-    Boolean,
-    ForeignKey,
-    Integer,
-    String,
-    UniqueConstraint,
-)
+from sqlalchemy import BigInteger, ForeignKey, Integer, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
@@ -81,20 +74,41 @@ class WorkOrderAssignment(Base):
     work_order = relationship("WorkOrder", back_populates="assignments")
     operation = relationship("Operation", lazy="joined")
     worker_user = relationship("User", lazy="joined")
+    worker_states = relationship(
+        "WorkOrderAssignmentWorkerState",
+        back_populates="assignment",
+        cascade="all, delete-orphan",
+    )
 
 
-class UserWorkOrderVisibility(Base):
-    __tablename__ = "user_work_order_visibility"
+class WorkOrderAssignmentWorkerState(Base):
+    __tablename__ = "work_order_assignment_worker_states"
+    __table_args__ = (
+        UniqueConstraint(
+            "assignment_id",
+            "worker_user_id",
+            name="uq_work_order_assignment_worker_states_assignment_worker",
+        ),
+    )
 
-    user_id: Mapped[int] = mapped_column(
+    id: Mapped[int] = mapped_column(primary_key=True)
+    assignment_id: Mapped[int] = mapped_column(
+        ForeignKey("work_order_assignments.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    worker_user_id: Mapped[int] = mapped_column(
         ForeignKey("users.id", ondelete="CASCADE"),
-        primary_key=True,
+        nullable=False,
+        index=True,
     )
-    work_order_id: Mapped[int] = mapped_column(
-        ForeignKey("work_orders.id", ondelete="CASCADE"),
-        primary_key=True,
-    )
-    hidden: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    hidden_at: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    completed_at: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    created_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    updated_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
 
-    user = relationship("User", lazy="joined")
-    work_order = relationship("WorkOrder", lazy="joined")
+    assignment = relationship(
+        "WorkOrderAssignment",
+        back_populates="worker_states",
+    )
+    worker_user = relationship("User", lazy="joined")

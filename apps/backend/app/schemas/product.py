@@ -1,24 +1,36 @@
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class OperationCreate(BaseModel):
-    name: str = Field(min_length=1, max_length=255)
+    operation_catalog_entry_id: int | None = Field(default=None, ge=1)
+    name: str | None = Field(default=None, min_length=1, max_length=255)
     price_cents: int | None = Field(default=None, ge=0)
     children: list["OperationCreate"] = Field(default_factory=list)
 
     @field_validator("name")
     @classmethod
-    def validate_name(cls, value: str) -> str:
+    def validate_name(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
         normalized = value.strip()
         if not normalized:
             raise ValueError("Operation name must not be empty.")
         return normalized
+
+    @model_validator(mode="after")
+    def validate_catalog_reference(self) -> "OperationCreate":
+        if self.operation_catalog_entry_id is None and self.name is None:
+            raise ValueError(
+                "Operation catalog entry id or operation name must be provided."
+            )
+        return self
 
 
 class OperationRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: int
+    operation_catalog_entry_id: int | None
     name: str
     price_cents: int | None = None
     children: list["OperationRead"] = Field(default_factory=list)

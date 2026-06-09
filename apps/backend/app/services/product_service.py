@@ -7,6 +7,7 @@ from sqlalchemy import Select, func, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.models.operation import Operation
+from app.models.operation_catalog import OperationCatalogEntry
 from app.models.product import Product
 from app.models.user import User
 from app.schemas.product import (
@@ -67,14 +68,17 @@ class ProductService:
             is_active=product.is_active,
             created_at=product.created_at,
             operations=[
-                self._serialize_operation(operation)
-                for operation in product.operations
+                self._serialize_operation(operation) for operation in product.operations
             ],
         )
 
     def create_product(self, payload: ProductCreate) -> ProductDetail:
-        self._validate_operation_names(payload.operations)
-        self._validate_group_operation_prices(payload.operations)
+        self._validate_group_operations(payload.operations)
+        resolved_entries = self._resolve_operation_catalog_entries(payload.operations)
+        self._validate_operation_catalog_entries_unique(
+            payload.operations,
+            resolved_entries,
+        )
         self._validate_product_identity(name=payload.name, version=payload.version)
         author_user = self._resolve_product_author(payload.author_user_id)
 
@@ -94,6 +98,7 @@ class ProductService:
                     payload=operation,
                     sort_order=index,
                     product=product,
+                    resolved_entries=resolved_entries,
                 )
             )
 
@@ -124,9 +129,7 @@ class ProductService:
 
         for operation_id, requested_price_cents in requested_operation_prices.items():
             operation = operations_by_id[operation_id]
-            current_price_cents = (
-                None if operation.children else operation.price_cents
-            )
+            current_price_cents = None if operation.children else operation.price_cents
             if requested_price_cents != current_price_cents:
                 raise HTTPException(
                     status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -171,6 +174,7 @@ class ProductService:
             select(Product)
             .options(
                 selectinload(Product.operations).selectinload(Operation.children),
+                selectinload(Product.operations).selectinload(Operation.catalog_entry),
             )
             .where(Product.id == product_id)
         )
@@ -187,10 +191,19 @@ class ProductService:
         payload: OperationCreate,
         sort_order: int,
         product: Product,
+        resolved_entries: dict[int, OperationCatalogEntry],
     ) -> Operation:
+        is_group = bool(payload.children)
+        catalog_entry = None if is_group else resolved_entries[id(payload)]
+        operation_name = payload.name or ""
+        if catalog_entry is not None:
+            operation_name = catalog_entry.name
         operation = Operation(
-            name=payload.name,
-            price_cents=payload.price_cents if not payload.children else None,
+            operation_catalog_entry_id=(
+                None if catalog_entry is None else catalog_entry.id
+            ),
+            name=operation_name,
+            price_cents=payload.price_cents if not is_group else None,
             sort_order=sort_order,
             product=product,
         )
@@ -201,39 +214,116 @@ class ProductService:
                     payload=child,
                     sort_order=index,
                     product=product,
+                    resolved_entries=resolved_entries,
                 )
             )
 
         return operation
 
-    def _validate_operation_names(self, operations: Sequence[OperationCreate]) -> None:
-        counts: dict[str, int] = {}
-
-        for operation in operations:
-            normalized = operation.name.strip().lower()
-            counts[normalized] = counts.get(normalized, 0) + 1
-
-        duplicates = [name for name, count in counts.items() if count > 1]
-        if duplicates:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail="Operation names must be unique among siblings.",
-            )
-
-        for operation in operations:
-            self._validate_operation_names(operation.children)
-
-    def _validate_group_operation_prices(
+    def _validate_group_operations(
         self,
         operations: Sequence[OperationCreate],
     ) -> None:
         for operation in operations:
-            if operation.children and operation.price_cents is not None:
-                raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                    detail="Operation groups cannot have prices.",
+            if operation.children:
+                if operation.price_cents is not None:
+                    raise HTTPException(
+                        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                        detail="Operation groups cannot have prices.",
+                    )
+                if operation.operation_catalog_entry_id is not None:
+                    raise HTTPException(
+                        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                        detail=(
+                            "Operation groups must not reference the operation "
+                            "catalog."
+                        ),
+                    )
+            self._validate_group_operations(operation.children)
+
+    def _resolve_operation_catalog_entries(
+        self,
+        operations: Sequence[OperationCreate],
+    ) -> dict[int, OperationCatalogEntry]:
+        if not operations:
+            return {}
+
+        active_entries = self.session.scalars(
+            select(OperationCatalogEntry).where(
+                OperationCatalogEntry.is_active.is_(True)
+            )
+        ).all()
+        active_entries_by_id = {entry.id: entry for entry in active_entries}
+        active_entries_by_name = {
+            self._normalize_search(entry.name): entry for entry in active_entries
+        }
+        resolved_entries: dict[int, OperationCatalogEntry] = {}
+
+        def walk(nodes: Sequence[OperationCreate]) -> None:
+            for operation in nodes:
+                if operation.children:
+                    walk(operation.children)
+                    continue
+
+                entry = self._resolve_operation_catalog_entry(
+                    operation,
+                    active_entries_by_id,
+                    active_entries_by_name,
                 )
-            self._validate_group_operation_prices(operation.children)
+                resolved_entries[id(operation)] = entry
+
+        walk(operations)
+        return resolved_entries
+
+    def _resolve_operation_catalog_entry(
+        self,
+        operation: OperationCreate,
+        active_entries_by_id: dict[int, OperationCatalogEntry],
+        active_entries_by_name: dict[str, OperationCatalogEntry],
+    ) -> OperationCatalogEntry:
+        entry: OperationCatalogEntry | None = None
+        if operation.operation_catalog_entry_id is not None:
+            entry = active_entries_by_id.get(operation.operation_catalog_entry_id)
+            if (
+                entry is not None
+                and operation.name is not None
+                and self._normalize_search(entry.name)
+                != self._normalize_search(operation.name)
+            ):
+                entry = None
+        elif operation.name is not None:
+            entry = active_entries_by_name.get(self._normalize_search(operation.name))
+
+        if entry is None:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Operations must be selected from the operation catalog.",
+            )
+
+        return entry
+
+    def _validate_operation_catalog_entries_unique(
+        self,
+        operations: Sequence[OperationCreate],
+        resolved_entries: dict[int, OperationCatalogEntry],
+    ) -> None:
+        seen_entry_ids: set[int] = set()
+
+        def walk(nodes: Sequence[OperationCreate]) -> None:
+            for operation in nodes:
+                if operation.children:
+                    walk(operation.children)
+                    continue
+
+                entry = resolved_entries[id(operation)]
+                if entry.id in seen_entry_ids:
+                    raise HTTPException(
+                        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                        detail="Operations must be unique within a product.",
+                    )
+                seen_entry_ids.add(entry.id)
+
+        walk(operations)
 
     def _validate_product_identity(self, name: str, version: str) -> None:
         stmt = select(Product.id).where(
@@ -274,15 +364,15 @@ class ProductService:
         ordered_children = sorted(operation.children, key=lambda item: item.sort_order)
         return OperationRead(
             id=operation.id,
-            name=operation.name,
+            operation_catalog_entry_id=operation.operation_catalog_entry_id,
+            name=self._get_operation_name(operation),
             price_cents=None if ordered_children else operation.price_cents,
             children=[self._serialize_operation(child) for child in ordered_children],
         )
 
     def _count_operations(self, operations: Sequence[Operation]) -> int:
         return sum(
-            1 + self._count_operations(operation.children)
-            for operation in operations
+            1 + self._count_operations(operation.children) for operation in operations
         )
 
     def _build_list_item(self, row: Any) -> ProductListItem:
@@ -320,3 +410,11 @@ class ProductService:
                 detail="Create at least one user before creating products.",
             )
         return default_user
+
+    def _normalize_search(self, value: str) -> str:
+        return value.strip().casefold()
+
+    def _get_operation_name(self, operation: Operation) -> str:
+        if operation.catalog_entry is not None:
+            return operation.catalog_entry.name
+        return operation.name
