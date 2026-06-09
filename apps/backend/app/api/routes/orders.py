@@ -8,7 +8,8 @@ from app.api.dependencies import (
 )
 from app.schemas.order import (
     SortDirection,
-    WorkerAssignedWorkOrderList,
+    WorkerAssignmentStatusFilter,
+    WorkOrderAssignmentWorkerStatusUpdate,
     WorkOrderCreate,
     WorkOrderDeletedStatusUpdate,
     WorkOrderDetail,
@@ -21,7 +22,6 @@ from app.schemas.order import (
     WorkOrderTakenStatusUpdate,
     WorkOrderTimeBreakdown,
     WorkOrderUpdateAssignments,
-    WorkOrderVisibilityUpdate,
 )
 from app.services.auth_service import AuthenticatedSession
 from app.services.order_service import OrderService
@@ -56,17 +56,38 @@ def list_orders(
 
 @router.get(
     "/worker-assignments",
-    response_model=WorkerAssignedWorkOrderList,
+    response_model=list[WorkOrderDetail],
     summary="List current worker assigned orders",
 )
 def list_worker_assignments(
-    include_hidden: bool = Query(default=False),
+    worker_status: WorkerAssignmentStatusFilter = Query(
+        default=WorkerAssignmentStatusFilter.IN_WORK,
+        alias="status",
+    ),
     auth_session: AuthenticatedSession = Depends(get_authenticated_session),
     session: Session = Depends(get_session),
-) -> WorkerAssignedWorkOrderList:
+) -> list[WorkOrderDetail]:
     return OrderService(session).list_worker_assigned_orders(
         auth_session.user_id,
-        include_hidden=include_hidden,
+        worker_status,
+    )
+
+
+@router.patch(
+    "/worker-assignments/{assignment_id}/status",
+    response_model=WorkOrderDetail,
+    summary="Update current worker assignment status",
+)
+def update_worker_assignment_status(
+    assignment_id: int,
+    payload: WorkOrderAssignmentWorkerStatusUpdate,
+    auth_session: AuthenticatedSession = Depends(get_authenticated_session),
+    session: Session = Depends(get_session),
+) -> WorkOrderDetail:
+    return OrderService(session).update_worker_assignment_status(
+        assignment_id=assignment_id,
+        worker_user_id=auth_session.user_id,
+        payload=payload,
     )
 
 
@@ -159,24 +180,6 @@ def accept_order_quality_control(
     session: Session = Depends(get_session),
 ) -> WorkOrderDetail:
     return OrderService(session).accept_order_quality_control(order_id, payload)
-
-
-@router.patch(
-    "/{order_id}/visibility",
-    response_model=WorkOrderDetail,
-    summary="Update current worker order visibility",
-)
-def update_order_visibility(
-    order_id: int,
-    payload: WorkOrderVisibilityUpdate,
-    auth_session: AuthenticatedSession = Depends(get_authenticated_session),
-    session: Session = Depends(get_session),
-) -> WorkOrderDetail:
-    return OrderService(session).update_worker_order_visibility(
-        auth_session.user_id,
-        order_id,
-        payload,
-    )
 
 
 @router.patch(

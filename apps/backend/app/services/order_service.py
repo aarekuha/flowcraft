@@ -3,25 +3,27 @@ from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import HTTPException, status
-from sqlalchemy import Select, and_, distinct, func, or_, select
+from sqlalchemy import Select, and_, func, or_, select
 from sqlalchemy.orm import Session, selectinload
 from sqlalchemy.sql.elements import ColumnElement
 
 from app.models.leather_type import LeatherType
 from app.models.operation import Operation
+from app.models.operation_catalog import OperationCatalogEntry
 from app.models.product import Product
 from app.models.timer_session import TimerSession
 from app.models.user import User
 from app.models.work_order import (
-    UserWorkOrderVisibility,
     WorkOrder,
     WorkOrderAssignment,
+    WorkOrderAssignmentWorkerState,
 )
 from app.schemas.order import (
     SortDirection,
-    WorkerAssignedWorkOrderList,
+    WorkerAssignmentStatusFilter,
     WorkOrderAssignmentCreate,
     WorkOrderAssignmentRead,
+    WorkOrderAssignmentWorkerStatusUpdate,
     WorkOrderCreate,
     WorkOrderDeletedStatusUpdate,
     WorkOrderDetail,
@@ -36,7 +38,6 @@ from app.schemas.order import (
     WorkOrderTimeBreakdown,
     WorkOrderTimeBreakdownItem,
     WorkOrderUpdateAssignments,
-    WorkOrderVisibilityUpdate,
 )
 from app.schemas.timer import TimerType
 from app.services.timer_service import TIMER_TYPE_TO_CODE
@@ -227,10 +228,9 @@ class OrderService:
         if not normalized_search:
             return True
 
-        return (
-            normalized_search in self._normalize_order_search(order.order_number)
-            or normalized_search in self._normalize_order_search(order.product_name)
-        )
+        return normalized_search in self._normalize_order_search(
+            order.order_number
+        ) or normalized_search in self._normalize_order_search(order.product_name)
 
     def _normalize_order_search(self, value: str) -> str:
         return value.strip().casefold()
@@ -243,23 +243,49 @@ class OrderService:
     ) -> list[ColumnElement[Any]]:
         is_desc = sort_direction == SortDirection.DESC
 
+        if sort_by == WorkOrderSortField.ORDER_NUMBER:
+            order_number_sort = (
+                WorkOrder.order_number.desc()
+                if is_desc
+                else WorkOrder.order_number.asc()
+            )
+            return [order_number_sort, WorkOrder.id.desc()]
+
         if sort_by == WorkOrderSortField.NAME:
             product_name_sort = Product.name.desc() if is_desc else Product.name.asc()
             return [
                 product_name_sort,
+                Product.version.asc(),
                 WorkOrder.order_number.asc(),
                 WorkOrder.id.desc(),
             ]
 
+        if sort_by == WorkOrderSortField.QUALITY_CONTROL:
+            return self._build_nullable_timestamp_sort(
+                WorkOrder.quality_control_at,
+                sort_direction,
+            )
+
+        if sort_by == WorkOrderSortField.TAKEN:
+            return self._build_nullable_timestamp_sort(
+                WorkOrder.taken_at,
+                sort_direction,
+            )
+
         if sort_by == WorkOrderSortField.COMPLETED:
-            completed_at_sort = (
-                WorkOrder.completed_at.desc()
+            return self._build_nullable_timestamp_sort(
+                WorkOrder.completed_at,
+                sort_direction,
+            )
+
+        if sort_by == WorkOrderSortField.DEFECT:
+            defect_quantity_sort = (
+                WorkOrder.defect_quantity.desc()
                 if is_desc
-                else WorkOrder.completed_at.asc()
+                else WorkOrder.defect_quantity.asc()
             )
             return [
-                WorkOrder.completed_at.is_(None).asc(),
-                completed_at_sort,
+                defect_quantity_sort,
                 WorkOrder.created_at.desc(),
                 WorkOrder.id.desc(),
             ]
@@ -268,6 +294,21 @@ class OrderService:
             WorkOrder.created_at.desc() if is_desc else WorkOrder.created_at.asc()
         )
         return [created_at_sort, WorkOrder.id.desc()]
+
+    def _build_nullable_timestamp_sort(
+        self,
+        column: ColumnElement[Any],
+        sort_direction: SortDirection,
+    ) -> list[ColumnElement[Any]]:
+        value_sort = (
+            column.desc() if sort_direction == SortDirection.DESC else column.asc()
+        )
+        return [
+            column.is_(None).asc(),
+            value_sort,
+            WorkOrder.created_at.desc(),
+            WorkOrder.id.desc(),
+        ]
 
     def get_order(self, order_id: int) -> WorkOrderDetail:
         order = self._get_order_or_404(order_id)
@@ -280,9 +321,11 @@ class OrderService:
         stmt = (
             select(
                 TimerSession.operation_id,
-                func.coalesce(Operation.name, "Операция удалена").label(
-                    "operation_name",
-                ),
+                func.coalesce(
+                    OperationCatalogEntry.name,
+                    Operation.name,
+                    "Операция удалена",
+                ).label("operation_name"),
                 TimerSession.user_id,
                 User.name.label("worker_user_name"),
                 func.coalesce(
@@ -292,6 +335,10 @@ class OrderService:
             )
             .join(User, User.id == TimerSession.user_id)
             .outerjoin(Operation, Operation.id == TimerSession.operation_id)
+            .outerjoin(
+                OperationCatalogEntry,
+                OperationCatalogEntry.id == Operation.operation_catalog_entry_id,
+            )
             .where(
                 TimerSession.order_id == order_id,
                 TimerSession.timer_type_code == TIMER_TYPE_TO_CODE[TimerType.OPERATION],
@@ -299,11 +346,17 @@ class OrderService:
             )
             .group_by(
                 TimerSession.operation_id,
+                OperationCatalogEntry.name,
                 Operation.name,
                 TimerSession.user_id,
                 User.name,
             )
-            .order_by(Operation.name.asc(), User.name.asc(), TimerSession.user_id.asc())
+            .order_by(
+                OperationCatalogEntry.name.asc(),
+                Operation.name.asc(),
+                User.name.asc(),
+                TimerSession.user_id.asc(),
+            )
         )
         items = [
             WorkOrderTimeBreakdownItem(
@@ -325,168 +378,99 @@ class OrderService:
     def list_worker_assigned_orders(
         self,
         worker_user_id: int,
-        *,
-        include_hidden: bool = False,
-    ) -> WorkerAssignedWorkOrderList:
-        stmt: Select[tuple[WorkOrder, bool | None]] = (
-            select(WorkOrder, UserWorkOrderVisibility.hidden)
-            .join(
-                WorkOrderAssignment,
-                WorkOrderAssignment.work_order_id == WorkOrder.id,
-            )
-            .outerjoin(
-                UserWorkOrderVisibility,
-                and_(
-                    UserWorkOrderVisibility.user_id == worker_user_id,
-                    UserWorkOrderVisibility.work_order_id == WorkOrder.id,
-                ),
-            )
-            .options(
-                selectinload(WorkOrder.assignments).selectinload(
-                    WorkOrderAssignment.operation
-                ),
-                selectinload(WorkOrder.assignments).selectinload(
-                    WorkOrderAssignment.worker_user
-                ),
-            )
-            .where(*self._build_worker_assignment_filters(worker_user_id))
-            .order_by(WorkOrder.created_at.desc(), WorkOrder.id.desc())
+        worker_status_filter: WorkerAssignmentStatusFilter,
+    ) -> list[WorkOrderDetail]:
+        state_join = and_(
+            WorkOrderAssignmentWorkerState.assignment_id == WorkOrderAssignment.id,
+            WorkOrderAssignmentWorkerState.worker_user_id == worker_user_id,
         )
-
-        if not include_hidden:
-            stmt = stmt.where(
-                or_(
-                    UserWorkOrderVisibility.hidden.is_(None),
-                    UserWorkOrderVisibility.hidden.is_(False),
-                )
-            )
-
-        rows = self.session.execute(stmt).unique().all()
-        orders: list[tuple[WorkOrder, bool]] = []
-        seen_order_ids: set[int] = set()
-
-        for order, hidden in rows:
-            if order.id in seen_order_ids:
-                continue
-
-            orders.append((order, bool(hidden)))
-            seen_order_ids.add(order.id)
-
-        return WorkerAssignedWorkOrderList(
-            items=[
-                self._serialize_order(
-                    order,
-                    order.product,
-                    assignment_worker_user_id=worker_user_id,
-                    hidden=hidden,
-                )
-                for order, hidden in orders
-            ],
-            hidden_count=self._count_worker_hidden_orders(worker_user_id),
-        )
-
-    def update_worker_order_visibility(
-        self,
-        worker_user_id: int,
-        work_order_id: int,
-        payload: WorkOrderVisibilityUpdate,
-    ) -> WorkOrderDetail:
-        order = self._get_worker_assigned_active_order_or_404(
-            worker_user_id,
-            work_order_id,
-        )
-        visibility = self.session.get(
-            UserWorkOrderVisibility,
-            (worker_user_id, work_order_id),
-        )
-
-        if visibility is None:
-            visibility = UserWorkOrderVisibility(
-                user_id=worker_user_id,
-                work_order_id=work_order_id,
-                hidden=payload.hidden,
-            )
-            self.session.add(visibility)
-        else:
-            visibility.hidden = payload.hidden
-
-        self.session.commit()
-        self.session.refresh(order)
-
-        return self._serialize_order(
-            order,
-            order.product,
-            assignment_worker_user_id=worker_user_id,
-            hidden=visibility.hidden,
-        )
-
-    def _build_worker_assignment_filters(
-        self,
-        worker_user_id: int,
-    ) -> list[ColumnElement[bool]]:
-        return [
-            WorkOrder.deleted_at.is_(None),
-            WorkOrder.completed_at.is_(None),
-            WorkOrder.quality_control_at.is_(None),
-            WorkOrder.taken_at.is_not(None),
-            WorkOrderAssignment.worker_user_id == worker_user_id,
-        ]
-
-    def _count_worker_hidden_orders(self, worker_user_id: int) -> int:
-        stmt = (
-            select(func.count(distinct(WorkOrder.id)))
-            .join(
-                WorkOrderAssignment,
-                WorkOrderAssignment.work_order_id == WorkOrder.id,
-            )
-            .join(
-                UserWorkOrderVisibility,
-                and_(
-                    UserWorkOrderVisibility.user_id == worker_user_id,
-                    UserWorkOrderVisibility.work_order_id == WorkOrder.id,
-                ),
-            )
-            .where(
-                *self._build_worker_assignment_filters(worker_user_id),
-                UserWorkOrderVisibility.hidden.is_(True),
-            )
-        )
-
-        return int(self.session.scalar(stmt) or 0)
-
-    def _get_worker_assigned_active_order_or_404(
-        self,
-        worker_user_id: int,
-        work_order_id: int,
-    ) -> WorkOrder:
         stmt: Select[tuple[WorkOrder]] = (
             select(WorkOrder)
             .join(
                 WorkOrderAssignment,
                 WorkOrderAssignment.work_order_id == WorkOrder.id,
             )
+            .outerjoin(WorkOrderAssignmentWorkerState, state_join)
             .options(
-                selectinload(WorkOrder.assignments).selectinload(
-                    WorkOrderAssignment.operation
-                ),
+                selectinload(WorkOrder.assignments)
+                .selectinload(WorkOrderAssignment.operation)
+                .selectinload(Operation.catalog_entry),
                 selectinload(WorkOrder.assignments).selectinload(
                     WorkOrderAssignment.worker_user
                 ),
+                selectinload(WorkOrder.assignments).selectinload(
+                    WorkOrderAssignment.worker_states
+                ),
             )
             .where(
-                WorkOrder.id == work_order_id,
-                *self._build_worker_assignment_filters(worker_user_id),
+                WorkOrder.deleted_at.is_(None),
+                WorkOrderAssignment.worker_user_id == worker_user_id,
+                *self._build_worker_assignment_status_filters(
+                    worker_status_filter,
+                ),
             )
+            .order_by(WorkOrder.created_at.desc(), WorkOrder.id.desc())
         )
-        order = self.session.scalars(stmt).unique().one_or_none()
+        orders = self.session.scalars(stmt).unique().all()
 
-        if order is None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Order not found for current worker.",
+        return [
+            self._serialize_order(
+                order,
+                order.product,
+                assignment_worker_user_id=worker_user_id,
+                assignment_worker_status_filter=worker_status_filter,
             )
+            for order in orders
+        ]
 
-        return order
+    def update_worker_assignment_status(
+        self,
+        *,
+        assignment_id: int,
+        worker_user_id: int,
+        payload: WorkOrderAssignmentWorkerStatusUpdate,
+    ) -> WorkOrderDetail:
+        assignment = self._get_worker_assignment_or_404(
+            assignment_id=assignment_id,
+            worker_user_id=worker_user_id,
+        )
+        order = assignment.work_order
+        self._validate_order_is_not_deleted(order)
+
+        state = self._get_assignment_worker_state(
+            assignment_id=assignment.id,
+            worker_user_id=worker_user_id,
+        )
+        now = self._now_ts()
+        if state is None:
+            state = WorkOrderAssignmentWorkerState(
+                assignment_id=assignment.id,
+                worker_user_id=worker_user_id,
+                hidden_at=None,
+                completed_at=None,
+                created_at=now,
+                updated_at=now,
+            )
+            self.session.add(state)
+
+        if payload.status == WorkerAssignmentStatusFilter.IN_WORK:
+            state.hidden_at = None
+            state.completed_at = None
+        elif payload.status == WorkerAssignmentStatusFilter.HIDDEN:
+            state.hidden_at = now
+            state.completed_at = None
+        else:
+            state.hidden_at = None
+            state.completed_at = now
+
+        state.updated_at = now
+        self.session.commit()
+        self.session.refresh(order)
+        return self._serialize_order(
+            order,
+            order.product,
+            assignment_worker_user_id=worker_user_id,
+        )
 
     def create_order(self, payload: WorkOrderCreate) -> WorkOrderDetail:
         self._validate_order_number(payload.order_number)
@@ -668,6 +652,87 @@ class OrderService:
         self.session.refresh(order)
         return self.get_order(order.id)
 
+    def _build_worker_assignment_status_filters(
+        self,
+        worker_status_filter: WorkerAssignmentStatusFilter,
+    ) -> list[ColumnElement[bool]]:
+        if worker_status_filter == WorkerAssignmentStatusFilter.HIDDEN:
+            return [
+                WorkOrderAssignmentWorkerState.hidden_at.is_not(None),
+                WorkOrderAssignmentWorkerState.completed_at.is_(None),
+            ]
+
+        if worker_status_filter == WorkerAssignmentStatusFilter.COMPLETED:
+            return [
+                WorkOrderAssignmentWorkerState.completed_at.is_not(None),
+            ]
+
+        return [
+            WorkOrder.completed_at.is_(None),
+            WorkOrder.quality_control_at.is_(None),
+            WorkOrder.taken_at.is_not(None),
+            or_(
+                WorkOrderAssignmentWorkerState.id.is_(None),
+                and_(
+                    WorkOrderAssignmentWorkerState.hidden_at.is_(None),
+                    WorkOrderAssignmentWorkerState.completed_at.is_(None),
+                ),
+            ),
+        ]
+
+    def _get_worker_assignment_or_404(
+        self,
+        *,
+        assignment_id: int,
+        worker_user_id: int,
+    ) -> WorkOrderAssignment:
+        stmt: Select[tuple[WorkOrderAssignment]] = (
+            select(WorkOrderAssignment)
+            .options(
+                selectinload(WorkOrderAssignment.work_order).selectinload(
+                    WorkOrder.assignments
+                ),
+                selectinload(WorkOrderAssignment.work_order)
+                .selectinload(WorkOrder.assignments)
+                .selectinload(WorkOrderAssignment.operation),
+                selectinload(WorkOrderAssignment.work_order)
+                .selectinload(WorkOrder.assignments)
+                .selectinload(WorkOrderAssignment.operation)
+                .selectinload(Operation.catalog_entry),
+                selectinload(WorkOrderAssignment.work_order)
+                .selectinload(WorkOrder.assignments)
+                .selectinload(WorkOrderAssignment.worker_user),
+                selectinload(WorkOrderAssignment.work_order)
+                .selectinload(WorkOrder.assignments)
+                .selectinload(WorkOrderAssignment.worker_states),
+            )
+            .where(
+                WorkOrderAssignment.id == assignment_id,
+                WorkOrderAssignment.worker_user_id == worker_user_id,
+            )
+        )
+        assignment = self.session.scalars(stmt).one_or_none()
+        if assignment is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Worker assignment not found.",
+            )
+        return assignment
+
+    def _get_assignment_worker_state(
+        self,
+        *,
+        assignment_id: int,
+        worker_user_id: int,
+    ) -> WorkOrderAssignmentWorkerState | None:
+        stmt: Select[tuple[WorkOrderAssignmentWorkerState]] = select(
+            WorkOrderAssignmentWorkerState
+        ).where(
+            WorkOrderAssignmentWorkerState.assignment_id == assignment_id,
+            WorkOrderAssignmentWorkerState.worker_user_id == worker_user_id,
+        )
+        return self.session.scalars(stmt).one_or_none()
+
     def _validate_order_is_not_deleted(self, order: WorkOrder) -> None:
         if order.deleted_at is not None:
             raise HTTPException(
@@ -751,11 +816,14 @@ class OrderService:
         stmt: Select[tuple[WorkOrder]] = (
             select(WorkOrder)
             .options(
-                selectinload(WorkOrder.assignments).selectinload(
-                    WorkOrderAssignment.operation
-                ),
+                selectinload(WorkOrder.assignments)
+                .selectinload(WorkOrderAssignment.operation)
+                .selectinload(Operation.catalog_entry),
                 selectinload(WorkOrder.assignments).selectinload(
                     WorkOrderAssignment.worker_user
+                ),
+                selectinload(WorkOrder.assignments).selectinload(
+                    WorkOrderAssignment.worker_states
                 ),
             )
             .where(WorkOrder.id == order_id)
@@ -913,9 +981,7 @@ class OrderService:
         existing_by_operation_id = {
             assignment.operation_id: assignment for assignment in order.assignments
         }
-        incoming_operation_ids = {
-            assignment.operation_id for assignment in assignments
-        }
+        incoming_operation_ids = {assignment.operation_id for assignment in assignments}
 
         for existing_assignment in list(order.assignments):
             if existing_assignment.operation_id not in incoming_operation_ids:
@@ -935,6 +1001,9 @@ class OrderService:
                 )
                 continue
 
+            if existing_assignment.worker_user_id != incoming_assignment.worker_user_id:
+                for state in list(existing_assignment.worker_states):
+                    self.session.delete(state)
             existing_assignment.worker_user_id = incoming_assignment.worker_user_id
 
     def _serialize_order(
@@ -943,7 +1012,7 @@ class OrderService:
         product: Product,
         *,
         assignment_worker_user_id: int | None = None,
-        hidden: bool = False,
+        assignment_worker_status_filter: WorkerAssignmentStatusFilter | None = None,
     ) -> WorkOrderDetail:
         assignments = [
             assignment
@@ -951,6 +1020,11 @@ class OrderService:
             if (
                 assignment_worker_user_id is None
                 or assignment.worker_user_id == assignment_worker_user_id
+            )
+            and self._assignment_matches_worker_status(
+                assignment,
+                assignment_worker_user_id,
+                assignment_worker_status_filter,
             )
         ]
 
@@ -976,18 +1050,88 @@ class OrderService:
             completed_at=order.completed_at,
             deleted_at=order.deleted_at,
             assignments=[
-                WorkOrderAssignmentRead(
-                    id=assignment.id,
-                    operation_id=assignment.operation_id,
-                    operation_name=assignment.operation.name,
-                    worker_user_id=assignment.worker_user_id,
-                    worker_user_name=assignment.worker_user.name
-                    if assignment.worker_user is not None
-                    else None,
+                self._serialize_assignment(
+                    assignment,
+                    assignment_worker_user_id,
                 )
                 for assignment in assignments
             ],
-            hidden=hidden,
+        )
+
+    def _assignment_matches_worker_status(
+        self,
+        assignment: WorkOrderAssignment,
+        worker_user_id: int | None,
+        status_filter: WorkerAssignmentStatusFilter | None,
+    ) -> bool:
+        if status_filter is None:
+            return True
+
+        state = self._get_assignment_worker_state_for_user(
+            assignment,
+            worker_user_id,
+        )
+
+        if status_filter == WorkerAssignmentStatusFilter.COMPLETED:
+            return state is not None and state.completed_at is not None
+
+        if status_filter == WorkerAssignmentStatusFilter.HIDDEN:
+            return (
+                state is not None
+                and state.hidden_at is not None
+                and state.completed_at is None
+            )
+
+        return state is None or (state.hidden_at is None and state.completed_at is None)
+
+    def _serialize_assignment(
+        self,
+        assignment: WorkOrderAssignment,
+        worker_user_id: int | None,
+    ) -> WorkOrderAssignmentRead:
+        state = self._get_assignment_worker_state_for_user(
+            assignment,
+            worker_user_id,
+        )
+        worker_status = WorkerAssignmentStatusFilter.IN_WORK
+        if state is not None and state.completed_at is not None:
+            worker_status = WorkerAssignmentStatusFilter.COMPLETED
+        elif state is not None and state.hidden_at is not None:
+            worker_status = WorkerAssignmentStatusFilter.HIDDEN
+
+        return WorkOrderAssignmentRead(
+            id=assignment.id,
+            operation_id=assignment.operation_id,
+            operation_name=self._get_operation_name(assignment.operation),
+            worker_user_id=assignment.worker_user_id,
+            worker_user_name=assignment.worker_user.name
+            if assignment.worker_user is not None
+            else None,
+            worker_status=worker_status,
+            worker_hidden_at=state.hidden_at if state is not None else None,
+            worker_completed_at=state.completed_at if state is not None else None,
+        )
+
+    def _get_operation_name(self, operation: Operation) -> str:
+        if operation.catalog_entry is not None:
+            return operation.catalog_entry.name
+        return operation.name
+
+    def _get_assignment_worker_state_for_user(
+        self,
+        assignment: WorkOrderAssignment,
+        worker_user_id: int | None,
+    ) -> WorkOrderAssignmentWorkerState | None:
+        if worker_user_id is None:
+            return None
+
+        return next(
+            (
+                state
+                for state in assignment.worker_states
+                if state.worker_user_id == worker_user_id
+            ),
+            None,
         )
 
     def _now_ts(self) -> int:

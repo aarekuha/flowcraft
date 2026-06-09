@@ -9,7 +9,11 @@ from sqlalchemy.orm import Session
 
 from app.models.operation import Operation
 from app.models.timer_session import TimerSession
-from app.models.work_order import WorkOrder, WorkOrderAssignment
+from app.models.work_order import (
+    WorkOrder,
+    WorkOrderAssignment,
+    WorkOrderAssignmentWorkerState,
+)
 from app.models.work_shift import WorkShift
 from app.schemas.timer import (
     ActiveTimerRead,
@@ -255,12 +259,40 @@ class TimerService:
                     detail="Операция не назначена текущему исполнителю.",
                 )
 
+            assignment_state = self.session.scalars(
+                select(WorkOrderAssignmentWorkerState).where(
+                    WorkOrderAssignmentWorkerState.assignment_id == assignment.id,
+                    WorkOrderAssignmentWorkerState.worker_user_id == user_id,
+                )
+            ).one_or_none()
+            if (
+                assignment_state is not None
+                and (
+                    assignment_state.hidden_at is not None
+                    or assignment_state.completed_at is not None
+                )
+            ):
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="Операция скрыта или отмечена выполненной.",
+                )
+
             operation = self.session.get(Operation, payload.operation_id)
             order = self.session.get(WorkOrder, payload.order_id)
             if operation is None or order is None:
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,
                     detail="Заказ или операция не найдены.",
+                )
+            if (
+                order.deleted_at is not None
+                or order.completed_at is not None
+                or order.quality_control_at is not None
+                or order.taken_at is None
+            ):
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="Операция недоступна для запуска таймера.",
                 )
             return
 

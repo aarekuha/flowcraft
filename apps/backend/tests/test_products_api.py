@@ -16,8 +16,21 @@ def create_author_user(client: TestClient, name: str = "Марина Волко�
     return response.json()
 
 
+def ensure_operation_catalog_entries(
+    client: TestClient,
+    names: list[str],
+) -> None:
+    for name in names:
+        response = client.post("/api/operation-catalog", json={"name": name})
+        assert response.status_code in {201, 422}
+
+
 def test_create_and_get_product(client: TestClient) -> None:
     author_user = create_author_user(client)
+    ensure_operation_catalog_entries(
+        client,
+        ["Фасад", "Подклад", "Пошив"],
+    )
     payload = {
         "name": "Кошелек Daily Fold",
         "version": "1.0",
@@ -25,7 +38,7 @@ def test_create_and_get_product(client: TestClient) -> None:
         "material_cost_cents": 125000,
         "operations": [
             {
-                "name": "Крой",
+                "name": "Подготовка",
                 "children": [
                     {"name": "Фасад", "price_cents": 5000, "children": []},
                     {"name": "Подклад", "children": []},
@@ -44,7 +57,15 @@ def test_create_and_get_product(client: TestClient) -> None:
     assert created_product["author"] == author_user["name"]
     assert created_product["material_cost_cents"] == 125000
     assert len(created_product["operations"]) == 2
+    assert created_product["operations"][0]["operation_catalog_entry_id"] is None
+    assert created_product["operations"][0]["name"] == "Подготовка"
     assert created_product["operations"][0]["price_cents"] is None
+    assert isinstance(
+        created_product["operations"][0]["children"][0][
+            "operation_catalog_entry_id"
+        ],
+        int,
+    )
     assert created_product["operations"][0]["children"][0]["name"] == "Фасад"
     assert created_product["operations"][0]["children"][0]["price_cents"] == 5000
     assert created_product["operations"][0]["children"][1]["price_cents"] is None
@@ -60,6 +81,7 @@ def test_create_and_get_product(client: TestClient) -> None:
 
 def test_update_product_costs(client: TestClient) -> None:
     author_user = create_author_user(client)
+    ensure_operation_catalog_entries(client, ["Фасад", "Пошив"])
     create_response = client.post(
         "/api/products",
         json={
@@ -68,7 +90,7 @@ def test_update_product_costs(client: TestClient) -> None:
             "author_user_id": author_user["id"],
             "operations": [
                 {
-                    "name": "Крой",
+                    "name": "Подготовка",
                     "children": [
                         {"name": "Фасад", "price_cents": 7000, "children": []},
                     ],
@@ -125,10 +147,47 @@ def test_create_product_rejects_group_operation_price(client: TestClient) -> Non
     assert create_response.json()["detail"] == "Operation groups cannot have prices."
 
 
+def test_create_product_rejects_group_operation_catalog_reference(
+    client: TestClient,
+) -> None:
+    author_user = create_author_user(client)
+    group_catalog_response = client.post(
+        "/api/operation-catalog",
+        json={"name": "Крой"},
+    )
+    assert group_catalog_response.status_code == 201
+    ensure_operation_catalog_entries(client, ["Фасад"])
+
+    create_response = client.post(
+        "/api/products",
+        json={
+            "name": "Клатч Group Catalog Guard",
+            "version": "1.0",
+            "author_user_id": author_user["id"],
+            "operations": [
+                {
+                    "operation_catalog_entry_id": group_catalog_response.json()["id"],
+                    "name": "Подготовка",
+                    "children": [
+                        {"name": "Фасад", "price_cents": 5000, "children": []},
+                    ],
+                },
+            ],
+        },
+    )
+
+    assert create_response.status_code == 422
+    assert (
+        create_response.json()["detail"]
+        == "Operation groups must not reference the operation catalog."
+    )
+
+
 def test_update_product_costs_rejects_operation_price_change(
     client: TestClient,
 ) -> None:
     author_user = create_author_user(client)
+    ensure_operation_catalog_entries(client, ["Крой", "Пошив"])
     create_response = client.post(
         "/api/products",
         json={
@@ -167,6 +226,10 @@ def test_update_product_costs_rejects_operation_price_change(
 
 def test_list_products_returns_operations_count(client: TestClient) -> None:
     author_user = create_author_user(client)
+    ensure_operation_catalog_entries(
+        client,
+        ["Подготовка деталей", "Пошив корпуса"],
+    )
     create_response = client.post(
         "/api/products",
         json={
@@ -200,6 +263,7 @@ def test_create_product_rejects_duplicate_sibling_operations(
     client: TestClient,
 ) -> None:
     author_user = create_author_user(client)
+    ensure_operation_catalog_entries(client, ["Крой"])
     response = client.post(
         "/api/products",
         json={
@@ -214,11 +278,12 @@ def test_create_product_rejects_duplicate_sibling_operations(
     )
 
     assert response.status_code == 422
-    assert response.json()["detail"] == "Operation names must be unique among siblings."
+    assert response.json()["detail"] == "Operations must be unique within a product."
 
 
 def test_create_product_rejects_duplicate_name_and_version(client: TestClient) -> None:
     author_user = create_author_user(client)
+    ensure_operation_catalog_entries(client, ["Крой"])
     payload = {
         "name": "Кошелек Daily Fold",
         "version": "1.0",
@@ -259,8 +324,35 @@ def test_create_product_rejects_empty_operation_name(client: TestClient) -> None
     )
 
 
+def test_create_product_rejects_operation_outside_catalog(
+    client: TestClient,
+) -> None:
+    author_user = create_author_user(client)
+    ensure_operation_catalog_entries(client, ["Крой"])
+
+    response = client.post(
+        "/api/products",
+        json={
+            "name": "Рюкзак Catalog Guard",
+            "version": "1.0",
+            "author_user_id": author_user["id"],
+            "operations": [
+                {"name": "Крой", "children": []},
+                {"name": "Прошивка", "children": []},
+            ],
+        },
+    )
+
+    assert response.status_code == 422
+    assert (
+        response.json()["detail"]
+        == "Operations must be selected from the operation catalog."
+    )
+
+
 def test_delete_product_removes_it(client: TestClient) -> None:
     author_user = create_author_user(client)
+    ensure_operation_catalog_entries(client, ["Сборка"])
     create_response = client.post(
         "/api/products",
         json={
@@ -285,6 +377,7 @@ def test_delete_product_removes_it(client: TestClient) -> None:
 
 def test_update_product_status(client: TestClient) -> None:
     author_user = create_author_user(client)
+    ensure_operation_catalog_entries(client, ["Сборка"])
     create_response = client.post(
         "/api/products",
         json={
@@ -319,6 +412,7 @@ def test_get_unknown_product_returns_404(client: TestClient) -> None:
 
 
 def test_create_product_without_author_uses_default_author(client: TestClient) -> None:
+    ensure_operation_catalog_entries(client, ["Крой"])
     response = client.post(
         "/api/products",
         json={

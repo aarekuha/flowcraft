@@ -6,6 +6,11 @@ export type WorkOrderAssignment = {
   operationName: string;
   workerUserId: number | null;
   workerUserName: string | null;
+  workerStatus: WorkerAssignmentStatus;
+  workerHiddenAtTs: number | null;
+  workerHiddenAt: string | null;
+  workerCompletedAtTs: number | null;
+  workerCompletedAt: string | null;
 };
 
 export type WorkOrderSummary = {
@@ -62,10 +67,16 @@ export type WorkOrderDetail = {
   deletedAtTs: number | null;
   deletedAt: string | null;
   assignments: WorkOrderAssignment[];
-  hidden: boolean;
 };
 
-export type WorkOrderSortBy = "created" | "completed" | "name";
+export type WorkOrderSortBy =
+  | "completed"
+  | "created"
+  | "defect"
+  | "name"
+  | "order_number"
+  | "quality_control"
+  | "taken";
 export type WorkOrderSortDirection = "asc" | "desc";
 export type WorkOrderStatusFilter =
   | "all"
@@ -74,6 +85,7 @@ export type WorkOrderStatusFilter =
   | "quality_control"
   | "completed"
   | "deleted";
+export type WorkerAssignmentStatus = "in_work" | "hidden" | "completed";
 
 export type WorkOrderListParams = {
   search?: string;
@@ -91,11 +103,6 @@ export type WorkOrderPage = {
   page: number;
   pageSize: number;
   pages: number;
-};
-
-export type WorkerAssignedWorkOrderList = {
-  items: WorkOrderDetail[];
-  hiddenCount: number;
 };
 
 export type WorkOrderTimeBreakdownItem = {
@@ -137,6 +144,9 @@ type WorkOrderAssignmentApi = {
   operation_name: string;
   worker_user_id: number | null;
   worker_user_name: string | null;
+  worker_status: WorkerAssignmentStatus;
+  worker_hidden_at: number | null;
+  worker_completed_at: number | null;
 };
 
 type WorkOrderSummaryApi = {
@@ -181,7 +191,6 @@ type WorkOrderDetailApi = {
   completed_at: number | null;
   deleted_at: number | null;
   assignments: WorkOrderAssignmentApi[];
-  hidden: boolean;
 };
 
 type WorkOrderPageApi = {
@@ -190,11 +199,6 @@ type WorkOrderPageApi = {
   page: number;
   page_size: number;
   pages: number;
-};
-
-type WorkerAssignedWorkOrderListApi = {
-  items: WorkOrderDetailApi[];
-  hidden_count: number;
 };
 
 type WorkOrderTimeBreakdownItemApi = {
@@ -263,22 +267,33 @@ export async function fetchWorkOrderTimeBreakdown(
 }
 
 export async function fetchWorkerAssignedWorkOrders(
-  includeHidden = false,
-): Promise<WorkerAssignedWorkOrderList> {
-  const searchParams = new URLSearchParams();
-
-  if (includeHidden) {
-    searchParams.set("include_hidden", "true");
-  }
-
-  const queryString = searchParams.toString();
+  status: WorkerAssignmentStatus = "in_work",
+): Promise<WorkOrderDetail[]> {
+  const searchParams = new URLSearchParams({ status });
   const response = await apiFetch(
-    `/api/orders/worker-assignments${queryString ? `?${queryString}` : ""}`,
+    `/api/orders/worker-assignments?${searchParams.toString()}`,
+  );
+  return handleJsonResponse<WorkOrderDetailApi[]>(response).then((orders) =>
+    orders.map(mapWorkOrderDetail),
+  );
+}
+
+export async function updateWorkerAssignmentStatus(
+  assignmentId: number,
+  status: WorkerAssignmentStatus,
+): Promise<WorkOrderDetail> {
+  const response = await apiFetch(
+    `/api/orders/worker-assignments/${assignmentId}/status`,
+    {
+      method: "PATCH",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ status }),
+    },
   );
 
-  return handleJsonResponse<WorkerAssignedWorkOrderListApi>(response).then(
-    mapWorkerAssignedWorkOrderList,
-  );
+  return handleJsonResponse<WorkOrderDetailApi>(response).then(mapWorkOrderDetail);
 }
 
 export async function createWorkOrder(
@@ -388,21 +403,6 @@ export async function updateWorkOrderDeletedStatus(
   return handleJsonResponse<WorkOrderDetailApi>(response).then(mapWorkOrderDetail);
 }
 
-export async function updateWorkerAssignedWorkOrderVisibility(
-  orderId: number,
-  hidden: boolean,
-): Promise<WorkOrderDetail> {
-  const response = await apiFetch(`/api/orders/${orderId}/visibility`, {
-    method: "PATCH",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({ hidden }),
-  });
-
-  return handleJsonResponse<WorkOrderDetailApi>(response).then(mapWorkOrderDetail);
-}
-
 function mapWorkOrderAssignment(assignment: WorkOrderAssignmentApi): WorkOrderAssignment {
   return {
     id: assignment.id,
@@ -410,6 +410,17 @@ function mapWorkOrderAssignment(assignment: WorkOrderAssignmentApi): WorkOrderAs
     operationName: assignment.operation_name,
     workerUserId: assignment.worker_user_id,
     workerUserName: assignment.worker_user_name,
+    workerStatus: assignment.worker_status,
+    workerHiddenAtTs: assignment.worker_hidden_at,
+    workerHiddenAt:
+      assignment.worker_hidden_at === null
+        ? null
+        : formatDate(assignment.worker_hidden_at),
+    workerCompletedAtTs: assignment.worker_completed_at,
+    workerCompletedAt:
+      assignment.worker_completed_at === null
+        ? null
+        : formatDate(assignment.worker_completed_at),
   };
 }
 
@@ -470,15 +481,6 @@ function mapWorkOrderPage(page: WorkOrderPageApi): WorkOrderPage {
   };
 }
 
-function mapWorkerAssignedWorkOrderList(
-  list: WorkerAssignedWorkOrderListApi,
-): WorkerAssignedWorkOrderList {
-  return {
-    items: list.items.map(mapWorkOrderDetail),
-    hiddenCount: list.hidden_count,
-  };
-}
-
 function mapWorkOrderDetail(order: WorkOrderDetailApi): WorkOrderDetail {
   return {
     id: order.id,
@@ -507,7 +509,6 @@ function mapWorkOrderDetail(order: WorkOrderDetailApi): WorkOrderDetail {
     deletedAtTs: order.deleted_at,
     deletedAt: order.deleted_at === null ? null : formatDate(order.deleted_at),
     assignments: order.assignments.map(mapWorkOrderAssignment),
-    hidden: order.hidden,
   };
 }
 

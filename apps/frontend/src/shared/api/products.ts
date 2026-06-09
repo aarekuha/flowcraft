@@ -2,6 +2,7 @@ import { apiFetch, createRequestError, handleJsonResponse } from "@/shared/api/h
 
 export type OperationNode = {
   id: number;
+  operationCatalogEntryId: number | null;
   name: string;
   priceCents: number | null;
   children: OperationNode[];
@@ -39,6 +40,7 @@ export type ProductCreatePayload = {
   author_user_id?: number | null;
   material_cost_cents?: number | null;
   operations: Array<{
+    operation_catalog_entry_id?: number | null;
     name: string;
     price_cents?: number | null;
     children: ProductCreatePayload["operations"];
@@ -56,6 +58,7 @@ export type ProductCostsUpdatePayload = {
 
 type OperationNodeApi = {
   id: number;
+  operation_catalog_entry_id: number | null;
   name: string;
   price_cents: number | null;
   children: OperationNodeApi[];
@@ -185,6 +188,7 @@ function mapProductDetail(product: ProductDetailApi): ProductDetail {
 function mapOperationNode(operation: OperationNodeApi): OperationNode {
   return {
     id: operation.id,
+    operationCatalogEntryId: operation.operation_catalog_entry_id,
     name: operation.name,
     priceCents: operation.price_cents,
     children: operation.children.map(mapOperationNode),

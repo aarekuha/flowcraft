@@ -1,12 +1,19 @@
 import pytest
+from fastapi import HTTPException
+from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.core.security import hash_password
 from app.models.operation import Operation
+from app.models.operation_catalog import OperationCatalogEntry
 from app.models.product import Product
 from app.models.timer_session import TimerSession
 from app.models.user import User
-from app.models.work_order import WorkOrder, WorkOrderAssignment
+from app.models.work_order import (
+    WorkOrder,
+    WorkOrderAssignment,
+    WorkOrderAssignmentWorkerState,
+)
 from app.models.work_shift import WorkShift
 from app.schemas.statistics import StatisticsOverviewRead
 from app.schemas.timer import TimerSwitchPayload, TimerType
@@ -55,9 +62,19 @@ def _bootstrap_worker_graph(db_session: sessionmaker[Session]) -> tuple[int, int
         session.add(product)
         session.flush()
 
+        operation_catalog_entry = OperationCatalogEntry(
+            name="Пошив",
+            is_active=True,
+            created_at=1,
+            updated_at=1,
+        )
+        session.add(operation_catalog_entry)
+        session.flush()
+
         operation = Operation(
             product_id=product.id,
             parent_id=None,
+            operation_catalog_entry_id=operation_catalog_entry.id,
             name="Пошив",
         )
         session.add(operation)
@@ -70,6 +87,7 @@ def _bootstrap_worker_graph(db_session: sessionmaker[Session]) -> tuple[int, int
             total_spent_minutes=0,
             created_at=1,
             updated_at=1,
+            taken_at=1,
         )
         order.assignments = [
             WorkOrderAssignment(
@@ -125,6 +143,69 @@ def test_timer_service_starts_switches_and_ends_shift(
         assert end_state.shift is None
         assert end_state.active_timer is None
         assert end_state.timer_totals == []
+    finally:
+        session.close()
+
+
+def test_timer_service_rejects_hidden_and_completed_assignment_timers(
+    db_session: sessionmaker[Session],
+) -> None:
+    worker_id, order_id, operation_id = _bootstrap_worker_graph(db_session)
+    session = db_session()
+    try:
+        timer_service = TimerService(session)
+        timer_service.start_day(worker_id)
+
+        assignment = session.scalars(
+            select(WorkOrderAssignment).where(
+                WorkOrderAssignment.work_order_id == order_id,
+                WorkOrderAssignment.operation_id == operation_id,
+                WorkOrderAssignment.worker_user_id == worker_id,
+            )
+        ).one()
+        assignment_state = WorkOrderAssignmentWorkerState(
+            assignment_id=assignment.id,
+            worker_user_id=worker_id,
+            hidden_at=2_000,
+            completed_at=None,
+            created_at=2_000,
+            updated_at=2_000,
+        )
+        session.add(assignment_state)
+        session.flush()
+
+        with pytest.raises(HTTPException) as hidden_error:
+            timer_service.switch_timer(
+                worker_id,
+                TimerSwitchPayload(
+                    timer_type=TimerType.OPERATION,
+                    order_id=order_id,
+                    operation_id=operation_id,
+                ),
+            )
+        assert hidden_error.value.status_code == 422
+        assert hidden_error.value.detail == (
+            "Операция скрыта или отмечена выполненной."
+        )
+
+        assignment_state.hidden_at = None
+        assignment_state.completed_at = 3_000
+        assignment_state.updated_at = 3_000
+        session.flush()
+
+        with pytest.raises(HTTPException) as completed_error:
+            timer_service.switch_timer(
+                worker_id,
+                TimerSwitchPayload(
+                    timer_type=TimerType.OPERATION,
+                    order_id=order_id,
+                    operation_id=operation_id,
+                ),
+            )
+        assert completed_error.value.status_code == 422
+        assert completed_error.value.detail == (
+            "Операция скрыта или отмечена выполненной."
+        )
     finally:
         session.close()
 

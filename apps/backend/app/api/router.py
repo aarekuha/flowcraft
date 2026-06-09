@@ -3,6 +3,7 @@ from fastapi import APIRouter
 from app.api.routes.auth import router as auth_router
 from app.api.routes.health import router as health_router
 from app.api.routes.leather_types import router as leather_types_router
+from app.api.routes.operation_catalog import router as operation_catalog_router
 from app.api.routes.orders import router as orders_router
 from app.api.routes.products import router as products_router
 from app.api.routes.statistics import router as statistics_router
@@ -16,6 +17,11 @@ api_router.include_router(
     leather_types_router,
     prefix="/leather-types",
     tags=["leather-types"],
+)
+api_router.include_router(
+    operation_catalog_router,
+    prefix="/operation-catalog",
+    tags=["operation-catalog"],
 )
 api_router.include_router(orders_router, prefix="/orders", tags=["orders"])
 api_router.include_router(products_router, prefix="/products", tags=["products"])

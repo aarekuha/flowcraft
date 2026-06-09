@@ -20,6 +20,15 @@ import {
   type LeatherTypeSortDirection,
 } from "@/shared/api/leatherTypes";
 import {
+  createOperationCatalogEntry,
+  fetchAllOperationCatalogEntries,
+  fetchOperationCatalog,
+  updateOperationCatalogEntryStatus,
+  type OperationCatalogEntry,
+  type OperationCatalogListParams,
+  type OperationCatalogSortDirection,
+} from "@/shared/api/operationCatalog";
+import {
   acceptWorkOrderQualityControl,
   createWorkOrder,
   fetchAllWorkOrders,
@@ -32,7 +41,7 @@ import {
   updateWorkOrderQualityControlStatus,
   updateWorkOrderStatus,
   updateWorkOrderTakenStatus,
-  updateWorkerAssignedWorkOrderVisibility,
+  updateWorkerAssignmentStatus,
   type WorkOrderListParams,
   type WorkOrderSortBy,
   type WorkOrderSortDirection,
@@ -40,6 +49,7 @@ import {
   type WorkOrderDetail,
   type WorkOrderSummary,
   type WorkOrderTimeBreakdown,
+  type WorkerAssignmentStatus,
 } from "@/shared/api/orders";
 import {
   createProduct,
@@ -84,7 +94,7 @@ type ModalMode = "create" | "copy" | "view" | null;
 type WorkOrderStatusTabId = Exclude<WorkOrderStatusFilter, "all">;
 type BrigadierTabId = "orders" | WorkOrderStatusTabId;
 type ConstructorTabId = "products" | "directories";
-type ConstructorDirectoryTabId = "leather-types";
+type ConstructorDirectoryTabId = "operation-catalog" | "leather-types";
 type ProductVisibilityFilter = "all" | "active" | "inactive";
 type ProductSort =
   | "created-desc"
@@ -93,13 +103,7 @@ type ProductSort =
   | "name-desc"
   | "version-asc"
   | "version-desc";
-type WorkOrderSort =
-  | "created-desc"
-  | "created-asc"
-  | "completed-desc"
-  | "completed-asc"
-  | "name-asc"
-  | "name-desc";
+type WorkOrderSort = `${WorkOrderSortBy}-${WorkOrderSortDirection}`;
 type WorkOrderActionConfirmKind =
   | "send_to_quality_control"
   | "return_to_created"
@@ -111,6 +115,7 @@ type UserSort = "created-desc" | "created-asc" | "name-asc" | "name-desc";
 
 type FlatOperationNodeRow = {
   id: number;
+  operationCatalogEntryId: number | null;
   name: string;
   priceCents: number | null;
   level: number;
@@ -134,13 +139,13 @@ type WorkerTimerDefinition = {
   id: string;
   label: string;
   kind: WorkerTimerKind;
-  orderId?: number;
+  assignmentId?: number;
+  assignmentStatus?: WorkerAssignmentStatus;
   orderGroupKey?: string;
   productLabel?: string;
   productQuantity?: number;
   leatherTypeName?: string | null;
   orderNumber?: string;
-  hidden?: boolean;
 };
 
 type WorkerTimerState = WorkerTimerDefinition & {
@@ -149,14 +154,17 @@ type WorkerTimerState = WorkerTimerDefinition & {
 };
 
 type WorkerTimerGroup = {
-  orderId: number;
   groupKey: string;
   orderNumber: string;
   productLabel: string;
   leatherTypeName: string | null;
   quantity: number;
   timers: WorkerTimerDefinition[];
-  hidden: boolean;
+};
+
+type WorkerAssignmentStatusConfirm = {
+  timer: WorkerTimerDefinition;
+  status: Exclude<WorkerAssignmentStatus, "in_work">;
 };
 
 const tabs: Array<{ id: TabId; label: string; icon: string }> = [
@@ -183,6 +191,15 @@ const visibilityOptions: Array<{
   { value: "all", label: "Все изделия", icon: "all" },
   { value: "active", label: "Только активные", icon: "active" },
   { value: "inactive", label: "Только деактивированные", icon: "inactive" },
+];
+
+const workerAssignmentStatusOptions: Array<{
+  value: WorkerAssignmentStatus;
+  label: string;
+}> = [
+  { value: "in_work", label: "В работе" },
+  { value: "hidden", label: "Скрытые" },
+  { value: "completed", label: "Выполненные" },
 ];
 
 const sortOptions: Array<{
@@ -216,16 +233,6 @@ const userSortOptions: Array<{
   { field: "created", label: "Сортировка пользователей по дате создания", icon: "created" },
 ];
 
-const workOrderSortOptions: Array<{
-  field: "name" | "created" | "completed";
-  label: string;
-  icon: string;
-}> = [
-  { field: "name", label: "Сортировка заказов по наименованию", icon: "name" },
-  { field: "created", label: "Сортировка заказов по дате создания", icon: "created" },
-  { field: "completed", label: "Сортировка заказов по дате выполнения", icon: "completed" },
-];
-
 const workOrderStatusTabs: Array<{
   id: WorkOrderStatusTabId;
   label: string;
@@ -251,6 +258,7 @@ const SMARTPHONE_MEDIA_QUERY = "(max-width: 760px)";
 const PROJECT_PAGE_SIZE = 10;
 const WORK_ORDER_PAGE_SIZE = PROJECT_PAGE_SIZE;
 const LEATHER_TYPE_PAGE_SIZE = PROJECT_PAGE_SIZE;
+const OPERATION_CATALOG_PAGE_SIZE = PROJECT_PAGE_SIZE;
 
 const activeTab = ref<TabId>(readStoredTab<TabId>(ACTIVE_TAB_STORAGE_KEY, tabs.map((tab) => tab.id), "constructor"));
 const brigadierTab = ref<BrigadierTabId>(
@@ -270,8 +278,8 @@ const constructorTab = ref<ConstructorTabId>(
 const constructorDirectoryTab = ref<ConstructorDirectoryTabId>(
   readStoredTab<ConstructorDirectoryTabId>(
     CONSTRUCTOR_DIRECTORY_TAB_STORAGE_KEY,
-    ["leather-types"],
-    "leather-types",
+    ["operation-catalog", "leather-types"],
+    "operation-catalog",
   ),
 );
 const modalMode = ref<ModalMode>(null);
@@ -292,6 +300,12 @@ const busyLeatherTypeIds = ref<number[]>([]);
 const leatherTypesTotal = ref(0);
 const leatherTypesPage = ref(1);
 const leatherTypesPages = ref(1);
+const operationCatalogEntries = ref<OperationCatalogEntry[]>([]);
+const activeOperationCatalogEntries = ref<OperationCatalogEntry[]>([]);
+const busyOperationCatalogEntryIds = ref<number[]>([]);
+const operationCatalogTotal = ref(0);
+const operationCatalogPage = ref(1);
+const operationCatalogPages = ref(1);
 
 const productFilter = ref("");
 const productVisibility = ref<ProductVisibilityFilter>("all");
@@ -304,6 +318,11 @@ const leatherTypeSearchDraft = ref("");
 const showInactiveLeatherTypes = ref(false);
 const leatherTypeSortDirection = ref<LeatherTypeSortDirection>("asc");
 const leatherTypeName = ref("");
+const operationCatalogFilter = ref("");
+const operationCatalogSearchDraft = ref("");
+const showInactiveOperationCatalogEntries = ref(false);
+const operationCatalogSortDirection = ref<OperationCatalogSortDirection>("asc");
+const operationCatalogName = ref("");
 const brigadierProductFilter = ref("");
 const brigadierProductSort = ref<ProductSort>("name-asc");
 const userFilter = ref("");
@@ -325,6 +344,7 @@ const brigadierModalQuantity = ref("1");
 const brigadierModalDefectQuantity = ref("0");
 const brigadierModalOrderNumber = ref("");
 const brigadierModalLeatherTypeId = ref("");
+const brigadierModalLeatherTypeNameDraft = ref("");
 const brigadierModalHasSpentTime = ref(false);
 const brigadierOpenAssignmentDropdownId = ref<number | null>(null);
 let brigadierDropdownCloseTimeoutId: number | null = null;
@@ -349,12 +369,12 @@ const workOrderTimeBreakdownError = ref("");
 const workOrderDetails = ref<WorkOrderDetail[]>([]);
 const workerAssignmentsLoading = ref(false);
 const workerAssignmentsError = ref("");
-const showHiddenWorkerAssignments = ref(false);
-const workerHiddenAssignmentsCount = ref(0);
-const busyWorkerVisibilityIds = ref<number[]>([]);
+const workerAssignmentStatusFilter = ref<WorkerAssignmentStatus>("in_work");
+const isWorkerAssignmentStatusDropdownOpen = ref(false);
 const workerTimerSubmitting = ref(false);
 const workerDayStartedAt = ref<number | null>(null);
 const isWorkerDayEndConfirmOpen = ref(false);
+const workerAssignmentStatusConfirm = ref<WorkerAssignmentStatusConfirm | null>(null);
 const activeWorkerTimerId = ref<string | null>(null);
 const workerTimers = ref<Record<string, WorkerTimerState>>({});
 const workerTimerNow = ref(Date.now());
@@ -371,6 +391,10 @@ const leatherTypesLoading = ref(false);
 const leatherTypesError = ref("");
 const leatherTypeSaveLoading = ref(false);
 const leatherTypeError = ref("");
+const operationCatalogLoading = ref(false);
+const operationCatalogError = ref("");
+const operationCatalogSaveLoading = ref(false);
+const operationCatalogSaveError = ref("");
 const authInitializing = ref(true);
 const authSubmitting = ref(false);
 const authError = ref("");
@@ -398,8 +422,12 @@ let nextUserId = 100;
 let workerClockIntervalId: number | null = null;
 let workOrdersRequestId = 0;
 let workerAssignmentsRequestId = 0;
+let workerAssignmentStatusDropdownCloseTimeoutId: number | null = null;
 let leatherTypesRequestId = 0;
+let operationCatalogRequestId = 0;
 let workOrderTimeBreakdownRequestId = 0;
+let operationNameDropdownCloseTimeoutId: number | null = null;
+const openOperationNameDropdownId = ref<number | null>(null);
 const isModalOpen = computed(() => modalMode.value !== null);
 const isBrigadierOrderModalOpen = computed(() => brigadierModalMode.value !== null);
 const isBrigadierLeatherTypeEditable = computed(
@@ -447,6 +475,27 @@ const canAcceptQualityControl = computed(
 const shouldShowValidation = computed(
   () => modalMode.value === "create" || modalMode.value === "copy",
 );
+const activeOperationCatalogNameByKey = computed(() => {
+  const names = new Map<string, string>();
+  for (const entry of activeOperationCatalogEntries.value) {
+    names.set(normalizeName(entry.name), entry.name);
+  }
+  return names;
+});
+const activeOperationCatalogEntryByKey = computed(() => {
+  const entries = new Map<string, OperationCatalogEntry>();
+  for (const entry of activeOperationCatalogEntries.value) {
+    entries.set(normalizeName(entry.name), entry);
+  }
+  return entries;
+});
+const activeOperationCatalogEntryById = computed(() => {
+  const entries = new Map<number, OperationCatalogEntry>();
+  for (const entry of activeOperationCatalogEntries.value) {
+    entries.set(entry.id, entry);
+  }
+  return entries;
+});
 const operationErrors = computed(() => validateOperationTree(operationTree.value));
 const hasOperationErrors = computed(
   () => Object.keys(operationErrors.value).length > 0,
@@ -725,6 +774,20 @@ const leatherTypesPageEnd = computed(() =>
 const leatherTypeNameError = computed(() =>
   leatherTypeName.value.trim() ? "" : "Укажите наименование вида кожи.",
 );
+const operationCatalogNameError = computed(() =>
+  operationCatalogName.value.trim() ? "" : "Укажите наименование операции.",
+);
+const operationCatalogPageStart = computed(() =>
+  operationCatalogTotal.value === 0
+    ? 0
+    : (operationCatalogPage.value - 1) * OPERATION_CATALOG_PAGE_SIZE + 1,
+);
+const operationCatalogPageEnd = computed(() =>
+  Math.min(
+    operationCatalogPage.value * OPERATION_CATALOG_PAGE_SIZE,
+    operationCatalogTotal.value,
+  ),
+);
 
 const brigadierModalTitle = computed(() =>
   brigadierModalMode.value === "create" ? "Новый заказ" : "Управление заказом",
@@ -849,6 +912,54 @@ const isWorkOrderActionConfirmDanger = computed(
   () => workOrderActionConfirm.value?.kind === "delete",
 );
 
+const isWorkerAssignmentStatusConfirmActiveTimer = computed(() => {
+  const pendingAction = workerAssignmentStatusConfirm.value;
+  return pendingAction ? activeWorkerTimerId.value === pendingAction.timer.id : false;
+});
+
+const workerAssignmentStatusConfirmTitle = computed(() => {
+  switch (workerAssignmentStatusConfirm.value?.status) {
+    case "hidden":
+      return "Скрыть операцию?";
+    case "completed":
+      return "Отметить операцию выполненной?";
+    default:
+      return "Подтвердить действие?";
+  }
+});
+
+const workerAssignmentStatusConfirmDescription = computed(() => {
+  const timerNotice = isWorkerAssignmentStatusConfirmActiveTimer.value
+    ? " Сейчас по этой операции запущен таймер, после подтверждения он переключится на «Перерыв»."
+    : "";
+
+  switch (workerAssignmentStatusConfirm.value?.status) {
+    case "hidden":
+      return `Операция будет перенесена в скрытые.${timerNotice}`;
+    case "completed":
+      return `Операция будет перенесена в выполненные.${timerNotice}`;
+    default:
+      return "";
+  }
+});
+
+const workerAssignmentStatusConfirmLabel = computed(() => {
+  switch (workerAssignmentStatusConfirm.value?.status) {
+    case "hidden":
+      return "Скрыть";
+    case "completed":
+      return "Выполнено";
+    default:
+      return "Подтвердить";
+  }
+});
+
+const workerAssignmentStatusConfirmIcon = computed(() =>
+  workerAssignmentStatusConfirm.value?.status === "hidden"
+    ? "button-icon--delete"
+    : "button-icon--check",
+);
+
 const brigadierOrderNumberError = computed(() => {
   const normalizedOrderNumber = brigadierModalOrderNumber.value.trim();
 
@@ -872,6 +983,12 @@ const brigadierQuantityError = computed(() => {
     ? ""
     : "Укажите количество изделий больше нуля.";
 });
+
+const brigadierLeatherTypeError = computed(() =>
+  brigadierModalLeatherTypeNameDraft.value.trim() && !brigadierModalLeatherTypeId.value
+    ? "Выберите вид кожи из списка."
+    : "",
+);
 
 const brigadierDefectQuantityError = computed(() => {
   if (!isQualityControlOrderModal.value) {
@@ -929,6 +1046,13 @@ const brigadierSaveIssue = computed<{
     };
   }
 
+  if (brigadierLeatherTypeError.value) {
+    return {
+      message: brigadierLeatherTypeError.value,
+      selector: '[data-field="brigadier-leather-type"]',
+    };
+  }
+
   if (brigadierDefectQuantityError.value) {
     return {
       message: brigadierDefectQuantityError.value,
@@ -963,6 +1087,7 @@ const brigadierModalCanSave = computed(() => {
     Boolean(brigadierModalProduct.value) &&
     !brigadierOrderNumberError.value &&
     !brigadierQuantityError.value &&
+    !brigadierLeatherTypeError.value &&
     brigadierModalAssignments.value.length > 0 &&
     !firstBrigadierAssignmentError.value
   );
@@ -1006,13 +1131,13 @@ const assignedWorkerTimerDefinitions = computed<WorkerTimerDefinition[]>(() => {
         id: `worker:operation:${order.id}:${assignment.operationId}`,
         label: assignment.operationName,
         kind: "operation" as const,
-        orderId: order.id,
+        assignmentId: assignment.id,
+        assignmentStatus: assignment.workerStatus,
         orderGroupKey: String(order.id),
         productLabel: `${order.productName} · ${order.productVersion}`,
         productQuantity: order.quantity,
         leatherTypeName: order.leatherTypeName,
         orderNumber: order.orderNumber,
-        hidden: order.hidden,
       })),
   );
 });
@@ -1037,14 +1162,12 @@ const workerTimerGroups = computed<WorkerTimerGroup[]>(() => {
     }
 
     groups.set(timer.orderGroupKey, {
-      orderId: timer.orderId ?? Number.parseInt(timer.orderGroupKey, 10),
       groupKey: timer.orderGroupKey,
       orderNumber: timer.orderNumber,
       productLabel: timer.productLabel,
       leatherTypeName: timer.leatherTypeName ?? null,
       quantity: timer.productQuantity ?? 0,
       timers: [timer],
-      hidden: timer.hidden ?? false,
     });
   }
 
@@ -1057,6 +1180,13 @@ const workerPrimaryTimers = computed(() =>
 
 const workerIdleTimer = computed(
   () => staticWorkerTimerDefinitions.value.find((timer) => timer.kind === "idle") ?? null,
+);
+
+const workerAssignmentStatusFilterLabel = computed(
+  () =>
+    workerAssignmentStatusOptions.find(
+      (option) => option.value === workerAssignmentStatusFilter.value,
+    )?.label ?? "В работе",
 );
 
 const isWorkerDayActive = computed(() => workerDayStartedAt.value !== null);
@@ -1113,12 +1243,6 @@ watch(activeTab, (value) => {
   }
 });
 
-watch(showHiddenWorkerAssignments, () => {
-  if (activeTab.value === "worker" && !authInitializing.value && canLoadWorkerWorkspace()) {
-    void loadWorkerWorkspace();
-  }
-});
-
 watch(availableTabs, (nextTabs) => {
   if (!nextTabs.length) {
     return;
@@ -1164,6 +1288,27 @@ watch(leatherTypesPage, () => {
 });
 
 watch(
+  [
+    operationCatalogFilter,
+    showInactiveOperationCatalogEntries,
+    operationCatalogSortDirection,
+  ],
+  () => {
+    reloadOperationCatalogFromFirstPage();
+  },
+);
+
+watch(operationCatalogPage, () => {
+  void loadOperationCatalog();
+});
+
+watch(workerAssignmentStatusFilter, () => {
+  if (activeTab.value === "worker" && canLoadWorkerWorkspace()) {
+    void loadWorkerWorkspace();
+  }
+});
+
+watch(
   workerTimerDefinitions,
   (definitions) => {
     syncWorkerTimers(definitions);
@@ -1189,6 +1334,8 @@ watch(
 onBeforeUnmount(() => {
   window.removeEventListener("keydown", handleWindowKeydown);
   window.removeEventListener("resize", updateSmartphoneViewport);
+  clearWorkerAssignmentStatusDropdownCloseTimeout();
+  clearOperationNameDropdownCloseTimeout();
   if (workerClockIntervalId !== null) {
     window.clearInterval(workerClockIntervalId);
   }
@@ -1226,30 +1373,36 @@ function toggleProductSort(field: "name" | "version" | "created") {
   productSort.value = `${field}-${nextDirection}` as ProductSort;
 }
 
-function isWorkOrderSortFieldActive(field: "name" | "created" | "completed"): boolean {
+function isWorkOrderSortFieldActive(field: WorkOrderSortBy): boolean {
   return workOrderSort.value.startsWith(field);
 }
 
 function getWorkOrderSortDirection(
-  field: "name" | "created" | "completed",
+  field: WorkOrderSortBy,
 ): "asc" | "desc" {
   if (!isWorkOrderSortFieldActive(field)) {
-    return field === "name" ? "asc" : "desc";
+    return getDefaultWorkOrderSortDirection(field);
   }
 
   return workOrderSort.value.endsWith("asc") ? "asc" : "desc";
 }
 
-function toggleWorkOrderSort(field: "name" | "created" | "completed") {
+function toggleWorkOrderSort(field: WorkOrderSortBy) {
   const nextDirection = isWorkOrderSortFieldActive(field)
     ? getWorkOrderSortDirection(field) === "asc"
       ? "desc"
       : "asc"
-    : field === "name"
-      ? "asc"
-      : "desc";
+    : getDefaultWorkOrderSortDirection(field);
 
-  workOrderSort.value = `${field}-${nextDirection}` as WorkOrderSort;
+  workOrderSort.value = `${field}-${nextDirection}`;
+}
+
+function getDefaultWorkOrderSortDirection(
+  field: WorkOrderSortBy,
+): WorkOrderSortDirection {
+  return field === "name" || field === "order_number"
+    ? "asc"
+    : "desc";
 }
 
 function applyWorkOrderSearch() {
@@ -1337,6 +1490,39 @@ function getLeatherTypeListParams(): LeatherTypeListParams {
   };
 }
 
+function toggleOperationCatalogSort() {
+  operationCatalogSortDirection.value =
+    operationCatalogSortDirection.value === "asc" ? "desc" : "asc";
+}
+
+function applyOperationCatalogSearch() {
+  const nextSearch = operationCatalogSearchDraft.value.trim();
+  if (nextSearch === operationCatalogFilter.value) {
+    return;
+  }
+
+  operationCatalogFilter.value = nextSearch;
+}
+
+function clearOperationCatalogSearch() {
+  operationCatalogSearchDraft.value = "";
+  if (operationCatalogFilter.value === "") {
+    return;
+  }
+
+  operationCatalogFilter.value = "";
+}
+
+function getOperationCatalogListParams(): OperationCatalogListParams {
+  return {
+    search: operationCatalogFilter.value,
+    includeInactive: showInactiveOperationCatalogEntries.value,
+    sortDirection: operationCatalogSortDirection.value,
+    page: operationCatalogPage.value,
+    pageSize: OPERATION_CATALOG_PAGE_SIZE,
+  };
+}
+
 function reloadLeatherTypesFromFirstPage() {
   if (leatherTypesPage.value === 1) {
     void loadLeatherTypes();
@@ -1353,6 +1539,24 @@ function goToLeatherTypesPage(page: number) {
   }
 
   leatherTypesPage.value = nextPage;
+}
+
+function reloadOperationCatalogFromFirstPage() {
+  if (operationCatalogPage.value === 1) {
+    void loadOperationCatalog();
+    return;
+  }
+
+  operationCatalogPage.value = 1;
+}
+
+function goToOperationCatalogPage(page: number) {
+  const nextPage = Math.min(Math.max(page, 1), operationCatalogPages.value);
+  if (nextPage === operationCatalogPage.value) {
+    return;
+  }
+
+  operationCatalogPage.value = nextPage;
 }
 
 function isUserSortFieldActive(field: "name" | "created"): boolean {
@@ -1379,12 +1583,12 @@ function toggleUserSort(field: "name" | "created") {
   userSort.value = `${field}-${nextDirection}` as UserSort;
 }
 
-function isBrigadierSortFieldActive(field: "name" | "version" | "created"): boolean {
+function isBrigadierSortFieldActive(field: "name" | "created"): boolean {
   return brigadierProductSort.value.startsWith(field);
 }
 
 function getBrigadierSortDirection(
-  field: "name" | "version" | "created",
+  field: "name" | "created",
 ): "asc" | "desc" {
   if (!isBrigadierSortFieldActive(field)) {
     return field === "created" ? "desc" : "asc";
@@ -1393,7 +1597,7 @@ function getBrigadierSortDirection(
   return brigadierProductSort.value.endsWith("asc") ? "asc" : "desc";
 }
 
-function toggleBrigadierSort(field: "name" | "version" | "created") {
+function toggleBrigadierSort(field: "name" | "created") {
   const nextDirection = isBrigadierSortFieldActive(field)
     ? getBrigadierSortDirection(field) === "asc"
       ? "desc"
@@ -1424,6 +1628,8 @@ async function loadProtectedData() {
     loadUsers(),
     loadLeatherTypes(),
     loadActiveLeatherTypes(),
+    loadOperationCatalog(),
+    loadActiveOperationCatalogEntries(),
   ];
 
   if (canManageWorkOrders.value) {
@@ -1445,8 +1651,6 @@ async function loadProtectedData() {
     workOrderDetails.value = [];
     workerAssignmentsError.value = "";
     workerAssignmentsLoading.value = false;
-    workerHiddenAssignmentsCount.value = 0;
-    busyWorkerVisibilityIds.value = [];
     resetWorkerTimerState();
   }
 
@@ -1481,8 +1685,6 @@ function redirectToAuth(message = "Требуется аутентификаци
   workOrderDetails.value = [];
   workerAssignmentsError.value = "";
   workerAssignmentsLoading.value = false;
-  workerHiddenAssignmentsCount.value = 0;
-  busyWorkerVisibilityIds.value = [];
   resetWorkerTimerState();
   closeChangePasswordModal();
   closeBrigadierOrderModal();
@@ -1696,6 +1898,69 @@ async function loadActiveLeatherTypes() {
   }
 }
 
+async function loadOperationCatalog() {
+  const requestId = ++operationCatalogRequestId;
+  operationCatalogLoading.value = true;
+  operationCatalogError.value = "";
+
+  try {
+    const page = await fetchOperationCatalog(getOperationCatalogListParams());
+
+    if (requestId !== operationCatalogRequestId) {
+      return;
+    }
+
+    if (
+      page.items.length === 0 &&
+      page.total > 0 &&
+      operationCatalogPage.value > page.pages
+    ) {
+      operationCatalogTotal.value = page.total;
+      operationCatalogPages.value = page.pages;
+      operationCatalogPage.value = page.pages;
+      return;
+    }
+
+    operationCatalogEntries.value = page.items;
+    operationCatalogTotal.value = page.total;
+    operationCatalogPage.value = page.page;
+    operationCatalogPages.value = page.pages;
+  } catch (error) {
+    if (requestId !== operationCatalogRequestId) {
+      return;
+    }
+
+    if (isUnauthorizedError(error)) {
+      redirectToAuth(getErrorMessage(error, "Требуется аутентификация."));
+      return;
+    }
+    operationCatalogError.value = getErrorMessage(
+      error,
+      "Не удалось загрузить операции.",
+    );
+  } finally {
+    if (requestId === operationCatalogRequestId) {
+      operationCatalogLoading.value = false;
+    }
+  }
+}
+
+async function loadActiveOperationCatalogEntries() {
+  try {
+    activeOperationCatalogEntries.value = await fetchAllOperationCatalogEntries({
+      includeInactive: false,
+      sortDirection: "asc",
+      pageSize: 100,
+    });
+  } catch (error) {
+    if (isUnauthorizedError(error)) {
+      redirectToAuth(getErrorMessage(error, "Требуется аутентификация."));
+      return;
+    }
+    activeOperationCatalogEntries.value = [];
+  }
+}
+
 async function loadWorkOrders() {
   if (!canManageWorkOrders.value) {
     workOrders.value = [];
@@ -1759,8 +2024,6 @@ async function loadWorkerWorkspace() {
     workOrderDetails.value = [];
     workerAssignmentsError.value = "";
     workerAssignmentsLoading.value = false;
-    workerHiddenAssignmentsCount.value = 0;
-    busyWorkerVisibilityIds.value = [];
     resetWorkerTimerState();
     return;
   }
@@ -1778,15 +2041,14 @@ async function loadWorkerAssignments(): Promise<boolean> {
 
   try {
     const assignedOrders = await fetchWorkerAssignedWorkOrders(
-      showHiddenWorkerAssignments.value,
+      workerAssignmentStatusFilter.value,
     );
 
     if (requestId !== workerAssignmentsRequestId) {
       return false;
     }
 
-    workOrderDetails.value = assignedOrders.items;
-    workerHiddenAssignmentsCount.value = assignedOrders.hiddenCount;
+    workOrderDetails.value = assignedOrders;
     return true;
   } catch (error) {
     if (requestId !== workerAssignmentsRequestId) {
@@ -1798,7 +2060,6 @@ async function loadWorkerAssignments(): Promise<boolean> {
       return false;
     }
     workOrderDetails.value = [];
-    workerHiddenAssignmentsCount.value = 0;
     workerAssignmentsError.value = getErrorMessage(
       error,
       "Не удалось загрузить назначения исполнителя.",
@@ -1894,6 +2155,8 @@ async function openProductModal(productId: number, mode: Exclude<ModalMode, "cre
 }
 
 function closeProductModal() {
+  clearOperationNameDropdownCloseTimeout();
+  openOperationNameDropdownId.value = null;
   modalMode.value = null;
   modalProductId.value = null;
   modalLoading.value = false;
@@ -2018,6 +2281,36 @@ function resetWorkerTimerState() {
   workerTimerNow.value = Date.now();
 }
 
+function clearWorkerAssignmentStatusDropdownCloseTimeout() {
+  if (workerAssignmentStatusDropdownCloseTimeoutId !== null) {
+    window.clearTimeout(workerAssignmentStatusDropdownCloseTimeoutId);
+    workerAssignmentStatusDropdownCloseTimeoutId = null;
+  }
+}
+
+function openWorkerAssignmentStatusDropdown() {
+  clearWorkerAssignmentStatusDropdownCloseTimeout();
+  isWorkerAssignmentStatusDropdownOpen.value = true;
+}
+
+function closeWorkerAssignmentStatusDropdown() {
+  clearWorkerAssignmentStatusDropdownCloseTimeout();
+  isWorkerAssignmentStatusDropdownOpen.value = false;
+}
+
+function scheduleWorkerAssignmentStatusDropdownClose() {
+  clearWorkerAssignmentStatusDropdownCloseTimeout();
+  workerAssignmentStatusDropdownCloseTimeoutId = window.setTimeout(() => {
+    isWorkerAssignmentStatusDropdownOpen.value = false;
+    workerAssignmentStatusDropdownCloseTimeoutId = null;
+  }, 120);
+}
+
+function selectWorkerAssignmentStatusFilter(status: WorkerAssignmentStatus) {
+  workerAssignmentStatusFilter.value = status;
+  closeWorkerAssignmentStatusDropdown();
+}
+
 function getTimerIdForApiTarget(target: {
   timerType: TimerType;
   orderId?: number | null;
@@ -2088,8 +2381,18 @@ function handleWindowKeydown(event: KeyboardEvent) {
     return;
   }
 
+  if (isWorkerAssignmentStatusDropdownOpen.value) {
+    closeWorkerAssignmentStatusDropdown();
+    return;
+  }
+
   if (isWorkerDayEndConfirmOpen.value) {
     closeWorkerDayEndConfirm();
+    return;
+  }
+
+  if (workerAssignmentStatusConfirm.value) {
+    closeWorkerAssignmentStatusConfirm();
     return;
   }
 
@@ -2180,6 +2483,45 @@ function closeWorkerDayEndConfirm() {
   isWorkerDayEndConfirmOpen.value = false;
 }
 
+function isWorkerAssignmentStatusFinal(
+  status: WorkerAssignmentStatus,
+): status is Exclude<WorkerAssignmentStatus, "in_work"> {
+  return status === "hidden" || status === "completed";
+}
+
+function requestWorkerAssignmentStatusChange(
+  timer: WorkerTimerDefinition,
+  status: WorkerAssignmentStatus,
+) {
+  if (!timer.assignmentId || workerTimerSubmitting.value) {
+    return;
+  }
+
+  if (isWorkerAssignmentStatusFinal(status)) {
+    workerAssignmentStatusConfirm.value = { timer, status };
+    return;
+  }
+
+  void setWorkerAssignmentStatus(timer, status);
+}
+
+function closeWorkerAssignmentStatusConfirm() {
+  if (workerTimerSubmitting.value) {
+    return;
+  }
+
+  workerAssignmentStatusConfirm.value = null;
+}
+
+async function confirmWorkerAssignmentStatusChange() {
+  const pendingAction = workerAssignmentStatusConfirm.value;
+  if (!pendingAction) {
+    return;
+  }
+
+  await setWorkerAssignmentStatus(pendingAction.timer, pendingAction.status);
+}
+
 async function endWorkerDay() {
   if (workerDayStartedAt.value === null) {
     return;
@@ -2213,7 +2555,12 @@ async function activateWorkerTimer(timerId: string) {
 
   const timer = workerTimers.value[timerId];
 
-  if (!timer || activeWorkerTimerId.value === timerId) {
+  if (
+    !timer ||
+    activeWorkerTimerId.value === timerId ||
+    timer.assignmentStatus === "hidden" ||
+    timer.assignmentStatus === "completed"
+  ) {
     return;
   }
 
@@ -2275,73 +2622,43 @@ function toggleWorkerGroup(groupKey: string) {
   };
 }
 
-async function toggleWorkerOrderHidden(workOrderId: number, event: Event) {
-  const target = event.target as HTMLInputElement;
-  const hidden = target.checked;
-  const previousOrder = workOrderDetails.value.find((order) => order.id === workOrderId);
-  const wasHidden = previousOrder?.hidden ?? false;
+async function setWorkerAssignmentStatus(
+  timer: WorkerTimerDefinition,
+  status: WorkerAssignmentStatus,
+) {
+  if (!timer.assignmentId || workerTimerSubmitting.value) {
+    return;
+  }
 
-  setWorkerVisibilityBusy(workOrderId, true);
+  const shouldSwitchActiveTimerToBreak =
+    isWorkerAssignmentStatusFinal(status) &&
+    activeWorkerTimerId.value === timer.id &&
+    isWorkerDayActive.value;
+
+  workerTimerSubmitting.value = true;
   workerAssignmentsError.value = "";
 
   try {
-    const updatedOrder = await updateWorkerAssignedWorkOrderVisibility(
-      workOrderId,
-      hidden,
-    );
-
-    if (updatedOrder.hidden !== wasHidden) {
-      workerHiddenAssignmentsCount.value = Math.max(
-        0,
-        workerHiddenAssignmentsCount.value + (updatedOrder.hidden ? 1 : -1),
-      );
+    if (shouldSwitchActiveTimerToBreak) {
+      applyWorkerTimerApiState(await switchWorkerTimer("break"));
     }
 
-    if (updatedOrder.hidden && !showHiddenWorkerAssignments.value) {
-      workOrderDetails.value = workOrderDetails.value.filter(
-        (order) => order.id !== workOrderId,
-      );
-      return;
-    }
-
-    workOrderDetails.value = workOrderDetails.value.map((order) =>
-      order.id === workOrderId ? updatedOrder : order,
-    );
+    await updateWorkerAssignmentStatus(timer.assignmentId, status);
+    await loadWorkerAssignments();
+    await loadWorkerTimerState();
+    workerAssignmentStatusConfirm.value = null;
   } catch (error) {
-    target.checked = wasHidden;
-
     if (isUnauthorizedError(error)) {
       redirectToAuth(getErrorMessage(error, "Требуется аутентификация."));
       return;
     }
-
     workerAssignmentsError.value = getErrorMessage(
       error,
-      "Не удалось обновить видимость заказа.",
+      "Не удалось обновить статус операции.",
     );
   } finally {
-    setWorkerVisibilityBusy(workOrderId, false);
+    workerTimerSubmitting.value = false;
   }
-}
-
-function isWorkerVisibilityBusy(workOrderId: number): boolean {
-  return busyWorkerVisibilityIds.value.includes(workOrderId);
-}
-
-function setWorkerVisibilityBusy(workOrderId: number, isBusy: boolean) {
-  if (isBusy) {
-    if (!busyWorkerVisibilityIds.value.includes(workOrderId)) {
-      busyWorkerVisibilityIds.value = [
-        ...busyWorkerVisibilityIds.value,
-        workOrderId,
-      ];
-    }
-    return;
-  }
-
-  busyWorkerVisibilityIds.value = busyWorkerVisibilityIds.value.filter(
-    (id) => id !== workOrderId,
-  );
 }
 
 async function toggleProductStatus(product: ProductSummary) {
@@ -2405,6 +2722,59 @@ async function toggleLeatherTypeStatus(leatherType: LeatherTypeRecord) {
     );
   } finally {
     setLeatherTypeBusy(leatherType.id, false);
+  }
+}
+
+async function submitOperationCatalogEntry() {
+  if (operationCatalogNameError.value) {
+    return;
+  }
+
+  operationCatalogSaveLoading.value = true;
+  operationCatalogSaveError.value = "";
+
+  try {
+    await createOperationCatalogEntry(operationCatalogName.value.trim());
+    operationCatalogName.value = "";
+    await Promise.all([
+      loadOperationCatalog(),
+      loadActiveOperationCatalogEntries(),
+    ]);
+  } catch (error) {
+    if (isUnauthorizedError(error)) {
+      redirectToAuth(getErrorMessage(error, "Требуется аутентификация."));
+      return;
+    }
+    operationCatalogSaveError.value = getErrorMessage(
+      error,
+      "Не удалось сохранить операцию.",
+    );
+  } finally {
+    operationCatalogSaveLoading.value = false;
+  }
+}
+
+async function toggleOperationCatalogEntryStatus(entry: OperationCatalogEntry) {
+  setOperationCatalogEntryBusy(entry.id, true);
+  operationCatalogSaveError.value = "";
+
+  try {
+    await updateOperationCatalogEntryStatus(entry.id, !entry.isActive);
+    await Promise.all([
+      loadOperationCatalog(),
+      loadActiveOperationCatalogEntries(),
+    ]);
+  } catch (error) {
+    if (isUnauthorizedError(error)) {
+      redirectToAuth(getErrorMessage(error, "Требуется аутентификация."));
+      return;
+    }
+    operationCatalogSaveError.value = getErrorMessage(
+      error,
+      "Не удалось обновить статус операции.",
+    );
+  } finally {
+    setOperationCatalogEntryBusy(entry.id, false);
   }
 }
 
@@ -2723,7 +3093,153 @@ function handleOperationNameInput(operationId: number, event: Event) {
     return;
   }
 
-  operationTree.value = renameOperation(operationTree.value, operationId, target.value);
+  clearOperationNameDropdownCloseTimeout();
+  openOperationNameDropdownId.value = operationId;
+  operationTree.value = renameOperation(
+    operationTree.value,
+    operationId,
+    getCanonicalOperationName(target.value) ?? target.value,
+    getOperationCatalogEntryByName(target.value)?.id ?? null,
+  );
+}
+
+function handleOperationGroupNameInput(operationId: number, event: Event) {
+  const target = event.target;
+
+  if (!(target instanceof HTMLInputElement)) {
+    return;
+  }
+
+  operationTree.value = renameOperation(
+    operationTree.value,
+    operationId,
+    target.value,
+    null,
+  );
+}
+
+function clearOperationNameDropdownCloseTimeout() {
+  if (operationNameDropdownCloseTimeoutId !== null) {
+    window.clearTimeout(operationNameDropdownCloseTimeoutId);
+    operationNameDropdownCloseTimeoutId = null;
+  }
+}
+
+function openOperationNameDropdown(operationId: number) {
+  if (isViewMode.value) {
+    return;
+  }
+
+  clearOperationNameDropdownCloseTimeout();
+  openOperationNameDropdownId.value = operationId;
+}
+
+function closeOperationNameDropdown() {
+  clearOperationNameDropdownCloseTimeout();
+  openOperationNameDropdownId.value = null;
+}
+
+function scheduleOperationNameDropdownClose(operationId: number) {
+  if (isViewMode.value) {
+    return;
+  }
+
+  clearOperationNameDropdownCloseTimeout();
+  operationNameDropdownCloseTimeoutId = window.setTimeout(() => {
+    if (openOperationNameDropdownId.value === operationId) {
+      openOperationNameDropdownId.value = null;
+    }
+    operationNameDropdownCloseTimeoutId = null;
+  }, 120);
+}
+
+function isOperationNameDropdownOpen(operationId: number): boolean {
+  return openOperationNameDropdownId.value === operationId;
+}
+
+function getOperationNameOptions(row: FlatOperationNodeRow): OperationCatalogEntry[] {
+  if (row.isGroup) {
+    return [];
+  }
+
+  const normalizedQuery = normalizeName(row.name);
+  const selectedEntry = getOperationCatalogEntryForRow(row);
+  const selectedName = selectedEntry?.name ?? getCanonicalOperationName(row.name);
+  const selectedNameKey = normalizeName(selectedName ?? "");
+  const shouldFilterByQuery =
+    normalizedQuery !== "" && normalizedQuery !== selectedNameKey;
+
+  return [...activeOperationCatalogEntries.value]
+    .filter(
+      (entry) =>
+        normalizeName(entry.name) === selectedNameKey ||
+        !shouldFilterByQuery ||
+        normalizeName(entry.name).includes(normalizedQuery),
+    )
+    .sort((left, right) => {
+      const leftPriority = normalizeName(left.name) === selectedNameKey ? 0 : 1;
+      const rightPriority = normalizeName(right.name) === selectedNameKey ? 0 : 1;
+
+      if (leftPriority !== rightPriority) {
+        return leftPriority - rightPriority;
+      }
+
+      return left.name.localeCompare(right.name, "ru");
+    });
+}
+
+function selectOperationName(operationId: number, entry: OperationCatalogEntry) {
+  if (isViewMode.value) {
+    return;
+  }
+
+  operationTree.value = renameOperation(
+    operationTree.value,
+    operationId,
+    entry.name,
+    entry.id,
+  );
+  closeOperationNameDropdown();
+}
+
+function clearOperationName(operationId: number) {
+  if (isViewMode.value) {
+    return;
+  }
+
+  operationTree.value = renameOperation(operationTree.value, operationId, "", null);
+  openOperationNameDropdown(operationId);
+}
+
+function clearOperationGroupName(operationId: number) {
+  if (isViewMode.value) {
+    return;
+  }
+
+  operationTree.value = renameOperation(operationTree.value, operationId, "", null);
+}
+
+function getCanonicalOperationName(value: string): string | null {
+  return activeOperationCatalogNameByKey.value.get(normalizeName(value)) ?? null;
+}
+
+function getOperationCatalogEntryByName(
+  value: string,
+): OperationCatalogEntry | null {
+  return activeOperationCatalogEntryByKey.value.get(normalizeName(value)) ?? null;
+}
+
+function getOperationCatalogEntryForRow(
+  row: Pick<FlatOperationNodeRow, "operationCatalogEntryId" | "name">,
+): OperationCatalogEntry | null {
+  if (row.operationCatalogEntryId !== null) {
+    const entry = activeOperationCatalogEntryById.value.get(row.operationCatalogEntryId);
+    if (entry) {
+      return entry;
+    }
+  }
+
+  return getOperationCatalogEntryByName(row.name);
 }
 
 function handleProductMaterialCostInput(event: Event) {
@@ -2871,6 +3387,23 @@ function setLeatherTypeBusy(leatherTypeId: number, isBusy: boolean) {
   );
 }
 
+function isOperationCatalogEntryBusy(entryId: number): boolean {
+  return busyOperationCatalogEntryIds.value.includes(entryId);
+}
+
+function setOperationCatalogEntryBusy(entryId: number, isBusy: boolean) {
+  if (isBusy) {
+    busyOperationCatalogEntryIds.value = [
+      ...new Set([...busyOperationCatalogEntryIds.value, entryId]),
+    ];
+    return;
+  }
+
+  busyOperationCatalogEntryIds.value = busyOperationCatalogEntryIds.value.filter(
+    (id) => id !== entryId,
+  );
+}
+
 function replaceProductSummary(updatedProduct: ProductSummary) {
   products.value = products.value.map((product) =>
     product.id === updatedProduct.id ? updatedProduct : product,
@@ -2883,6 +3416,7 @@ function createOperationNode(): OperationNode {
 
   return {
     id: operationId,
+    operationCatalogEntryId: null,
     name: "",
     priceCents: null,
     children: [],
@@ -2897,6 +3431,7 @@ function appendChildOperation(
     if (operation.id === parentId) {
       return {
         ...operation,
+        operationCatalogEntryId: null,
         priceCents: null,
         children: [...operation.children, createOperationNode()],
       };
@@ -2971,6 +3506,7 @@ function indentOperationNode(
   }
 
   const [movedOperation] = siblings.splice(currentIndex, 1);
+  siblings[currentIndex - 1].operationCatalogEntryId = null;
   siblings[currentIndex - 1].priceCents = null;
   siblings[currentIndex - 1].children = [
     ...siblings[currentIndex - 1].children,
@@ -3018,18 +3554,25 @@ function renameOperation(
   operations: OperationNode[],
   operationId: number,
   name: string,
+  operationCatalogEntryId: number | null,
 ): OperationNode[] {
   return operations.map((operation) => {
     if (operation.id === operationId) {
       return {
         ...operation,
+        operationCatalogEntryId,
         name,
       };
     }
 
     return {
       ...operation,
-      children: renameOperation(operation.children, operationId, name),
+      children: renameOperation(
+        operation.children,
+        operationId,
+        name,
+        operationCatalogEntryId,
+      ),
     };
   });
 }
@@ -3042,6 +3585,7 @@ function flattenOperations(
     const rows: FlatOperationNodeRow[] = [
       {
         id: operation.id,
+        operationCatalogEntryId: operation.operationCatalogEntryId,
         name: operation.name,
         priceCents: operation.priceCents,
         level,
@@ -3097,32 +3641,29 @@ function validateOperationTree(
   operations: OperationNode[],
 ): Record<number, string> {
   const errors: Record<number, string> = {};
+  const usedOperationCatalogEntryIds = new Set<number>();
 
   function walk(nodes: OperationNode[]) {
-    const counts = new Map<string, number>();
-
     for (const node of nodes) {
       const normalizedName = normalizeName(node.name);
-
-      if (normalizedName) {
-        counts.set(normalizedName, (counts.get(normalizedName) ?? 0) + 1);
-      }
-    }
-
-    for (const node of nodes) {
-      const normalizedName = normalizeName(node.name);
+      const isGroup = node.children.length > 0;
+      const entry = isGroup ? null : getOperationCatalogEntryForRow(node);
 
       if (!normalizedName) {
         errors[node.id] = "Имя операции не должно быть пустым.";
-      } else if ((counts.get(normalizedName) ?? 0) > 1) {
-        errors[node.id] =
-          "Имя операции должно быть уникальным на текущем уровне.";
-      } else if (node.children.length > 0 && node.priceCents !== null) {
+      } else if (isGroup && node.priceCents !== null) {
         errors[node.id] = "У группы операций не должно быть цены.";
-      } else if (node.priceCents !== null && node.priceCents < 0) {
+      } else if (!isGroup && !entry) {
+        errors[node.id] = "Выберите операцию из справочника.";
+      } else if (entry && usedOperationCatalogEntryIds.has(entry.id)) {
+        errors[node.id] = "Операция должна быть уникальной в изделии.";
+      } else if (!isGroup && node.priceCents !== null && node.priceCents < 0) {
         errors[node.id] = "Цена операции не может быть отрицательной.";
       }
 
+      if (entry) {
+        usedOperationCatalogEntryIds.add(entry.id);
+      }
       walk(node.children);
     }
   }
@@ -3134,6 +3675,7 @@ function validateOperationTree(
 function cloneOperations(operations: OperationNode[]): OperationNode[] {
   return operations.map((operation) => ({
     id: operation.id,
+    operationCatalogEntryId: operation.operationCatalogEntryId,
     name: operation.name,
     priceCents: operation.priceCents,
     children: cloneOperations(operation.children),
@@ -3151,11 +3693,28 @@ function getMaxOperationId(operations: OperationNode[]): number {
 function serializeOperations(
   operations: OperationNode[],
 ): ProductCreatePayload["operations"] {
-  return operations.map((operation) => ({
-    name: operation.name.trim(),
-    price_cents: operation.children.length > 0 ? null : operation.priceCents,
-    children: serializeOperations(operation.children),
-  }));
+  return operations.map((operation) => {
+    if (operation.children.length > 0) {
+      return {
+        operation_catalog_entry_id: null,
+        name: operation.name.trim(),
+        price_cents: null,
+        children: serializeOperations(operation.children),
+      };
+    }
+
+    const entry = getOperationCatalogEntryForRow(operation);
+    if (!entry) {
+      throw new Error("Операция должна быть выбрана из справочника.");
+    }
+
+    return {
+      operation_catalog_entry_id: entry.id,
+      name: entry.name,
+      price_cents: operation.priceCents,
+      children: [],
+    };
+  });
 }
 
 function compareProducts(
@@ -3257,6 +3816,18 @@ function formatMoneyInput(cents: number | null): string {
 
 function formatWorkerGroupProductMeta(group: WorkerTimerGroup): string {
   return `${group.quantity} шт., ${group.leatherTypeName ?? "вид кожи не указан"}`;
+}
+
+function getWorkerAssignmentsEmptyMessage(): string {
+  switch (workerAssignmentStatusFilter.value) {
+    case "hidden":
+      return "Для текущего исполнителя нет скрытых операций.";
+    case "completed":
+      return "Для текущего исполнителя нет выполненных операций.";
+    case "in_work":
+    default:
+      return "Для текущего исполнителя пока нет операций в работе.";
+  }
 }
 
 function getErrorMessage(error: unknown, fallback: string): string {
@@ -3377,6 +3948,7 @@ async function openBrigadierCreateOrder(productId: number) {
   brigadierModalDefectQuantity.value = "0";
   brigadierModalOrderNumber.value = "";
   brigadierModalLeatherTypeId.value = "";
+  brigadierModalLeatherTypeNameDraft.value = "";
   brigadierModalHasSpentTime.value = false;
   brigadierModalAssignments.value = [];
 
@@ -3397,6 +3969,7 @@ async function openBrigadierCreateOrder(productId: number) {
     ]);
     brigadierModalProduct.value = product;
     activeLeatherTypes.value = leatherTypesForSelect;
+    brigadierModalLeatherTypeNameDraft.value = "";
     brigadierModalOrderNumber.value = generateNextWorkOrderNumber(allOrders);
     brigadierModalAssignments.value = buildBrigadierAssignments(product.operations);
   } catch (error) {
@@ -3421,6 +3994,7 @@ async function openBrigadierManageOrder(order: WorkOrderSummary) {
   brigadierModalOrderNumber.value = order.orderNumber;
   brigadierModalLeatherTypeId.value =
     order.leatherTypeId === null ? "" : String(order.leatherTypeId);
+  brigadierModalLeatherTypeNameDraft.value = order.leatherTypeName ?? "";
   brigadierModalHasSpentTime.value = order.hasSpentTime;
   brigadierModalAssignments.value = [];
 
@@ -3441,6 +4015,9 @@ async function openBrigadierManageOrder(order: WorkOrderSummary) {
     );
     brigadierModalLeatherTypeId.value =
       orderDetail.leatherTypeId === null ? "" : String(orderDetail.leatherTypeId);
+    brigadierModalLeatherTypeNameDraft.value =
+      activeLeatherTypes.value.find((item) => item.id === orderDetail.leatherTypeId)
+        ?.name ?? "";
     brigadierModalHasSpentTime.value = orderDetail.hasSpentTime;
     brigadierModalAssignments.value = mergeBrigadierAssignments(
       buildBrigadierAssignments(product.operations),
@@ -3468,6 +4045,7 @@ async function openQualityControlOrder(order: WorkOrderSummary) {
   brigadierModalOrderNumber.value = order.orderNumber;
   brigadierModalLeatherTypeId.value =
     order.leatherTypeId === null ? "" : String(order.leatherTypeId);
+  brigadierModalLeatherTypeNameDraft.value = order.leatherTypeName ?? "";
   brigadierModalHasSpentTime.value = order.hasSpentTime;
   brigadierModalAssignments.value = [];
 
@@ -3490,6 +4068,9 @@ async function openQualityControlOrder(order: WorkOrderSummary) {
     brigadierModalDefectQuantity.value = String(orderDetail.defectQuantity);
     brigadierModalLeatherTypeId.value =
       orderDetail.leatherTypeId === null ? "" : String(orderDetail.leatherTypeId);
+    brigadierModalLeatherTypeNameDraft.value =
+      activeLeatherTypes.value.find((item) => item.id === orderDetail.leatherTypeId)
+        ?.name ?? "";
     brigadierModalHasSpentTime.value = orderDetail.hasSpentTime;
     brigadierModalAssignments.value = mergeBrigadierAssignments(
       buildBrigadierAssignments(product.operations),
@@ -3628,6 +4209,7 @@ function closeBrigadierOrderModal() {
   brigadierModalDefectQuantity.value = "0";
   brigadierModalOrderNumber.value = "";
   brigadierModalLeatherTypeId.value = "";
+  brigadierModalLeatherTypeNameDraft.value = "";
   brigadierModalHasSpentTime.value = false;
   brigadierModalLoading.value = false;
   brigadierModalError.value = "";
@@ -3711,6 +4293,32 @@ function handleBrigadierOrderNumberInput(event: Event) {
   }
 
   brigadierModalOrderNumber.value = target.value;
+}
+
+function handleBrigadierLeatherTypeInput(event: Event) {
+  if (!isBrigadierLeatherTypeEditable.value) {
+    return;
+  }
+
+  const target = event.target;
+
+  if (!(target instanceof HTMLInputElement)) {
+    return;
+  }
+
+  const nextName = target.value;
+  const normalizedName = normalizeName(nextName);
+  const matchedLeatherType =
+    activeLeatherTypes.value.find(
+      (item) => normalizeName(item.name) === normalizedName,
+    ) ?? null;
+
+  clearBrigadierLeatherTypeDropdownCloseTimeout();
+  isBrigadierLeatherTypeDropdownOpen.value = true;
+  brigadierModalLeatherTypeNameDraft.value =
+    matchedLeatherType?.name ?? nextName;
+  brigadierModalLeatherTypeId.value =
+    matchedLeatherType === null ? "" : String(matchedLeatherType.id);
 }
 
 function handleBrigadierAssignmentInput(operationId: number, event: Event) {
@@ -3878,6 +4486,36 @@ function scheduleBrigadierLeatherTypeDropdownClose() {
   }, 120);
 }
 
+function getBrigadierLeatherTypeOptions(): LeatherTypeRecord[] {
+  const normalizedQuery = normalizeName(brigadierModalLeatherTypeNameDraft.value);
+  const selectedLeatherType = activeLeatherTypes.value.find(
+    (item) => String(item.id) === brigadierModalLeatherTypeId.value,
+  );
+  const selectedLeatherTypeName = normalizeName(selectedLeatherType?.name ?? "");
+  const shouldFilterByQuery =
+    normalizedQuery !== "" && normalizedQuery !== selectedLeatherTypeName;
+
+  return [...activeLeatherTypes.value]
+    .filter(
+      (item) =>
+        String(item.id) === brigadierModalLeatherTypeId.value ||
+        !shouldFilterByQuery ||
+        normalizeName(item.name).includes(normalizedQuery),
+    )
+    .sort((left, right) => {
+      const leftPriority =
+        String(left.id) === brigadierModalLeatherTypeId.value ? 0 : 1;
+      const rightPriority =
+        String(right.id) === brigadierModalLeatherTypeId.value ? 0 : 1;
+
+      if (leftPriority !== rightPriority) {
+        return leftPriority - rightPriority;
+      }
+
+      return left.name.localeCompare(right.name, "ru");
+    });
+}
+
 function selectBrigadierLeatherType(leatherTypeId: number | null) {
   if (!isBrigadierLeatherTypeEditable.value) {
     return;
@@ -3885,6 +4523,10 @@ function selectBrigadierLeatherType(leatherTypeId: number | null) {
 
   brigadierModalLeatherTypeId.value =
     leatherTypeId === null ? "" : String(leatherTypeId);
+  brigadierModalLeatherTypeNameDraft.value =
+    leatherTypeId === null
+      ? ""
+      : activeLeatherTypes.value.find((item) => item.id === leatherTypeId)?.name ?? "";
   closeBrigadierLeatherTypeDropdown();
 }
 
@@ -3894,6 +4536,7 @@ function clearBrigadierLeatherType() {
   }
 
   brigadierModalLeatherTypeId.value = "";
+  brigadierModalLeatherTypeNameDraft.value = "";
   openBrigadierLeatherTypeDropdown();
 }
 
@@ -4481,18 +5124,42 @@ async function handleResetUserPassword(user: UserRecord) {
               </button>
             </div>
 
-            <div class="worker-visibility-toolbar">
-              <label class="checkbox-field worker-visibility-toolbar__toggle">
-                <input
-                  v-model="showHiddenWorkerAssignments"
-                  type="checkbox"
-                  :disabled="workerAssignmentsLoading"
-                />
-                <span>Показывать скрытые</span>
+            <div class="toolbar worker-filter-toolbar">
+              <label class="field field--inline">
+                <span class="field__label">Отображать операции</span>
+                <div class="assignment-input-wrap worker-status-filter">
+                  <input
+                    :value="workerAssignmentStatusFilterLabel"
+                    type="text"
+                    class="text-input text-input--selectlike worker-filter-select"
+                    readonly
+                    autocomplete="off"
+                    @focus="openWorkerAssignmentStatusDropdown"
+                    @click="openWorkerAssignmentStatusDropdown"
+                    @blur="scheduleWorkerAssignmentStatusDropdownClose"
+                  />
+                  <span class="worker-status-filter__chevron" aria-hidden="true" />
+                  <div
+                    v-if="isWorkerAssignmentStatusDropdownOpen"
+                    class="assignment-dropdown worker-status-filter__dropdown"
+                  >
+                    <button
+                      v-for="option in workerAssignmentStatusOptions"
+                      :key="option.value"
+                      type="button"
+                      class="assignment-dropdown__option"
+                      :class="{
+                        'assignment-dropdown__option--selected':
+                          workerAssignmentStatusFilter === option.value,
+                      }"
+                      @mousedown.prevent
+                      @click="selectWorkerAssignmentStatusFilter(option.value)"
+                    >
+                      <span>{{ option.label }}</span>
+                    </button>
+                  </div>
+                </div>
               </label>
-              <span class="worker-hidden-counter">
-                Скрытые: {{ workerHiddenAssignmentsCount }}
-              </span>
             </div>
 
             <div v-if="workerAssignmentsError" class="banner banner--error">
@@ -4510,13 +5177,7 @@ async function handleResetUserPassword(user: UserRecord) {
             </div>
 
             <div v-else-if="workerTimerGroups.length === 0" class="empty-table-state">
-              <p>
-                {{
-                  workerHiddenAssignmentsCount > 0 && !showHiddenWorkerAssignments
-                    ? "Все назначенные операции скрыты."
-                    : "Для текущего исполнителя пока нет назначенных операций."
-                }}
-              </p>
+              <p>{{ getWorkerAssignmentsEmptyMessage() }}</p>
             </div>
 
             <div v-else class="worker-groups">
@@ -4524,65 +5185,98 @@ async function handleResetUserPassword(user: UserRecord) {
                 v-for="group in workerTimerGroups"
                 :key="group.groupKey"
                 class="worker-group"
-                :class="{ 'worker-group--hidden': group.hidden }"
               >
-                <div class="worker-group__head">
-                  <button
-                    type="button"
-                    class="worker-group__toggle"
-                    @click="toggleWorkerGroup(group.groupKey)"
-                  >
-                    <span class="worker-group__title">
-                      <span class="button-icon button-icon--package" aria-hidden="true" />
-                      <h3>
-                        {{ group.orderNumber }} · {{ group.productLabel }} ({{ formatWorkerGroupProductMeta(group) }})
-                      </h3>
-                    </span>
-                    <span
-                      class="worker-group__chevron"
-                      :class="{
-                        'worker-group__chevron--expanded':
-                          workerGroupExpanded[group.groupKey],
-                      }"
-                      aria-hidden="true"
-                    />
-                  </button>
-
-                  <label class="checkbox-field worker-group__hidden-toggle">
-                    <input
-                      type="checkbox"
-                      :checked="group.hidden"
-                      :disabled="isWorkerVisibilityBusy(group.orderId)"
-                      @change="void toggleWorkerOrderHidden(group.orderId, $event)"
-                    />
-                    <span>Скрыть</span>
-                  </label>
-                </div>
+                <button
+                  type="button"
+                  class="worker-group__head"
+                  @click="toggleWorkerGroup(group.groupKey)"
+                >
+                  <span class="worker-group__title">
+                    <span class="button-icon button-icon--package" aria-hidden="true" />
+                    <h3>
+                      {{ group.orderNumber }} · {{ group.productLabel }} ({{ formatWorkerGroupProductMeta(group) }})
+                    </h3>
+                  </span>
+                  <span
+                    class="worker-group__chevron"
+                    :class="{
+                      'worker-group__chevron--expanded':
+                        workerGroupExpanded[group.groupKey],
+                    }"
+                    aria-hidden="true"
+                  />
+                </button>
 
                 <div
                   v-if="workerGroupExpanded[group.groupKey]"
                   class="worker-group__timers"
                 >
-                  <button
+                  <div
                     v-for="timer in group.timers"
                     :key="timer.id"
-                    type="button"
-                    class="worker-timer-button worker-timer-button--operation"
-                    :class="{ 'worker-timer-button--active': isWorkerTimerActive(timer.id) }"
-                    :disabled="!isWorkerDayActive || workerTimerSubmitting"
-                    @click="void activateWorkerTimer(timer.id)"
+                    class="worker-operation-row"
                   >
-                    <span class="worker-timer-button__meta">
-                      <span class="worker-timer-button__heading">
-                        <span class="button-icon button-icon--timer-operation" aria-hidden="true" />
-                        <span class="worker-timer-button__order">{{ timer.orderNumber }}</span>
-                        <span class="worker-timer-button__label">{{ timer.label }}</span>
+                    <button
+                      type="button"
+                      class="worker-timer-button worker-timer-button--operation"
+                      :class="{ 'worker-timer-button--active': isWorkerTimerActive(timer.id) }"
+                      :disabled="
+                        !isWorkerDayActive ||
+                        workerTimerSubmitting ||
+                        timer.assignmentStatus !== 'in_work'
+                      "
+                      @click="void activateWorkerTimer(timer.id)"
+                    >
+                      <span class="worker-timer-button__meta">
+                        <span class="worker-timer-button__heading">
+                          <span class="button-icon button-icon--timer-operation" aria-hidden="true" />
+                          <span class="worker-timer-button__order">{{ timer.orderNumber }}</span>
+                          <span class="worker-timer-button__label">{{ timer.label }}</span>
+                        </span>
                       </span>
-                    </span>
-                    <span class="worker-timer-button__value">
-                      {{ formatTimerDuration(getWorkerTimerElapsedMs(timer.id)) }}
-                    </span>
-                  </button>
+                      <span class="worker-timer-button__value">
+                        {{ formatTimerDuration(getWorkerTimerElapsedMs(timer.id)) }}
+                      </span>
+                    </button>
+                    <div class="worker-operation-row__actions">
+                      <button
+                        v-if="timer.assignmentStatus === 'in_work'"
+                        type="button"
+                        class="action-link"
+                        :disabled="workerTimerSubmitting"
+                        @click="requestWorkerAssignmentStatusChange(timer, 'hidden')"
+                      >
+                        <span class="button-content">
+                          <span class="button-icon button-icon--delete" aria-hidden="true" />
+                          <span>Скрыть</span>
+                        </span>
+                      </button>
+                      <button
+                        v-if="timer.assignmentStatus === 'in_work'"
+                        type="button"
+                        class="action-link"
+                        :disabled="workerTimerSubmitting"
+                        @click="requestWorkerAssignmentStatusChange(timer, 'completed')"
+                      >
+                        <span class="button-content">
+                          <span class="button-icon button-icon--check" aria-hidden="true" />
+                          <span>Выполнено</span>
+                        </span>
+                      </button>
+                      <button
+                        v-else
+                        type="button"
+                        class="action-link"
+                        :disabled="workerTimerSubmitting"
+                        @click="requestWorkerAssignmentStatusChange(timer, 'in_work')"
+                      >
+                        <span class="button-content">
+                          <span class="button-icon button-icon--refresh" aria-hidden="true" />
+                          <span>Вернуть в работу</span>
+                        </span>
+                      </button>
+                    </div>
+                  </div>
                 </div>
               </section>
             </div>
@@ -4672,34 +5366,6 @@ async function handleResetUserPassword(user: UserRecord) {
                     </button>
                   </div>
                 </label>
-
-                <div class="field field--inline">
-                  <span class="field__label">Сортировка</span>
-                  <div class="segmented-control segmented-control--wrap" role="group" aria-label="Сортировка заказов">
-                    <button
-                      v-for="option in workOrderSortOptions"
-                      :key="option.field"
-                      type="button"
-                      class="segmented-control__button segmented-control__button--icon"
-                      :class="{
-                        'segmented-control__button--active':
-                          isWorkOrderSortFieldActive(option.field),
-                      }"
-                      :title="`${option.label} (${getWorkOrderSortDirection(option.field) === 'asc' ? 'по возрастанию' : 'по убыванию'})`"
-                      :aria-label="`${option.label} (${getWorkOrderSortDirection(option.field) === 'asc' ? 'по возрастанию' : 'по убыванию'})`"
-                      @click="toggleWorkOrderSort(option.field)"
-                    >
-                      <span
-                        class="toolbar-icon"
-                        :class="[
-                          `toolbar-icon--${option.icon}`,
-                          `toolbar-icon--${getWorkOrderSortDirection(option.field)}`,
-                        ]"
-                        aria-hidden="true"
-                      />
-                    </button>
-                  </div>
-                </div>
               </div>
 
               <div v-if="filteredWorkOrders.length === 0" class="empty-table-state">
@@ -4710,24 +5376,152 @@ async function handleResetUserPassword(user: UserRecord) {
                 <table class="products-table brigadier-table">
                   <thead>
                     <tr>
-                      <th>Номер заказа</th>
-                      <th>Наименование</th>
+                      <th>
+                        <button
+                          type="button"
+                          class="sort-header-button"
+                          :class="{
+                            'sort-header-button--active':
+                              isWorkOrderSortFieldActive('order_number'),
+                          }"
+                          @click="toggleWorkOrderSort('order_number')"
+                        >
+                          <span>Номер заказа</span>
+                          <span
+                            class="sort-header-button__icon"
+                            :class="`sort-header-button__icon--${getWorkOrderSortDirection('order_number')}`"
+                            aria-hidden="true"
+                          />
+                        </button>
+                      </th>
+                      <th>
+                        <button
+                          type="button"
+                          class="sort-header-button"
+                          :class="{
+                            'sort-header-button--active':
+                              isWorkOrderSortFieldActive('name'),
+                          }"
+                          @click="toggleWorkOrderSort('name')"
+                        >
+                          <span>Наименование</span>
+                          <span
+                            class="sort-header-button__icon"
+                            :class="`sort-header-button__icon--${getWorkOrderSortDirection('name')}`"
+                            aria-hidden="true"
+                          />
+                        </button>
+                      </th>
                       <th>Вид кожи</th>
                       <th>Версия</th>
                       <th v-if="workOrderStatusTab === 'quality_control'">
-                        Дата передачи в ОТК
+                        <button
+                          type="button"
+                          class="sort-header-button"
+                          :class="{
+                            'sort-header-button--active':
+                              isWorkOrderSortFieldActive('quality_control'),
+                          }"
+                          @click="toggleWorkOrderSort('quality_control')"
+                        >
+                          <span>Дата передачи в ОТК</span>
+                          <span
+                            class="sort-header-button__icon"
+                            :class="`sort-header-button__icon--${getWorkOrderSortDirection('quality_control')}`"
+                            aria-hidden="true"
+                          />
+                        </button>
                       </th>
                       <template v-else>
-                        <th>Время создания</th>
+                        <th>
+                          <button
+                            type="button"
+                            class="sort-header-button"
+                            :class="{
+                              'sort-header-button--active':
+                                isWorkOrderSortFieldActive('created'),
+                            }"
+                            @click="toggleWorkOrderSort('created')"
+                          >
+                            <span>Время создания</span>
+                            <span
+                              class="sort-header-button__icon"
+                              :class="`sort-header-button__icon--${getWorkOrderSortDirection('created')}`"
+                              aria-hidden="true"
+                            />
+                          </button>
+                        </th>
                         <th v-if="workOrderStatusTab !== 'created'">
-                          Время взятия в работу
+                          <button
+                            type="button"
+                            class="sort-header-button"
+                            :class="{
+                              'sort-header-button--active':
+                                isWorkOrderSortFieldActive('taken'),
+                            }"
+                            @click="toggleWorkOrderSort('taken')"
+                          >
+                            <span>Время взятия в работу</span>
+                            <span
+                              class="sort-header-button__icon"
+                              :class="`sort-header-button__icon--${getWorkOrderSortDirection('taken')}`"
+                              aria-hidden="true"
+                            />
+                          </button>
                         </th>
-                        <th v-if="workOrderStatusTab === 'deleted'">Время выполнения</th>
-                        <th v-if="workOrderStatusTab === 'completed'">
-                          Время проведения ОТК
+                        <th v-if="workOrderStatusTab === 'deleted'">
+                          <button
+                            type="button"
+                            class="sort-header-button"
+                            :class="{
+                              'sort-header-button--active':
+                                isWorkOrderSortFieldActive('completed'),
+                            }"
+                            @click="toggleWorkOrderSort('completed')"
+                          >
+                            <span>Время выполнения</span>
+                            <span
+                              class="sort-header-button__icon"
+                              :class="`sort-header-button__icon--${getWorkOrderSortDirection('completed')}`"
+                              aria-hidden="true"
+                            />
+                          </button>
                         </th>
                         <th v-if="workOrderStatusTab === 'completed'">
-                          Количество брака
+                          <button
+                            type="button"
+                            class="sort-header-button"
+                            :class="{
+                              'sort-header-button--active':
+                                isWorkOrderSortFieldActive('completed'),
+                            }"
+                            @click="toggleWorkOrderSort('completed')"
+                          >
+                            <span>Время проведения ОТК</span>
+                            <span
+                              class="sort-header-button__icon"
+                              :class="`sort-header-button__icon--${getWorkOrderSortDirection('completed')}`"
+                              aria-hidden="true"
+                            />
+                          </button>
+                        </th>
+                        <th v-if="workOrderStatusTab === 'completed'">
+                          <button
+                            type="button"
+                            class="sort-header-button"
+                            :class="{
+                              'sort-header-button--active':
+                                isWorkOrderSortFieldActive('defect'),
+                            }"
+                            @click="toggleWorkOrderSort('defect')"
+                          >
+                            <span>Количество брака</span>
+                            <span
+                              class="sort-header-button__icon"
+                              :class="`sort-header-button__icon--${getWorkOrderSortDirection('defect')}`"
+                              aria-hidden="true"
+                            />
+                          </button>
                         </th>
                         <th>Исполнители</th>
                         <th>Суммарное время</th>
@@ -5115,34 +5909,6 @@ async function handleResetUserPassword(user: UserRecord) {
                   </button>
                 </div>
               </label>
-
-              <div class="field field--inline">
-                <span class="field__label">Сортировка</span>
-                <div class="segmented-control segmented-control--wrap" role="group" aria-label="Сортировка заказов">
-                  <button
-                    v-for="option in sortOptions"
-                    :key="option.field"
-                    type="button"
-                    class="segmented-control__button segmented-control__button--icon"
-                    :class="{
-                      'segmented-control__button--active':
-                        isBrigadierSortFieldActive(option.field),
-                    }"
-                    :title="`${option.label} (${getBrigadierSortDirection(option.field) === 'asc' ? 'по возрастанию' : 'по убыванию'})`"
-                    :aria-label="`${option.label} (${getBrigadierSortDirection(option.field) === 'asc' ? 'по возрастанию' : 'по убыванию'})`"
-                    @click="toggleBrigadierSort(option.field)"
-                  >
-                    <span
-                      class="toolbar-icon"
-                      :class="[
-                        `toolbar-icon--${option.icon}`,
-                        `toolbar-icon--${getBrigadierSortDirection(option.field)}`,
-                      ]"
-                      aria-hidden="true"
-                    />
-                  </button>
-                </div>
-              </div>
             </div>
 
             <div v-if="listError" class="banner banner--error">
@@ -5164,9 +5930,43 @@ async function handleResetUserPassword(user: UserRecord) {
                 <table class="products-table brigadier-table">
                   <thead>
                     <tr>
-                      <th>Наименование</th>
+                      <th>
+                        <button
+                          type="button"
+                          class="sort-header-button"
+                          :class="{
+                            'sort-header-button--active':
+                              isBrigadierSortFieldActive('name'),
+                          }"
+                          @click="toggleBrigadierSort('name')"
+                        >
+                          <span>Наименование</span>
+                          <span
+                            class="sort-header-button__icon"
+                            :class="`sort-header-button__icon--${getBrigadierSortDirection('name')}`"
+                            aria-hidden="true"
+                          />
+                        </button>
+                      </th>
                       <th>Версия</th>
-                      <th>Дата создания</th>
+                      <th>
+                        <button
+                          type="button"
+                          class="sort-header-button"
+                          :class="{
+                            'sort-header-button--active':
+                              isBrigadierSortFieldActive('created'),
+                          }"
+                          @click="toggleBrigadierSort('created')"
+                        >
+                          <span>Дата создания</span>
+                          <span
+                            class="sort-header-button__icon"
+                            :class="`sort-header-button__icon--${getBrigadierSortDirection('created')}`"
+                            aria-hidden="true"
+                          />
+                        </button>
+                      </th>
                       <th>Действие</th>
                     </tr>
                   </thead>
@@ -5732,7 +6532,25 @@ async function handleResetUserPassword(user: UserRecord) {
               <div class="subtabs" role="tablist" aria-label="Справочники конструктора">
                 <button
                   type="button"
-                  class="subtab-button subtab-button--active"
+                  class="subtab-button"
+                  :class="{
+                    'subtab-button--active':
+                      constructorDirectoryTab === 'operation-catalog',
+                  }"
+                  @click="constructorDirectoryTab = 'operation-catalog'"
+                >
+                  <span class="button-content">
+                    <span class="button-icon button-icon--orders" aria-hidden="true" />
+                    <span>Операции</span>
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  class="subtab-button"
+                  :class="{
+                    'subtab-button--active':
+                      constructorDirectoryTab === 'leather-types',
+                  }"
                   @click="constructorDirectoryTab = 'leather-types'"
                 >
                   <span class="button-content">
@@ -5742,6 +6560,198 @@ async function handleResetUserPassword(user: UserRecord) {
                 </button>
               </div>
             </div>
+
+            <template v-if="constructorDirectoryTab === 'operation-catalog'">
+              <form class="dictionary-form" @submit.prevent="void submitOperationCatalogEntry()">
+                <label class="field">
+                  <span class="field__label">Новая операция</span>
+                  <input
+                    v-model="operationCatalogName"
+                    type="text"
+                    class="text-input"
+                    placeholder="Например, Крой"
+                  />
+                  <p
+                    v-if="operationCatalogName && operationCatalogNameError"
+                    class="field-error"
+                  >
+                    {{ operationCatalogNameError }}
+                  </p>
+                </label>
+                <button
+                  type="submit"
+                  class="primary-button"
+                  :disabled="
+                    operationCatalogSaveLoading ||
+                    Boolean(operationCatalogNameError)
+                  "
+                >
+                  <span class="button-content">
+                    <span class="button-icon button-icon--plus" aria-hidden="true" />
+                    <span>
+                      {{
+                        operationCatalogSaveLoading
+                          ? "Сохранение..."
+                          : "Добавить"
+                      }}
+                    </span>
+                  </span>
+                </button>
+              </form>
+
+              <div class="toolbar">
+                <label class="field field--inline">
+                  <span class="field__label">Поиск по наименованию</span>
+                  <div class="filter-input-wrap">
+                    <input
+                      v-model="operationCatalogSearchDraft"
+                      type="text"
+                      class="text-input text-input--with-action"
+                      placeholder="Например, крой"
+                      @keydown.enter.prevent="applyOperationCatalogSearch"
+                    />
+                    <button
+                      v-if="operationCatalogSearchDraft || operationCatalogFilter"
+                      type="button"
+                      class="field-action"
+                      aria-label="Очистить поиск"
+                      title="Очистить поиск"
+                      @click="clearOperationCatalogSearch"
+                    >
+                      <span class="field-action__icon" aria-hidden="true" />
+                    </button>
+                  </div>
+                </label>
+
+                <label class="checkbox-field">
+                  <input
+                    v-model="showInactiveOperationCatalogEntries"
+                    type="checkbox"
+                  />
+                  <span>Показывать деактивированные</span>
+                </label>
+
+                <div class="field field--inline">
+                  <span class="field__label">Сортировка</span>
+                  <div class="segmented-control segmented-control--wrap" role="group" aria-label="Сортировка операций">
+                    <button
+                      type="button"
+                      class="segmented-control__button segmented-control__button--icon segmented-control__button--active"
+                      :title="`Сортировка по наименованию (${operationCatalogSortDirection === 'asc' ? 'по возрастанию' : 'по убыванию'})`"
+                      :aria-label="`Сортировка по наименованию (${operationCatalogSortDirection === 'asc' ? 'по возрастанию' : 'по убыванию'})`"
+                      @click="toggleOperationCatalogSort"
+                    >
+                      <span
+                        class="toolbar-icon"
+                        :class="[
+                          'toolbar-icon--name',
+                          `toolbar-icon--${operationCatalogSortDirection}`,
+                        ]"
+                        aria-hidden="true"
+                      />
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              <div
+                v-if="operationCatalogSaveError || operationCatalogError"
+                class="banner banner--error"
+              >
+                <p>{{ operationCatalogSaveError || operationCatalogError }}</p>
+                <button type="button" class="ghost-button" @click="loadOperationCatalog">
+                  <span class="button-content">
+                    <span class="button-icon button-icon--refresh" aria-hidden="true" />
+                    <span>Повторить</span>
+                  </span>
+                </button>
+              </div>
+
+              <div v-if="operationCatalogLoading" class="banner">
+                <p>Загрузка операций...</p>
+              </div>
+
+              <div
+                v-else-if="operationCatalogEntries.length === 0"
+                class="empty-table-state"
+              >
+                <p>Операции по выбранным условиям не найдены.</p>
+              </div>
+
+              <template v-else>
+                <div class="table-wrap">
+                  <table class="products-table dictionary-table">
+                    <thead>
+                      <tr>
+                        <th>Наименование</th>
+                        <th>Действия</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr
+                        v-for="entry in operationCatalogEntries"
+                        :key="entry.id"
+                      >
+                        <td>{{ entry.name }}</td>
+                        <td>
+                          <div class="table-actions">
+                            <button
+                              type="button"
+                              class="action-link"
+                              :disabled="isOperationCatalogEntryBusy(entry.id)"
+                              @click="void toggleOperationCatalogEntryStatus(entry)"
+                            >
+                              <span class="button-content">
+                                <span
+                                  class="button-icon"
+                                  :class="entry.isActive ? 'button-icon--pause' : 'button-icon--check'"
+                                  aria-hidden="true"
+                                />
+                                <span>
+                                  {{
+                                    isOperationCatalogEntryBusy(entry.id)
+                                      ? "Обновление..."
+                                      : entry.isActive
+                                        ? "Деактивировать"
+                                        : "Активировать"
+                                  }}
+                                </span>
+                              </span>
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+
+                <div class="pagination-bar">
+                  <span>
+                    Показаны {{ operationCatalogPageStart }}–{{ operationCatalogPageEnd }}
+                    из {{ operationCatalogTotal }}
+                  </span>
+                  <div class="pagination-bar__actions">
+                    <button
+                      type="button"
+                      class="secondary-button"
+                      :disabled="operationCatalogPage <= 1"
+                      @click="goToOperationCatalogPage(operationCatalogPage - 1)"
+                    >
+                      Назад
+                    </button>
+                    <span>{{ operationCatalogPage }} / {{ operationCatalogPages }}</span>
+                    <button
+                      type="button"
+                      class="secondary-button"
+                      :disabled="operationCatalogPage >= operationCatalogPages"
+                      @click="goToOperationCatalogPage(operationCatalogPage + 1)"
+                    >
+                      Вперед
+                    </button>
+                  </div>
+                </div>
+              </template>
+            </template>
 
             <template v-if="constructorDirectoryTab === 'leather-types'">
               <form class="dictionary-form" @submit.prevent="void submitLeatherType()">
@@ -6344,18 +7354,23 @@ async function handleResetUserPassword(user: UserRecord) {
                     </div>
                     <input
                       v-else
-                      :value="brigadierModalLeatherTypeName ?? ''"
+                      :value="brigadierModalLeatherTypeNameDraft"
                       type="text"
                       class="text-input text-input--with-clear"
-                      readonly
                       autocomplete="off"
                       placeholder="Не выбран"
+                      data-field="brigadier-leather-type"
+                      @input="handleBrigadierLeatherTypeInput"
                       @focus="openBrigadierLeatherTypeDropdown"
                       @click="openBrigadierLeatherTypeDropdown"
                       @blur="scheduleBrigadierLeatherTypeDropdownClose"
                     />
                     <button
-                      v-if="brigadierModalLeatherTypeId && isBrigadierLeatherTypeEditable"
+                      v-if="
+                        (brigadierModalLeatherTypeId ||
+                          brigadierModalLeatherTypeNameDraft) &&
+                        isBrigadierLeatherTypeEditable
+                      "
                       type="button"
                       class="field-action field-action--right"
                       aria-label="Очистить вид кожи"
@@ -6382,7 +7397,7 @@ async function handleResetUserPassword(user: UserRecord) {
                         <span>Не выбран</span>
                       </button>
                       <button
-                        v-for="leatherType in activeLeatherTypes"
+                        v-for="leatherType in getBrigadierLeatherTypeOptions()"
                         :key="leatherType.id"
                         type="button"
                         class="assignment-dropdown__option"
@@ -6396,12 +7411,15 @@ async function handleResetUserPassword(user: UserRecord) {
                         <span>{{ leatherType.name }}</span>
                       </button>
                       <div
-                        v-if="activeLeatherTypes.length === 0"
+                        v-if="getBrigadierLeatherTypeOptions().length === 0"
                         class="assignment-dropdown__empty"
                       >
                         Справочник видов кожи пуст.
                       </div>
                     </div>
+                    <p v-if="brigadierLeatherTypeError" class="field-error">
+                      {{ brigadierLeatherTypeError }}
+                    </p>
                   </div>
                 </label>
                 <label
@@ -6926,8 +7944,8 @@ async function handleResetUserPassword(user: UserRecord) {
               <div>
                 <span class="field__label">Таблица-дерево операций</span>
                 <p class="field__hint">
-                  На одном уровне внутри одного родителя имя операции должно быть
-                  уникальным и не может быть пустым.
+                  Группы вводятся вручную, операции выбираются из справочника и
+                  должны быть уникальными в изделии.
                 </p>
               </div>
             </div>
@@ -6970,20 +7988,73 @@ async function handleResetUserPassword(user: UserRecord) {
                           <div v-if="isViewMode" class="operation-text">
                             {{ row.name }}
                           </div>
-                          <input
-                            v-else
-                            :value="row.name"
-                            type="text"
-                            class="operation-input"
-                            :data-operation-id="row.id"
-                            :placeholder="
-                              row.isGroup
-                                ? 'Название группы операций'
-                                : 'Название операции'
-                            "
-                            @input="handleOperationNameInput(row.id, $event)"
-                          />
-
+                          <div v-else class="assignment-input-wrap">
+                            <input
+                              v-if="row.isGroup"
+                              :value="row.name"
+                              type="text"
+                              class="operation-input operation-input--with-action"
+                              :data-operation-id="row.id"
+                              autocomplete="off"
+                              placeholder="Название группы операций"
+                              @input="handleOperationGroupNameInput(row.id, $event)"
+                            />
+                            <input
+                              v-else
+                              :value="row.name"
+                              type="text"
+                              class="operation-input operation-input--with-dropdown"
+                              :data-operation-id="row.id"
+                              autocomplete="off"
+                              placeholder="Название операции"
+                              @input="handleOperationNameInput(row.id, $event)"
+                              @focus="openOperationNameDropdown(row.id)"
+                              @click="openOperationNameDropdown(row.id)"
+                              @blur="scheduleOperationNameDropdownClose(row.id)"
+                            />
+                            <button
+                              v-if="row.name"
+                              type="button"
+                              class="field-action field-action--right"
+                              aria-label="Очистить операцию"
+                              title="Очистить операцию"
+                              @mousedown.prevent
+                              @click="
+                                row.isGroup
+                                  ? clearOperationGroupName(row.id)
+                                  : clearOperationName(row.id)
+                              "
+                            >
+                              <span class="field-action__icon" aria-hidden="true" />
+                            </button>
+                            <div
+                              v-if="
+                                !row.isGroup && isOperationNameDropdownOpen(row.id)
+                              "
+                              class="assignment-dropdown"
+                            >
+                              <button
+                                v-for="entry in getOperationNameOptions(row)"
+                                :key="entry.id"
+                                type="button"
+                                class="assignment-dropdown__option"
+                                :class="{
+                                  'assignment-dropdown__option--selected':
+                                    normalizeName(row.name) === normalizeName(entry.name),
+                                }"
+                                @mousedown.prevent
+                                @click="selectOperationName(row.id, entry)"
+                              >
+                                <span>{{ entry.name }}</span>
+                              </button>
+                              <div
+                                v-if="getOperationNameOptions(row).length === 0"
+                                class="assignment-dropdown__empty"
+                              >
+                                Справочник операций пуст.
+                              </div>
+                            </div>
+                          </div>
                           <p
                             v-if="!isViewMode && shouldShowOperationError(row)"
                             class="field-error"
@@ -7291,6 +8362,63 @@ async function handleResetUserPassword(user: UserRecord) {
             <span class="button-content">
               <span class="button-icon button-icon--delete" aria-hidden="true" />
               <span>Удалить</span>
+            </span>
+          </button>
+        </div>
+      </section>
+    </div>
+
+    <div
+      v-if="workerAssignmentStatusConfirm"
+      class="modal-backdrop"
+      @click.self="closeWorkerAssignmentStatusConfirm"
+    >
+      <section class="confirm-modal" role="dialog" aria-modal="true">
+        <div class="confirm-modal__content">
+          <p class="confirm-modal__eyebrow">Подтверждение действия</p>
+          <h2>{{ workerAssignmentStatusConfirmTitle }}</h2>
+          <dl class="confirm-modal__details">
+            <div>
+              <dt>Заказ</dt>
+              <dd>{{ workerAssignmentStatusConfirm.timer.orderNumber ?? "Без номера" }}</dd>
+            </div>
+            <div>
+              <dt>Операция</dt>
+              <dd>{{ workerAssignmentStatusConfirm.timer.label }}</dd>
+            </div>
+          </dl>
+          <p class="confirm-modal__description">
+            {{ workerAssignmentStatusConfirmDescription }}
+          </p>
+        </div>
+
+        <div class="confirm-modal__actions">
+          <button
+            type="button"
+            class="ghost-button"
+            :disabled="workerTimerSubmitting"
+            @click="closeWorkerAssignmentStatusConfirm"
+          >
+            <span class="button-content">
+              <span class="button-icon button-icon--close" aria-hidden="true" />
+              <span>Отменить</span>
+            </span>
+          </button>
+          <button
+            type="button"
+            :class="workerAssignmentStatusConfirm.status === 'hidden'
+              ? 'ghost-button ghost-button--danger confirm-modal__delete'
+              : 'ghost-button'"
+            :disabled="workerTimerSubmitting"
+            @click="void confirmWorkerAssignmentStatusChange()"
+          >
+            <span class="button-content">
+              <span
+                class="button-icon"
+                :class="workerAssignmentStatusConfirmIcon"
+                aria-hidden="true"
+              />
+              <span>{{ workerAssignmentStatusConfirmLabel }}</span>
             </span>
           </button>
         </div>
@@ -7714,30 +8842,6 @@ h2 {
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
-.worker-visibility-toolbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 14px;
-  flex-wrap: wrap;
-}
-
-.worker-visibility-toolbar__toggle {
-  align-self: center;
-}
-
-.worker-hidden-counter {
-  display: inline-flex;
-  align-items: center;
-  min-height: 46px;
-  padding: 12px 14px;
-  border-radius: 14px;
-  background: var(--color-surface-alt);
-  border: 1px solid var(--color-border);
-  color: var(--color-text-secondary);
-  font-weight: 700;
-}
-
 .worker-groups {
   display: grid;
   gap: 18px;
@@ -7752,21 +8856,8 @@ h2 {
   border: 1px solid var(--color-border);
 }
 
-.worker-group--hidden {
-  opacity: 0.72;
-}
-
 .worker-group__head {
   width: 100%;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-}
-
-.worker-group__toggle {
-  min-width: 0;
-  flex: 1 1 auto;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -7779,7 +8870,7 @@ h2 {
   text-align: left;
 }
 
-.worker-group__toggle h3 {
+.worker-group__head h3 {
   margin: 0;
   color: var(--color-text);
   font-size: 1.05rem;
@@ -7789,18 +8880,6 @@ h2 {
   display: inline-flex;
   align-items: center;
   gap: 12px;
-  min-width: 0;
-}
-
-.worker-group__title h3 {
-  overflow-wrap: anywhere;
-}
-
-.worker-group__hidden-toggle {
-  min-height: 40px;
-  flex: 0 0 auto;
-  align-self: center;
-  padding: 8px 12px;
 }
 
 .worker-group__chevron {
@@ -8145,6 +9224,53 @@ h2 {
   font-family: "Sora", "Inter", sans-serif;
 }
 
+.worker-filter-toolbar {
+  grid-template-columns: minmax(220px, 320px);
+  margin-top: 18px;
+}
+
+.worker-filter-select {
+  min-width: 0;
+}
+
+.worker-status-filter {
+  width: 100%;
+}
+
+.worker-status-filter .worker-filter-select {
+  padding-right: 44px;
+}
+
+.worker-status-filter__chevron {
+  position: absolute;
+  top: 50%;
+  right: 16px;
+  width: 8px;
+  height: 8px;
+  border-right: 2px solid var(--color-text-secondary);
+  border-bottom: 2px solid var(--color-text-secondary);
+  pointer-events: none;
+  transform: translateY(-65%) rotate(45deg);
+}
+
+.worker-status-filter__dropdown {
+  z-index: 30;
+}
+
+.worker-operation-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+}
+
+.worker-operation-row__actions {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  justify-content: flex-end;
+}
+
 .modal__head {
   margin-bottom: 22px;
 }
@@ -8244,6 +9370,57 @@ h2 {
 
 .action-link--danger:hover {
   color: #a84d4d;
+}
+
+.sort-header-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 28px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-weight: 800;
+  text-align: left;
+  cursor: pointer;
+}
+
+.sort-header-button__icon {
+  position: relative;
+  width: 10px;
+  height: 14px;
+  flex: 0 0 10px;
+  opacity: 0.42;
+}
+
+.sort-header-button__icon::before,
+.sort-header-button__icon::after {
+  content: "";
+  position: absolute;
+  left: 1px;
+  border-left: 4px solid transparent;
+  border-right: 4px solid transparent;
+}
+
+.sort-header-button__icon::before {
+  top: 0;
+  border-bottom: 5px solid currentColor;
+}
+
+.sort-header-button__icon::after {
+  bottom: 0;
+  border-top: 5px solid currentColor;
+}
+
+.sort-header-button--active .sort-header-button__icon {
+  opacity: 1;
+}
+
+.sort-header-button__icon--asc::after,
+.sort-header-button__icon--desc::before {
+  opacity: 0.24;
 }
 
 .toolbar {
@@ -8390,6 +9567,15 @@ h2 {
 }
 
 .text-input--with-clear {
+  padding-right: 52px;
+}
+
+.text-input--selectlike {
+  cursor: pointer;
+}
+
+.operation-input--with-dropdown,
+.operation-input--with-action {
   padding-right: 52px;
 }
 
@@ -9162,6 +10348,7 @@ h2 {
 .assignment-list {
   display: grid;
   gap: 12px;
+  min-width: 0;
 }
 
 .assignment-row {
@@ -9176,18 +10363,23 @@ h2 {
 }
 
 .assignment-row__label {
+  min-width: 0;
   font-weight: 600;
   color: var(--color-text);
   line-height: 1.5;
+  overflow-wrap: anywhere;
 }
 
 .assignment-row__control {
   display: grid;
   gap: 8px;
+  min-width: 0;
 }
 
 .assignment-input-wrap {
   position: relative;
+  min-width: 0;
+  width: 100%;
 }
 
 .assignment-dropdown {
@@ -9199,6 +10391,9 @@ h2 {
   display: grid;
   gap: 4px;
   max-height: min(280px, 40dvh);
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
   padding: 8px;
   overflow-y: auto;
   border: 1px solid var(--color-border);
@@ -10206,6 +11401,25 @@ h2 {
     overflow: visible;
     padding-right: 0;
   }
+
+  .assignment-row {
+    grid-template-columns: minmax(0, 1fr);
+    min-width: 0;
+    overflow: visible;
+  }
+
+  .assignment-row__control,
+  .assignment-input-wrap {
+    min-width: 0;
+    width: 100%;
+  }
+
+  .assignment-dropdown {
+    left: 0;
+    right: auto;
+    width: 100%;
+    max-width: calc(100vw - 60px);
+  }
 }
 
 @media (max-width: 1999px) {
@@ -10399,27 +11613,6 @@ h2 {
     grid-template-columns: 1fr;
   }
 
-  .worker-visibility-toolbar,
-  .worker-group__head,
-  .worker-group__toggle {
-    align-items: stretch;
-    flex-direction: column;
-  }
-
-  .worker-hidden-counter,
-  .worker-visibility-toolbar__toggle,
-  .worker-group__hidden-toggle {
-    width: 100%;
-  }
-
-  .worker-group__toggle {
-    gap: 12px;
-  }
-
-  .worker-group__chevron {
-    align-self: flex-start;
-  }
-
   .worker-timer-button--operation {
     grid-template-columns: 1fr;
     align-items: start;
@@ -10432,6 +11625,23 @@ h2 {
 
   .worker-timer-button--operation .worker-timer-button__value {
     justify-self: start;
+  }
+
+  .worker-filter-toolbar {
+    grid-template-columns: 1fr;
+  }
+
+  .worker-filter-select {
+    width: 100%;
+  }
+
+  .worker-operation-row {
+    grid-template-columns: 1fr;
+    gap: 8px;
+  }
+
+  .worker-operation-row__actions {
+    justify-content: flex-start;
   }
 
   .subtabs {

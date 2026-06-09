@@ -11,7 +11,11 @@ class SortDirection(StrEnum):
 class WorkOrderSortField(StrEnum):
     CREATED = "created"
     COMPLETED = "completed"
+    DEFECT = "defect"
     NAME = "name"
+    ORDER_NUMBER = "order_number"
+    QUALITY_CONTROL = "quality_control"
+    TAKEN = "taken"
 
 
 class WorkOrderStatusFilter(StrEnum):
@@ -21,6 +25,12 @@ class WorkOrderStatusFilter(StrEnum):
     QUALITY_CONTROL = "quality_control"
     COMPLETED = "completed"
     DELETED = "deleted"
+
+
+class WorkerAssignmentStatusFilter(StrEnum):
+    IN_WORK = "in_work"
+    HIDDEN = "hidden"
+    COMPLETED = "completed"
 
 
 class WorkOrderAssignmentCreate(BaseModel):
@@ -36,6 +46,13 @@ class WorkOrderAssignmentRead(BaseModel):
     operation_name: str
     worker_user_id: int | None
     worker_user_name: str | None
+    worker_status: WorkerAssignmentStatusFilter = WorkerAssignmentStatusFilter.IN_WORK
+    worker_hidden_at: int | None = None
+    worker_completed_at: int | None = None
+
+
+class WorkOrderAssignmentWorkerStatusUpdate(BaseModel):
+    status: WorkerAssignmentStatusFilter
 
 
 class WorkOrderCreate(BaseModel):
@@ -80,10 +97,6 @@ class WorkOrderTakenStatusUpdate(BaseModel):
 
 class WorkOrderDeletedStatusUpdate(BaseModel):
     is_deleted: bool
-
-
-class WorkOrderVisibilityUpdate(BaseModel):
-    hidden: bool
 
 
 class WorkOrderListItem(BaseModel):
@@ -140,12 +153,6 @@ class WorkOrderDetail(BaseModel):
     completed_at: int | None
     deleted_at: int | None
     assignments: list[WorkOrderAssignmentRead] = Field(default_factory=list)
-    hidden: bool = False
-
-
-class WorkerAssignedWorkOrderList(BaseModel):
-    items: list[WorkOrderDetail]
-    hidden_count: int
 
 
 class WorkOrderTimeBreakdownItem(BaseModel):

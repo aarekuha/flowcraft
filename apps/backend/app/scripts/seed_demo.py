@@ -8,6 +8,7 @@ from sqlalchemy import delete
 from app.core.database import SessionLocal
 from app.models.auth_session import AuthSession
 from app.models.operation import Operation
+from app.models.operation_catalog import OperationCatalogEntry
 from app.models.product import Product
 from app.models.user import User
 
@@ -32,11 +33,17 @@ def main() -> None:
     try:
         session.execute(delete(AuthSession))
         session.execute(delete(Operation))
+        session.execute(delete(OperationCatalogEntry))
         session.execute(delete(Product))
         session.execute(delete(User))
 
         base_timestamp = datetime(2026, 4, 21, 8, 0, tzinfo=UTC)
         author_users = create_seed_users(session, specs, base_timestamp)
+        operation_catalog_entries = create_operation_catalog_entries(
+            session,
+            specs,
+            base_timestamp,
+        )
 
         for index, spec in enumerate(specs):
             product = Product(
@@ -58,6 +65,7 @@ def main() -> None:
                         payload=operation,
                         sort_order=sort_order,
                         product=product,
+                        operation_catalog_entries=operation_catalog_entries,
                     )
                 )
 
@@ -67,6 +75,45 @@ def main() -> None:
         print(f"Seed completed. Recreated {len(specs)} products.")
     finally:
         session.close()
+
+
+def create_operation_catalog_entries(
+    session,
+    specs: list[ProductSeedSpec],
+    base_timestamp: datetime,
+) -> dict[str, OperationCatalogEntry]:
+    operation_names: set[str] = set()
+    for spec in specs:
+        collect_operation_names(
+            build_operations(spec.category, spec.variant),
+            operation_names,
+        )
+
+    operation_catalog_entries: dict[str, OperationCatalogEntry] = {}
+    for index, name in enumerate(sorted(operation_names)):
+        timestamp = int(
+            (base_timestamp - timedelta(days=10, minutes=index)).timestamp() * 1000
+        )
+        entry = OperationCatalogEntry(
+            name=name,
+            is_active=True,
+            created_at=timestamp,
+            updated_at=timestamp,
+        )
+        session.add(entry)
+        operation_catalog_entries[name] = entry
+
+    session.flush()
+    return operation_catalog_entries
+
+
+def collect_operation_names(
+    operations: list[OperationSeed],
+    names: set[str],
+) -> None:
+    for operation in operations:
+        names.add(str(operation["name"]))
+        collect_operation_names(operation.get("children", []), names)
 
 
 def create_seed_users(
@@ -93,7 +140,9 @@ def create_seed_users(
     admin_user.author_user_id = admin_user.id
 
     for index, author_name in enumerate(author_names):
-        timestamp = int((base_timestamp - timedelta(days=30 - index)).timestamp() * 1000)
+        timestamp = int(
+            (base_timestamp - timedelta(days=30 - index)).timestamp() * 1000
+        )
         user = User(
             name=author_name,
             phone=f"+7999000{index + 1:04d}",
@@ -114,56 +163,266 @@ def create_seed_users(
 
 def build_product_specs() -> list[ProductSeedSpec]:
     specs = [
-        ProductSeedSpec("Кошелек City Bifold", "1.0", "wallet", "Марина Волкова", True, "base"),
-        ProductSeedSpec("Кошелек City Bifold", "1.1", "wallet", "Марина Волкова", True, "rfid"),
-        ProductSeedSpec("Кошелек City Bifold", "2.0", "wallet", "Марина Волкова", False, "hidden-pocket"),
-        ProductSeedSpec("Кошелек Travel Long", "1.0", "wallet", "Антон Беляев", True, "base"),
-        ProductSeedSpec("Кошелек Travel Long", "1.2", "wallet", "Антон Беляев", True, "zip-pocket"),
-        ProductSeedSpec("Портмоне Classic Fold", "1.0", "wallet", "Ольга Левина", True, "base"),
-        ProductSeedSpec("Портмоне Classic Fold", "1.1", "wallet", "Ольга Левина", False, "double-edge"),
-        ProductSeedSpec("Кардхолдер Slim Pocket", "1.0", "cardholder", "Марина Волкова", True, "base"),
-        ProductSeedSpec("Кардхолдер Slim Pocket", "1.1", "cardholder", "Марина Волкова", True, "thumb-slot"),
-        ProductSeedSpec("Кардхолдер Slim Pocket", "1.2", "cardholder", "Марина Волкова", False, "pull-tab"),
-        ProductSeedSpec("Кардхолдер Magnetic Pass", "1.0", "cardholder", "Дмитрий Орлов", True, "base"),
-        ProductSeedSpec("Кардхолдер Magnetic Pass", "2.0", "cardholder", "Дмитрий Орлов", False, "magnet"),
-        ProductSeedSpec("Обложка на паспорт Heritage", "1.0", "cover", "Ольга Левина", True, "base"),
-        ProductSeedSpec("Обложка на паспорт Heritage", "1.1", "cover", "Ольга Левина", True, "pen-loop"),
-        ProductSeedSpec("Обложка для документов Road Case", "1.0", "cover", "Антон Беляев", True, "base"),
-        ProductSeedSpec("Ремень Classic 35", "1.0", "belt", "Илья Сергеев", True, "base"),
-        ProductSeedSpec("Ремень Classic 35", "1.1", "belt", "Илья Сергеев", True, "stitched-edge"),
-        ProductSeedSpec("Ремень Classic 35", "1.2", "belt", "Илья Сергеев", False, "double-keeper"),
-        ProductSeedSpec("Ремень Work Line 40", "1.0", "belt", "Наталья Воронова", True, "base"),
-        ProductSeedSpec("Ремень Work Line 40", "2.0", "belt", "Наталья Воронова", False, "chicago-screws"),
-        ProductSeedSpec("Ремень Casual Edge 30", "1.0", "belt", "Наталья Воронова", True, "base"),
-        ProductSeedSpec("Сумка Saddle Mini", "1.0", "bag", "Марина Волкова", True, "base"),
-        ProductSeedSpec("Сумка Saddle Mini", "1.1", "bag", "Марина Волкова", True, "magnetic-clasp"),
-        ProductSeedSpec("Сумка Shopper Daily", "1.0", "bag", "Елена Жукова", True, "base"),
-        ProductSeedSpec("Сумка Shopper Daily", "1.1", "bag", "Елена Жукова", True, "zip-pocket"),
-        ProductSeedSpec("Сумка Shopper Daily", "2.0", "bag", "Елена Жукова", False, "bag-feet"),
-        ProductSeedSpec("Сумка Crossbody Urban", "1.0", "bag", "Елена Жукова", True, "base"),
-        ProductSeedSpec("Сумка Crossbody Urban", "1.1", "bag", "Елена Жукова", False, "divider"),
-        ProductSeedSpec("Рюкзак Field Pack", "1.0", "backpack", "Антон Беляев", True, "base"),
-        ProductSeedSpec("Рюкзак Field Pack", "1.1", "backpack", "Антон Беляев", True, "laptop-sleeve"),
-        ProductSeedSpec("Рюкзак Commuter Pack", "1.0", "backpack", "Антон Беляев", True, "organizer"),
-        ProductSeedSpec("Папка для ноутбука Office Sleeve", "1.0", "sleeve", "Ольга Левина", True, "base"),
-        ProductSeedSpec("Папка для ноутбука Office Sleeve", "1.1", "sleeve", "Ольга Левина", False, "magnetic-closure"),
-        ProductSeedSpec("Чехол для планшета Workshop Case", "1.0", "sleeve", "Ольга Левина", True, "base"),
-        ProductSeedSpec("Ключница Clasp Key Case", "1.0", "accessory", "Дмитрий Орлов", True, "base"),
-        ProductSeedSpec("Ключница Clasp Key Case", "1.1", "accessory", "Дмитрий Орлов", True, "key-ring"),
-        ProductSeedSpec("Несессер Travel Kit", "1.0", "bag", "Елена Жукова", True, "base"),
-        ProductSeedSpec("Несессер Travel Kit", "1.1", "bag", "Елена Жукова", True, "zip-pocket"),
-        ProductSeedSpec("Несессер Travel Kit", "1.2", "bag", "Елена Жукова", False, "waterproof-lining"),
-        ProductSeedSpec("Фартук Leather Apron Pro", "1.0", "apron", "Наталья Воронова", True, "base"),
-        ProductSeedSpec("Фартук Leather Apron Pro", "1.1", "apron", "Наталья Воронова", True, "chest-pocket"),
-        ProductSeedSpec("Кобура Tool Holster", "1.0", "holster", "Илья Сергеев", True, "base"),
-        ProductSeedSpec("Браслет Cuff Line", "1.0", "bracelet", "Дмитрий Орлов", True, "base"),
-        ProductSeedSpec("Браслет Cuff Line", "1.1", "bracelet", "Дмитрий Орлов", False, "double-snap"),
-        ProductSeedSpec("Косметичка Mini Pouch", "1.0", "bag", "Елена Жукова", True, "base"),
-        ProductSeedSpec("Косметичка Mini Pouch", "1.1", "bag", "Елена Жукова", True, "zip-pocket"),
-        ProductSeedSpec("Чехол для очков Optic Case", "1.0", "accessory", "Ольга Левина", True, "felt-lining"),
-        ProductSeedSpec("Визитница Desk Holder", "1.0", "cardholder", "Марина Волкова", True, "thumb-slot"),
-        ProductSeedSpec("Чехол для ножа Knife Sheath", "1.0", "holster", "Илья Сергеев", True, "base"),
-        ProductSeedSpec("Чехол для ножа Knife Sheath", "1.1", "holster", "Илья Сергеев", False, "welt"),
+        ProductSeedSpec(
+            "Кошелек City Bifold", "1.0", "wallet", "Марина Волкова", True, "base"
+        ),
+        ProductSeedSpec(
+            "Кошелек City Bifold", "1.1", "wallet", "Марина Волкова", True, "rfid"
+        ),
+        ProductSeedSpec(
+            "Кошелек City Bifold",
+            "2.0",
+            "wallet",
+            "Марина Волкова",
+            False,
+            "hidden-pocket",
+        ),
+        ProductSeedSpec(
+            "Кошелек Travel Long", "1.0", "wallet", "Антон Беляев", True, "base"
+        ),
+        ProductSeedSpec(
+            "Кошелек Travel Long", "1.2", "wallet", "Антон Беляев", True, "zip-pocket"
+        ),
+        ProductSeedSpec(
+            "Портмоне Classic Fold", "1.0", "wallet", "Ольга Левина", True, "base"
+        ),
+        ProductSeedSpec(
+            "Портмоне Classic Fold",
+            "1.1",
+            "wallet",
+            "Ольга Левина",
+            False,
+            "double-edge",
+        ),
+        ProductSeedSpec(
+            "Кардхолдер Slim Pocket",
+            "1.0",
+            "cardholder",
+            "Марина Волкова",
+            True,
+            "base",
+        ),
+        ProductSeedSpec(
+            "Кардхолдер Slim Pocket",
+            "1.1",
+            "cardholder",
+            "Марина Волкова",
+            True,
+            "thumb-slot",
+        ),
+        ProductSeedSpec(
+            "Кардхолдер Slim Pocket",
+            "1.2",
+            "cardholder",
+            "Марина Волкова",
+            False,
+            "pull-tab",
+        ),
+        ProductSeedSpec(
+            "Кардхолдер Magnetic Pass",
+            "1.0",
+            "cardholder",
+            "Дмитрий Орлов",
+            True,
+            "base",
+        ),
+        ProductSeedSpec(
+            "Кардхолдер Magnetic Pass",
+            "2.0",
+            "cardholder",
+            "Дмитрий Орлов",
+            False,
+            "magnet",
+        ),
+        ProductSeedSpec(
+            "Обложка на паспорт Heritage", "1.0", "cover", "Ольга Левина", True, "base"
+        ),
+        ProductSeedSpec(
+            "Обложка на паспорт Heritage",
+            "1.1",
+            "cover",
+            "Ольга Левина",
+            True,
+            "pen-loop",
+        ),
+        ProductSeedSpec(
+            "Обложка для документов Road Case",
+            "1.0",
+            "cover",
+            "Антон Беляев",
+            True,
+            "base",
+        ),
+        ProductSeedSpec(
+            "Ремень Classic 35", "1.0", "belt", "Илья Сергеев", True, "base"
+        ),
+        ProductSeedSpec(
+            "Ремень Classic 35", "1.1", "belt", "Илья Сергеев", True, "stitched-edge"
+        ),
+        ProductSeedSpec(
+            "Ремень Classic 35", "1.2", "belt", "Илья Сергеев", False, "double-keeper"
+        ),
+        ProductSeedSpec(
+            "Ремень Work Line 40", "1.0", "belt", "Наталья Воронова", True, "base"
+        ),
+        ProductSeedSpec(
+            "Ремень Work Line 40",
+            "2.0",
+            "belt",
+            "Наталья Воронова",
+            False,
+            "chicago-screws",
+        ),
+        ProductSeedSpec(
+            "Ремень Casual Edge 30", "1.0", "belt", "Наталья Воронова", True, "base"
+        ),
+        ProductSeedSpec(
+            "Сумка Saddle Mini", "1.0", "bag", "Марина Волкова", True, "base"
+        ),
+        ProductSeedSpec(
+            "Сумка Saddle Mini", "1.1", "bag", "Марина Волкова", True, "magnetic-clasp"
+        ),
+        ProductSeedSpec(
+            "Сумка Shopper Daily", "1.0", "bag", "Елена Жукова", True, "base"
+        ),
+        ProductSeedSpec(
+            "Сумка Shopper Daily", "1.1", "bag", "Елена Жукова", True, "zip-pocket"
+        ),
+        ProductSeedSpec(
+            "Сумка Shopper Daily", "2.0", "bag", "Елена Жукова", False, "bag-feet"
+        ),
+        ProductSeedSpec(
+            "Сумка Crossbody Urban", "1.0", "bag", "Елена Жукова", True, "base"
+        ),
+        ProductSeedSpec(
+            "Сумка Crossbody Urban", "1.1", "bag", "Елена Жукова", False, "divider"
+        ),
+        ProductSeedSpec(
+            "Рюкзак Field Pack", "1.0", "backpack", "Антон Беляев", True, "base"
+        ),
+        ProductSeedSpec(
+            "Рюкзак Field Pack",
+            "1.1",
+            "backpack",
+            "Антон Беляев",
+            True,
+            "laptop-sleeve",
+        ),
+        ProductSeedSpec(
+            "Рюкзак Commuter Pack", "1.0", "backpack", "Антон Беляев", True, "organizer"
+        ),
+        ProductSeedSpec(
+            "Папка для ноутбука Office Sleeve",
+            "1.0",
+            "sleeve",
+            "Ольга Левина",
+            True,
+            "base",
+        ),
+        ProductSeedSpec(
+            "Папка для ноутбука Office Sleeve",
+            "1.1",
+            "sleeve",
+            "Ольга Левина",
+            False,
+            "magnetic-closure",
+        ),
+        ProductSeedSpec(
+            "Чехол для планшета Workshop Case",
+            "1.0",
+            "sleeve",
+            "Ольга Левина",
+            True,
+            "base",
+        ),
+        ProductSeedSpec(
+            "Ключница Clasp Key Case", "1.0", "accessory", "Дмитрий Орлов", True, "base"
+        ),
+        ProductSeedSpec(
+            "Ключница Clasp Key Case",
+            "1.1",
+            "accessory",
+            "Дмитрий Орлов",
+            True,
+            "key-ring",
+        ),
+        ProductSeedSpec(
+            "Несессер Travel Kit", "1.0", "bag", "Елена Жукова", True, "base"
+        ),
+        ProductSeedSpec(
+            "Несессер Travel Kit", "1.1", "bag", "Елена Жукова", True, "zip-pocket"
+        ),
+        ProductSeedSpec(
+            "Несессер Travel Kit",
+            "1.2",
+            "bag",
+            "Елена Жукова",
+            False,
+            "waterproof-lining",
+        ),
+        ProductSeedSpec(
+            "Фартук Leather Apron Pro", "1.0", "apron", "Наталья Воронова", True, "base"
+        ),
+        ProductSeedSpec(
+            "Фартук Leather Apron Pro",
+            "1.1",
+            "apron",
+            "Наталья Воронова",
+            True,
+            "chest-pocket",
+        ),
+        ProductSeedSpec(
+            "Кобура Tool Holster", "1.0", "holster", "Илья Сергеев", True, "base"
+        ),
+        ProductSeedSpec(
+            "Браслет Cuff Line", "1.0", "bracelet", "Дмитрий Орлов", True, "base"
+        ),
+        ProductSeedSpec(
+            "Браслет Cuff Line",
+            "1.1",
+            "bracelet",
+            "Дмитрий Орлов",
+            False,
+            "double-snap",
+        ),
+        ProductSeedSpec(
+            "Косметичка Mini Pouch", "1.0", "bag", "Елена Жукова", True, "base"
+        ),
+        ProductSeedSpec(
+            "Косметичка Mini Pouch", "1.1", "bag", "Елена Жукова", True, "zip-pocket"
+        ),
+        ProductSeedSpec(
+            "Чехол для очков Optic Case",
+            "1.0",
+            "accessory",
+            "Ольга Левина",
+            True,
+            "felt-lining",
+        ),
+        ProductSeedSpec(
+            "Визитница Desk Holder",
+            "1.0",
+            "cardholder",
+            "Марина Волкова",
+            True,
+            "thumb-slot",
+        ),
+        ProductSeedSpec(
+            "Чехол для ножа Knife Sheath",
+            "1.0",
+            "holster",
+            "Илья Сергеев",
+            True,
+            "base",
+        ),
+        ProductSeedSpec(
+            "Чехол для ножа Knife Sheath",
+            "1.1",
+            "holster",
+            "Илья Сергеев",
+            False,
+            "welt",
+        ),
     ]
 
     if len(specs) != 50:
@@ -280,7 +539,9 @@ def build_operations(category: str, variant: str) -> list[OperationSeed]:
         elif variant == "double-keeper":
             append_to_group(operations, "Фурнитура", "Изготовление второй шлевки")
         elif variant == "chicago-screws":
-            replace_leaf(operations, "Установка пряжки", "Установка пряжки на Chicago screws")
+            replace_leaf(
+                operations, "Установка пряжки", "Установка пряжки на Chicago screws"
+            )
         return operations
 
     if category == "bag":
@@ -305,7 +566,9 @@ def build_operations(category: str, variant: str) -> list[OperationSeed]:
             ),
         ]
         if variant == "zip-pocket":
-            append_to_group(operations, "Подсборки", "Сборка внутреннего кармана на молнии")
+            append_to_group(
+                operations, "Подсборки", "Сборка внутреннего кармана на молнии"
+            )
         elif variant == "magnetic-clasp":
             append_to_group(operations, "Основная сборка", "Установка магнитного замка")
         elif variant == "bag-feet":
@@ -338,7 +601,9 @@ def build_operations(category: str, variant: str) -> list[OperationSeed]:
             ),
         ]
         if variant == "laptop-sleeve":
-            append_to_group(operations, "Подсборки", "Сборка внутреннего ноутбучного кармана")
+            append_to_group(
+                operations, "Подсборки", "Сборка внутреннего ноутбучного кармана"
+            )
         elif variant == "organizer":
             append_to_group(operations, "Подсборки", "Сборка органайзера для мелочей")
         return operations
@@ -452,7 +717,11 @@ def build_operations(category: str, variant: str) -> list[OperationSeed]:
         if variant == "key-ring":
             append_to_group(operations, "Сборка", "Установка кольца для ключей")
         elif variant == "felt-lining":
-            replace_leaf(operations, "Крой внутренних элементов", "Крой и вклейка фетровой подкладки")
+            replace_leaf(
+                operations,
+                "Крой внутренних элементов",
+                "Крой и вклейка фетровой подкладки",
+            )
         return operations
 
     raise ValueError(f"Unknown product category: {category}")
@@ -498,9 +767,13 @@ def build_operation_tree(
     payload: OperationSeed,
     sort_order: int,
     product: Product,
+    operation_catalog_entries: dict[str, OperationCatalogEntry],
 ) -> Operation:
+    name = str(payload["name"])
+    catalog_entry = operation_catalog_entries[name]
     operation = Operation(
-        name=str(payload["name"]),
+        operation_catalog_entry_id=catalog_entry.id,
+        name=catalog_entry.name,
         sort_order=sort_order,
         product=product,
     )
@@ -512,6 +785,7 @@ def build_operation_tree(
                 payload=child,
                 sort_order=child_index,
                 product=product,
+                operation_catalog_entries=operation_catalog_entries,
             )
         )
 
