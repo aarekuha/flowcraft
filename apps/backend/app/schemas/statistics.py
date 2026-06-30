@@ -49,6 +49,8 @@ class StatisticsWorkerRead(BaseModel):
 
 class StatisticsOverviewRead(BaseModel):
     days: int
+    date_from: str
+    date_to: str
     generated_at: int
     kpis: StatisticsKpiRead
     daily_breakdown: list[StatisticsDailyRead]
