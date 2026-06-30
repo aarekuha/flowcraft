@@ -1,4 +1,10 @@
-import { apiFetch, handleJsonResponse } from "@/shared/api/http";
+import { apiFetch, createRequestError, handleJsonResponse } from "@/shared/api/http";
+
+export type StatisticsPeriodParams = {
+  days?: number;
+  dateFrom?: string;
+  dateTo?: string;
+};
 
 export type StatisticsKpi = {
   totalTrackedMs: number;
@@ -48,6 +54,8 @@ export type StatisticsWorkerItem = {
 
 export type StatisticsOverview = {
   days: number;
+  dateFrom: string;
+  dateTo: string;
   generatedAtTs: number;
   kpis: StatisticsKpi;
   dailyBreakdown: StatisticsDailyItem[];
@@ -105,6 +113,8 @@ type StatisticsWorkerItemApi = {
 
 type StatisticsOverviewApi = {
   days: number;
+  date_from: string;
+  date_to: string;
   generated_at: number;
   kpis: StatisticsKpiApi;
   daily_breakdown: StatisticsDailyItemApi[];
@@ -114,14 +124,36 @@ type StatisticsOverviewApi = {
   idle_by_day: StatisticsDailyItemApi[];
 };
 
-export async function fetchStatisticsOverview(days: number): Promise<StatisticsOverview> {
-  const response = await apiFetch(`/api/statistics/overview?days=${days}`);
+export async function fetchStatisticsOverview(
+  period: number | StatisticsPeriodParams,
+): Promise<StatisticsOverview> {
+  const response = await apiFetch(
+    `/api/statistics/overview?${buildStatisticsQuery(period)}`,
+  );
   return handleJsonResponse<StatisticsOverviewApi>(response).then(mapOverview);
+}
+
+export async function downloadStatisticsExport(
+  period: number | StatisticsPeriodParams,
+): Promise<{ blob: Blob; filename: string }> {
+  const response = await apiFetch(
+    `/api/statistics/export.xlsx?${buildStatisticsQuery(period)}`,
+  );
+  if (!response.ok) {
+    throw await createRequestError(response);
+  }
+
+  return {
+    blob: await response.blob(),
+    filename: getDownloadFilename(response.headers.get("Content-Disposition")),
+  };
 }
 
 function mapOverview(overview: StatisticsOverviewApi): StatisticsOverview {
   return {
     days: overview.days,
+    dateFrom: overview.date_from,
+    dateTo: overview.date_to,
     generatedAtTs: overview.generated_at,
     kpis: {
       totalTrackedMs: overview.kpis.total_tracked_ms,
@@ -159,6 +191,33 @@ function mapOverview(overview: StatisticsOverviewApi): StatisticsOverview {
     })),
     idleByDay: overview.idle_by_day.map(mapDailyItem),
   };
+}
+
+function buildStatisticsQuery(period: number | StatisticsPeriodParams): string {
+  const params = new URLSearchParams();
+
+  if (typeof period === "number") {
+    params.set("days", String(period));
+    return params.toString();
+  }
+
+  if (period.dateFrom && period.dateTo) {
+    params.set("date_from", period.dateFrom);
+    params.set("date_to", period.dateTo);
+    return params.toString();
+  }
+
+  params.set("days", String(period.days ?? 14));
+  return params.toString();
+}
+
+function getDownloadFilename(contentDisposition: string | null): string {
+  if (!contentDisposition) {
+    return "flowcraft-statistics.xlsx";
+  }
+
+  const match = /filename="?(?<filename>[^";]+)"?/i.exec(contentDisposition);
+  return match?.groups?.filename ?? "flowcraft-statistics.xlsx";
 }
 
 function mapDailyItem(item: StatisticsDailyItemApi): StatisticsDailyItem {

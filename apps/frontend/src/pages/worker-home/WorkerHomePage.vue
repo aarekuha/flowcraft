@@ -64,11 +64,13 @@ import {
   type ProductSummary,
 } from "@/shared/api/products";
 import {
+  downloadStatisticsExport,
   fetchStatisticsOverview,
   type StatisticsDailyItem,
   type StatisticsOperationItem,
   type StatisticsOrderItem,
   type StatisticsOverview,
+  type StatisticsPeriodParams,
   type StatisticsWorkerItem,
 } from "@/shared/api/statistics";
 import {
@@ -103,6 +105,7 @@ type ProductSort =
   | "name-desc"
   | "version-asc"
   | "version-desc";
+type StatisticsPeriodMode = "preset" | "custom";
 type WorkOrderSort = `${WorkOrderSortBy}-${WorkOrderSortDirection}`;
 type WorkOrderActionConfirmKind =
   | "send_to_quality_control"
@@ -380,8 +383,12 @@ const workerTimers = ref<Record<string, WorkerTimerState>>({});
 const workerTimerNow = ref(Date.now());
 const workerGroupExpanded = ref<Record<string, boolean>>({});
 const isSmartphoneViewport = ref(false);
+const statisticsPeriodMode = ref<StatisticsPeriodMode>("preset");
 const statisticsPeriodDays = ref<(typeof statisticsPeriodOptions)[number]>(14);
+const statisticsDateFrom = ref(getDateInputValueForDays(14));
+const statisticsDateTo = ref(getDateInputValue(Date.now()));
 const statisticsLoading = ref(false);
+const statisticsExportLoading = ref(false);
 const statisticsError = ref("");
 const statisticsOverview = ref<StatisticsOverview | null>(null);
 
@@ -462,6 +469,7 @@ const canViewStatistics = computed(
     currentSession.value?.userRoles.includes("admin") ||
     false,
 );
+const statisticsPeriodValidationError = computed(() => getStatisticsPeriodValidationError());
 const canManageWorkOrders = computed(
   () =>
     currentSession.value?.userRoles.includes("brigadier") ||
@@ -2092,11 +2100,17 @@ async function loadWorkerTimerState() {
 }
 
 async function loadStatistics() {
+  const validationError = statisticsPeriodValidationError.value;
+  if (validationError) {
+    statisticsError.value = validationError;
+    return;
+  }
+
   statisticsLoading.value = true;
   statisticsError.value = "";
 
   try {
-    statisticsOverview.value = await fetchStatisticsOverview(statisticsPeriodDays.value);
+    statisticsOverview.value = await fetchStatisticsOverview(getStatisticsPeriodParams());
   } catch (error) {
     if (isUnauthorizedError(error)) {
       redirectToAuth(getErrorMessage(error, "Требуется аутентификация."));
@@ -2105,6 +2119,30 @@ async function loadStatistics() {
     statisticsError.value = getErrorMessage(error, "Не удалось загрузить статистику.");
   } finally {
     statisticsLoading.value = false;
+  }
+}
+
+async function exportStatisticsXlsx() {
+  const validationError = statisticsPeriodValidationError.value;
+  if (validationError) {
+    statisticsError.value = validationError;
+    return;
+  }
+
+  statisticsExportLoading.value = true;
+  statisticsError.value = "";
+
+  try {
+    const { blob, filename } = await downloadStatisticsExport(getStatisticsPeriodParams());
+    triggerFileDownload(blob, filename);
+  } catch (error) {
+    if (isUnauthorizedError(error)) {
+      redirectToAuth(getErrorMessage(error, "Требуется аутентификация."));
+      return;
+    }
+    statisticsError.value = getErrorMessage(error, "Не удалось выгрузить статистику.");
+  } finally {
+    statisticsExportLoading.value = false;
   }
 }
 
@@ -3844,6 +3882,77 @@ function formatTimestamp(value: number): string {
   }).format(value);
 }
 
+function getDateInputValue(timestamp: number): string {
+  const value = new Date(timestamp);
+  const year = value.getFullYear();
+  const month = String(value.getMonth() + 1).padStart(2, "0");
+  const day = String(value.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function getDateInputValueForDays(days: number): string {
+  const value = new Date();
+  value.setDate(value.getDate() - days + 1);
+  return getDateInputValue(value.getTime());
+}
+
+function syncStatisticsDateRangeToDays(days: number) {
+  statisticsDateFrom.value = getDateInputValueForDays(days);
+  statisticsDateTo.value = getDateInputValue(Date.now());
+}
+
+function getStatisticsPeriodParams(): StatisticsPeriodParams {
+  if (statisticsPeriodMode.value === "custom") {
+    return {
+      dateFrom: statisticsDateFrom.value,
+      dateTo: statisticsDateTo.value,
+    };
+  }
+
+  return {
+    days: statisticsPeriodDays.value,
+  };
+}
+
+function getStatisticsPeriodValidationError(): string {
+  if (statisticsPeriodMode.value !== "custom") {
+    return "";
+  }
+
+  if (!statisticsDateFrom.value || !statisticsDateTo.value) {
+    return "Укажите обе даты периода.";
+  }
+
+  const startDate = new Date(`${statisticsDateFrom.value}T00:00:00`);
+  const endDate = new Date(`${statisticsDateTo.value}T00:00:00`);
+  if (Number.isNaN(startDate.getTime()) || Number.isNaN(endDate.getTime())) {
+    return "Проверьте даты периода.";
+  }
+  if (endDate < startDate) {
+    return "Дата окончания периода не может быть раньше даты начала.";
+  }
+
+  const periodDays = Math.floor(
+    (endDate.getTime() - startDate.getTime()) / 86_400_000,
+  ) + 1;
+  if (periodDays > 90) {
+    return "Период статистики не может быть больше 90 дней.";
+  }
+
+  return "";
+}
+
+function triggerFileDownload(blob: Blob, filename: string) {
+  const url = window.URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.URL.revokeObjectURL(url);
+}
+
 function readStoredTab<T extends string>(
   key: string,
   allowedValues: readonly T[],
@@ -4650,11 +4759,28 @@ function getStatisticsBarStyle(totalMs: number, chartMax: number): string {
 }
 
 async function selectStatisticsPeriod(days: (typeof statisticsPeriodOptions)[number]) {
-  if (statisticsPeriodDays.value === days && statisticsOverview.value) {
+  if (
+    statisticsPeriodMode.value === "preset" &&
+    statisticsPeriodDays.value === days &&
+    statisticsOverview.value
+  ) {
     return;
   }
 
+  statisticsPeriodMode.value = "preset";
   statisticsPeriodDays.value = days;
+  syncStatisticsDateRangeToDays(days);
+  if (canViewStatistics.value) {
+    await loadStatistics();
+  }
+}
+
+function selectCustomStatisticsPeriod() {
+  statisticsPeriodMode.value = "custom";
+}
+
+async function applyCustomStatisticsPeriod() {
+  statisticsPeriodMode.value = "custom";
   if (canViewStatistics.value) {
     await loadStatistics();
   }
@@ -6047,10 +6173,42 @@ async function handleResetUserPassword(user: UserRecord) {
                   :key="days"
                   type="button"
                   class="segmented-control__button"
-                  :class="{ 'segmented-control__button--active': statisticsPeriodDays === days }"
+                  :class="{
+                    'segmented-control__button--active':
+                      statisticsPeriodMode === 'preset' && statisticsPeriodDays === days,
+                  }"
                   @click="void selectStatisticsPeriod(days)"
                 >
                   {{ days }} дн.
+                </button>
+              </div>
+
+              <div class="statistics-date-range">
+                <label class="field statistics-date-field">
+                  <span class="field__label">С</span>
+                  <input
+                    v-model="statisticsDateFrom"
+                    type="date"
+                    class="text-input"
+                    @input="selectCustomStatisticsPeriod"
+                  />
+                </label>
+                <label class="field statistics-date-field">
+                  <span class="field__label">По</span>
+                  <input
+                    v-model="statisticsDateTo"
+                    type="date"
+                    class="text-input"
+                    @input="selectCustomStatisticsPeriod"
+                  />
+                </label>
+                <button
+                  type="button"
+                  class="ghost-button"
+                  :disabled="statisticsLoading"
+                  @click="void applyCustomStatisticsPeriod()"
+                >
+                  Показать
                 </button>
               </div>
 
@@ -6063,6 +6221,18 @@ async function handleResetUserPassword(user: UserRecord) {
                 <span class="button-content">
                   <span class="button-icon button-icon--refresh" aria-hidden="true" />
                   <span>Обновить</span>
+                </span>
+              </button>
+
+              <button
+                type="button"
+                class="primary-button"
+                :disabled="statisticsLoading || statisticsExportLoading"
+                @click="void exportStatisticsXlsx()"
+              >
+                <span class="button-content">
+                  <span class="button-icon button-icon--save" aria-hidden="true" />
+                  <span>{{ statisticsExportLoading ? "Выгрузка..." : "XLSX" }}</span>
                 </span>
               </button>
             </div>
@@ -8908,6 +9078,22 @@ h2 {
   flex-wrap: wrap;
 }
 
+.statistics-date-range {
+  display: flex;
+  align-items: end;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.statistics-date-field {
+  width: 150px;
+  gap: 6px;
+}
+
+.statistics-date-field .text-input {
+  padding: 11px 12px;
+}
+
 .statistics-kpis {
   display: grid;
   gap: 14px;
@@ -11511,6 +11697,14 @@ h2 {
   .header {
     gap: 12px;
     margin-bottom: 16px;
+  }
+
+  .statistics-date-range {
+    align-items: stretch;
+  }
+
+  .statistics-date-field {
+    width: 100%;
   }
 
   .brand-block {

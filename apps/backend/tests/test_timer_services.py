@@ -1,3 +1,7 @@
+from datetime import UTC, date, datetime
+from io import BytesIO
+from zipfile import ZipFile
+
 import pytest
 from fastapi import HTTPException
 from sqlalchemy import select
@@ -19,6 +23,16 @@ from app.schemas.statistics import StatisticsOverviewRead
 from app.schemas.timer import TimerSwitchPayload, TimerType
 from app.services.statistics_service import StatisticsService
 from app.services.timer_service import TIMER_TYPE_TO_CODE, TimerService
+
+
+def _timestamp(
+    year: int,
+    month: int,
+    day: int,
+    hour: int = 0,
+    minute: int = 0,
+) -> int:
+    return int(datetime(year, month, day, hour, minute, tzinfo=UTC).timestamp() * 1000)
 
 
 def _bootstrap_worker_graph(db_session: sessionmaker[Session]) -> tuple[int, int, int]:
@@ -321,5 +335,122 @@ def test_statistics_service_returns_overview(
         assert len(overview.daily_breakdown) >= 1
         assert len(overview.workers) >= 1
         assert overview.workers[0].user_name == "Исполнитель"
+    finally:
+        session.close()
+
+
+def test_statistics_service_returns_overview_for_date_range(
+    db_session: sessionmaker[Session],
+) -> None:
+    worker_id, order_id, operation_id = _bootstrap_worker_graph(db_session)
+    session = db_session()
+    try:
+        shift = WorkShift(
+            user_id=worker_id,
+            started_at=_timestamp(2026, 6, 1, 8),
+            ended_at=_timestamp(2026, 6, 1, 9),
+            business_date="2026-06-01",
+            created_at=_timestamp(2026, 6, 1, 8),
+        )
+        session.add(shift)
+        session.flush()
+        session.add_all(
+            [
+                TimerSession(
+                    shift_id=shift.id,
+                    user_id=worker_id,
+                    timer_type_code=TIMER_TYPE_TO_CODE[TimerType.OPERATION],
+                    order_id=order_id,
+                    operation_id=operation_id,
+                    started_at=_timestamp(2026, 6, 1, 8),
+                    ended_at=_timestamp(2026, 6, 1, 8, 2),
+                    created_at=_timestamp(2026, 6, 1, 8),
+                ),
+                TimerSession(
+                    shift_id=shift.id,
+                    user_id=worker_id,
+                    timer_type_code=TIMER_TYPE_TO_CODE[TimerType.BREAK],
+                    order_id=None,
+                    operation_id=None,
+                    started_at=_timestamp(2026, 6, 2, 8),
+                    ended_at=_timestamp(2026, 6, 2, 8, 5),
+                    created_at=_timestamp(2026, 6, 2, 8),
+                ),
+            ]
+        )
+        session.flush()
+
+        overview = StatisticsService(session).get_overview(
+            date_from=date(2026, 6, 1),
+            date_to=date(2026, 6, 1),
+        )
+
+        assert overview.days == 1
+        assert overview.date_from == "2026-06-01"
+        assert overview.date_to == "2026-06-01"
+        assert overview.kpis.operation_ms == 120_000
+        assert overview.kpis.break_ms == 0
+        assert len(overview.daily_breakdown) == 1
+    finally:
+        session.close()
+
+
+def test_statistics_service_exports_xlsx_with_minute_values(
+    db_session: sessionmaker[Session],
+) -> None:
+    worker_id, order_id, operation_id = _bootstrap_worker_graph(db_session)
+    session = db_session()
+    try:
+        shift = WorkShift(
+            user_id=worker_id,
+            started_at=_timestamp(2026, 6, 1, 8),
+            ended_at=_timestamp(2026, 6, 1, 9),
+            business_date="2026-06-01",
+            created_at=_timestamp(2026, 6, 1, 8),
+        )
+        session.add(shift)
+        session.flush()
+        session.add_all(
+            [
+                TimerSession(
+                    shift_id=shift.id,
+                    user_id=worker_id,
+                    timer_type_code=TIMER_TYPE_TO_CODE[TimerType.OPERATION],
+                    order_id=order_id,
+                    operation_id=operation_id,
+                    started_at=_timestamp(2026, 6, 1, 8),
+                    ended_at=_timestamp(2026, 6, 1, 8, 2),
+                    created_at=_timestamp(2026, 6, 1, 8),
+                ),
+                TimerSession(
+                    shift_id=shift.id,
+                    user_id=worker_id,
+                    timer_type_code=TIMER_TYPE_TO_CODE[TimerType.PREPARATION],
+                    order_id=None,
+                    operation_id=None,
+                    started_at=_timestamp(2026, 6, 1, 8, 2),
+                    ended_at=_timestamp(2026, 6, 1, 8, 3),
+                    created_at=_timestamp(2026, 6, 1, 8, 2),
+                ),
+            ]
+        )
+        session.flush()
+
+        content, filename = StatisticsService(session).build_xlsx_export(
+            date_from=date(2026, 6, 1),
+            date_to=date(2026, 6, 1),
+        )
+
+        assert filename == "flowcraft-statistics-2026-06-01_2026-06-01.xlsx"
+        with ZipFile(BytesIO(content)) as workbook:
+            assert "xl/worksheets/sheet1.xml" in workbook.namelist()
+            assert "xl/worksheets/sheet6.xml" in workbook.namelist()
+            summary = workbook.read("xl/worksheets/sheet1.xml").decode()
+            timers = workbook.read("xl/worksheets/sheet6.xml").decode()
+
+        assert "Всего учтено, мин" in summary
+        assert "<v>3.000000</v>" in summary
+        assert "Длительность, мин" in timers
+        assert "<v>2.000000</v>" in timers
     finally:
         session.close()
