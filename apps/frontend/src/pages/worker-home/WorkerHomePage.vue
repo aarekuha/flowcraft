@@ -6157,7 +6157,7 @@ async function handleResetUserPassword(user: UserRecord) {
 
       <section v-else-if="activeTab === 'stats'">
         <article class="constructor-panel statistics-panel">
-          <div class="panel-head">
+          <div class="panel-head statistics-panel__head">
             <div>
               <h2>Статистика производства</h2>
               <p class="worker-panel__subtitle">
@@ -6167,74 +6167,82 @@ async function handleResetUserPassword(user: UserRecord) {
             </div>
 
             <div class="statistics-toolbar">
-              <div class="segmented-control" role="group" aria-label="Период статистики">
-                <button
-                  v-for="days in statisticsPeriodOptions"
-                  :key="days"
-                  type="button"
-                  class="segmented-control__button"
-                  :class="{
-                    'segmented-control__button--active':
-                      statisticsPeriodMode === 'preset' && statisticsPeriodDays === days,
-                  }"
-                  @click="void selectStatisticsPeriod(days)"
+              <div class="statistics-period-control">
+                <div class="segmented-control statistics-presets" role="group" aria-label="Период статистики">
+                  <button
+                    v-for="days in statisticsPeriodOptions"
+                    :key="days"
+                    type="button"
+                    class="segmented-control__button"
+                    :class="{
+                      'segmented-control__button--active':
+                        statisticsPeriodMode === 'preset' && statisticsPeriodDays === days,
+                    }"
+                    @click="void selectStatisticsPeriod(days)"
+                  >
+                    {{ days }} дн.
+                  </button>
+                </div>
+
+                <div
+                  class="statistics-date-range"
+                  :class="{ 'statistics-date-range--active': statisticsPeriodMode === 'custom' }"
                 >
-                  {{ days }} дн.
-                </button>
+                  <label class="statistics-date-field">
+                    <span class="statistics-date-field__label">С</span>
+                    <input
+                      v-model="statisticsDateFrom"
+                      type="date"
+                      class="statistics-date-field__input"
+                      @input="selectCustomStatisticsPeriod"
+                    />
+                  </label>
+                  <span class="statistics-date-range__divider" aria-hidden="true" />
+                  <label class="statistics-date-field">
+                    <span class="statistics-date-field__label">По</span>
+                    <input
+                      v-model="statisticsDateTo"
+                      type="date"
+                      class="statistics-date-field__input"
+                      @input="selectCustomStatisticsPeriod"
+                    />
+                  </label>
+                  <button
+                    type="button"
+                    class="ghost-button statistics-date-range__apply"
+                    :disabled="statisticsLoading"
+                    @click="void applyCustomStatisticsPeriod()"
+                  >
+                    Показать
+                  </button>
+                </div>
               </div>
 
-              <div class="statistics-date-range">
-                <label class="field statistics-date-field">
-                  <span class="field__label">С</span>
-                  <input
-                    v-model="statisticsDateFrom"
-                    type="date"
-                    class="text-input"
-                    @input="selectCustomStatisticsPeriod"
-                  />
-                </label>
-                <label class="field statistics-date-field">
-                  <span class="field__label">По</span>
-                  <input
-                    v-model="statisticsDateTo"
-                    type="date"
-                    class="text-input"
-                    @input="selectCustomStatisticsPeriod"
-                  />
-                </label>
+              <div class="statistics-toolbar__actions">
                 <button
                   type="button"
-                  class="ghost-button"
+                  class="primary-button statistics-refresh-button"
                   :disabled="statisticsLoading"
-                  @click="void applyCustomStatisticsPeriod()"
+                  @click="void loadStatistics()"
                 >
-                  Показать
+                  <span class="button-content">
+                    <span class="button-icon button-icon--refresh" aria-hidden="true" />
+                    <span>Обновить</span>
+                  </span>
+                </button>
+
+                <button
+                  type="button"
+                  class="primary-button statistics-export-button"
+                  :disabled="statisticsLoading || statisticsExportLoading"
+                  @click="void exportStatisticsXlsx()"
+                >
+                  <span class="button-content">
+                    <span class="button-icon button-icon--save" aria-hidden="true" />
+                    <span>{{ statisticsExportLoading ? "Выгрузка..." : "XLSX" }}</span>
+                  </span>
                 </button>
               </div>
-
-              <button
-                type="button"
-                class="ghost-button"
-                :disabled="statisticsLoading"
-                @click="void loadStatistics()"
-              >
-                <span class="button-content">
-                  <span class="button-icon button-icon--refresh" aria-hidden="true" />
-                  <span>Обновить</span>
-                </span>
-              </button>
-
-              <button
-                type="button"
-                class="primary-button"
-                :disabled="statisticsLoading || statisticsExportLoading"
-                @click="void exportStatisticsXlsx()"
-              >
-                <span class="button-content">
-                  <span class="button-icon button-icon--save" aria-hidden="true" />
-                  <span>{{ statisticsExportLoading ? "Выгрузка..." : "XLSX" }}</span>
-                </span>
-              </button>
             </div>
           </div>
 
@@ -9071,27 +9079,114 @@ h2 {
   gap: 22px;
 }
 
+.statistics-panel__head {
+  display: grid;
+  grid-template-columns: minmax(220px, auto) minmax(0, 1fr);
+  align-items: start;
+}
+
 .statistics-toolbar {
-  display: flex;
-  align-items: center;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
   gap: 12px;
-  flex-wrap: wrap;
+  width: 100%;
+  min-width: 0;
+}
+
+.statistics-period-control {
+  display: grid;
+  grid-template-columns: auto auto;
+  align-items: center;
+  justify-content: end;
+  gap: 10px;
+  min-width: 0;
+}
+
+.statistics-presets {
+  flex: 0 0 auto;
 }
 
 .statistics-date-range {
-  display: flex;
-  align-items: end;
-  gap: 10px;
-  flex-wrap: wrap;
+  display: inline-grid;
+  grid-template-columns: minmax(152px, auto) auto minmax(152px, auto) auto;
+  align-items: center;
+  gap: 8px;
+  justify-self: end;
+  min-width: 0;
+  padding: 6px;
+  border: 1px solid var(--color-border);
+  border-radius: 16px;
+  background: var(--color-surface);
+  transition:
+    border-color 0.18s ease,
+    box-shadow 0.18s ease;
+}
+
+.statistics-date-range--active {
+  border-color: rgba(47, 110, 163, 0.42);
+  box-shadow: 0 10px 22px rgba(47, 110, 163, 0.08);
 }
 
 .statistics-date-field {
-  width: 150px;
-  gap: 6px;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding-left: 8px;
 }
 
-.statistics-date-field .text-input {
-  padding: 11px 12px;
+.statistics-date-field__label {
+  color: var(--color-text-secondary);
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+
+.statistics-date-field__input {
+  width: 152px;
+  min-height: 42px;
+  border: 0;
+  border-radius: 10px;
+  padding: 0 10px;
+  background: var(--color-surface-alt);
+  color: var(--color-text);
+  font: inherit;
+  font-weight: 700;
+}
+
+.statistics-date-field__input:focus-visible {
+  outline: 3px solid rgba(47, 110, 163, 0.18);
+  outline-offset: 2px;
+}
+
+.statistics-date-range__divider {
+  width: 1px;
+  height: 28px;
+  background: var(--color-border);
+}
+
+.statistics-date-range__apply {
+  min-height: 42px;
+  padding: 0 14px;
+  background: var(--color-surface-alt);
+  color: var(--color-text);
+}
+
+.statistics-toolbar__actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.statistics-export-button {
+  min-width: 96px;
+}
+
+.statistics-refresh-button {
+  min-width: 122px;
 }
 
 .statistics-kpis {
@@ -11536,6 +11631,17 @@ h2 {
   }
 }
 
+@media (max-width: 1180px) {
+  .statistics-panel__head,
+  .statistics-toolbar {
+    grid-template-columns: 1fr;
+  }
+
+  .statistics-toolbar__actions {
+    justify-content: flex-start;
+  }
+}
+
 @media (max-width: 980px) {
   .toolbar,
   .dictionary-form,
@@ -11605,6 +11711,26 @@ h2 {
     right: auto;
     width: 100%;
     max-width: calc(100vw - 60px);
+  }
+
+  .statistics-period-control {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+
+  .statistics-presets {
+    width: 100%;
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .statistics-date-range {
+    width: 100%;
+    grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr) auto;
+  }
+
+  .statistics-date-field__input {
+    width: 100%;
   }
 }
 
@@ -11700,10 +11826,28 @@ h2 {
   }
 
   .statistics-date-range {
+    grid-template-columns: 1fr;
     align-items: stretch;
   }
 
+  .statistics-date-range__divider {
+    display: none;
+  }
+
   .statistics-date-field {
+    padding-left: 0;
+  }
+
+  .statistics-date-range__apply {
+    width: 100%;
+  }
+
+  .statistics-toolbar__actions {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
+
+  .statistics-toolbar__actions .primary-button {
     width: 100%;
   }
 
