@@ -111,6 +111,8 @@ export type WorkOrderTimeBreakdownItem = {
   workerUserId: number;
   workerUserName: string;
   elapsedMs: number;
+  standardTimeSeconds: number | null;
+  averageElapsedMs: number;
 };
 
 export type WorkOrderTimeBreakdown = {
@@ -207,6 +209,8 @@ type WorkOrderTimeBreakdownItemApi = {
   worker_user_id: number;
   worker_user_name: string;
   elapsed_ms: number;
+  standard_time_seconds: number | null;
+  average_elapsed_ms: number;
 };
 
 type WorkOrderTimeBreakdownApi = {
@@ -435,6 +439,8 @@ function mapWorkOrderTimeBreakdown(
       workerUserId: item.worker_user_id,
       workerUserName: item.worker_user_name,
       elapsedMs: item.elapsed_ms,
+      standardTimeSeconds: item.standard_time_seconds,
+      averageElapsedMs: item.average_elapsed_ms,
     })),
     totalElapsedMs: breakdown.total_elapsed_ms,
   };
