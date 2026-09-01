@@ -40,11 +40,21 @@ def test_create_and_get_product(client: TestClient) -> None:
             {
                 "name": "Подготовка",
                 "children": [
-                    {"name": "Фасад", "price_cents": 5000, "children": []},
+                    {
+                        "name": "Фасад",
+                        "price_cents": 5000,
+                        "standard_time_seconds": 95,
+                        "children": [],
+                    },
                     {"name": "Подклад", "children": []},
                 ],
             },
-            {"name": "Пошив", "price_cents": 25000, "children": []},
+            {
+                "name": "Пошив",
+                "price_cents": 25000,
+                "standard_time_seconds": 630,
+                "children": [],
+            },
         ],
     }
 
@@ -60,6 +70,7 @@ def test_create_and_get_product(client: TestClient) -> None:
     assert created_product["operations"][0]["operation_catalog_entry_id"] is None
     assert created_product["operations"][0]["name"] == "Подготовка"
     assert created_product["operations"][0]["price_cents"] is None
+    assert created_product["operations"][0]["standard_time_seconds"] is None
     assert isinstance(
         created_product["operations"][0]["children"][0][
             "operation_catalog_entry_id"
@@ -68,7 +79,12 @@ def test_create_and_get_product(client: TestClient) -> None:
     )
     assert created_product["operations"][0]["children"][0]["name"] == "Фасад"
     assert created_product["operations"][0]["children"][0]["price_cents"] == 5000
+    assert (
+        created_product["operations"][0]["children"][0]["standard_time_seconds"]
+        == 95
+    )
     assert created_product["operations"][0]["children"][1]["price_cents"] is None
+    assert created_product["operations"][1]["standard_time_seconds"] == 630
 
     product_id = created_product["id"]
 
@@ -147,6 +163,36 @@ def test_create_product_rejects_group_operation_price(client: TestClient) -> Non
     assert create_response.json()["detail"] == "Operation groups cannot have prices."
 
 
+def test_create_product_rejects_group_operation_standard_time(
+    client: TestClient,
+) -> None:
+    author_user = create_author_user(client)
+
+    create_response = client.post(
+        "/api/products",
+        json={
+            "name": "Клатч Group Standard Time Guard",
+            "version": "1.0",
+            "author_user_id": author_user["id"],
+            "operations": [
+                {
+                    "name": "Крой",
+                    "standard_time_seconds": 120,
+                    "children": [
+                        {"name": "Фасад", "children": []},
+                    ],
+                },
+            ],
+        },
+    )
+
+    assert create_response.status_code == 422
+    assert (
+        create_response.json()["detail"]
+        == "Operation groups cannot have standard times."
+    )
+
+
 def test_create_product_rejects_group_operation_catalog_reference(
     client: TestClient,
 ) -> None:
@@ -221,6 +267,52 @@ def test_update_product_costs_rejects_operation_price_change(
     assert (
         patch_response.json()["detail"]
         == "Operation prices cannot be changed after product creation."
+    )
+
+
+def test_update_product_costs_rejects_operation_standard_time_change(
+    client: TestClient,
+) -> None:
+    author_user = create_author_user(client)
+    ensure_operation_catalog_entries(client, ["Крой"])
+    create_response = client.post(
+        "/api/products",
+        json={
+            "name": "Клатч Standard Time Guard",
+            "version": "1.0",
+            "author_user_id": author_user["id"],
+            "operations": [
+                {
+                    "name": "Крой",
+                    "price_cents": 10000,
+                    "standard_time_seconds": 90,
+                    "children": [],
+                },
+            ],
+        },
+    )
+    assert create_response.status_code == 201
+    product = create_response.json()
+
+    patch_response = client.patch(
+        f"/api/products/{product['id']}/costs",
+        json={
+            "material_cost_cents": 50000,
+            "operations": [
+                {
+                    "id": product["operations"][0]["id"],
+                    "price_cents": 10000,
+                    "standard_time_seconds": 120,
+                    "children": [],
+                },
+            ],
+        },
+    )
+
+    assert patch_response.status_code == 422
+    assert (
+        patch_response.json()["detail"]
+        == "Operation standard times cannot be changed after product creation."
     )
 
 

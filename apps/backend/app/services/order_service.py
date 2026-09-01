@@ -316,7 +316,7 @@ class OrderService:
         return self._serialize_order(order, product)
 
     def get_order_time_breakdown(self, order_id: int) -> WorkOrderTimeBreakdown:
-        self._get_order_or_404(order_id)
+        order = self._get_order_or_404(order_id)
 
         stmt = (
             select(
@@ -328,6 +328,7 @@ class OrderService:
                 ).label("operation_name"),
                 TimerSession.user_id,
                 User.name.label("worker_user_name"),
+                Operation.standard_time_seconds,
                 func.coalesce(
                     func.sum(TimerSession.ended_at - TimerSession.started_at),
                     0,
@@ -350,6 +351,7 @@ class OrderService:
                 Operation.name,
                 TimerSession.user_id,
                 User.name,
+                Operation.standard_time_seconds,
             )
             .order_by(
                 OperationCatalogEntry.name.asc(),
@@ -358,6 +360,13 @@ class OrderService:
                 TimerSession.user_id.asc(),
             )
         )
+        rows = self.session.execute(stmt).all()
+        operation_elapsed_ms: dict[int | None, int] = {}
+        for row in rows:
+            operation_elapsed_ms[row.operation_id] = (
+                operation_elapsed_ms.get(row.operation_id, 0) + int(row.elapsed_ms)
+            )
+
         items = [
             WorkOrderTimeBreakdownItem(
                 operation_id=row.operation_id,
@@ -365,8 +374,12 @@ class OrderService:
                 worker_user_id=row.user_id,
                 worker_user_name=row.worker_user_name,
                 elapsed_ms=int(row.elapsed_ms),
+                standard_time_seconds=row.standard_time_seconds,
+                average_elapsed_ms=(
+                    operation_elapsed_ms[row.operation_id] // order.quantity
+                ),
             )
-            for row in self.session.execute(stmt).all()
+            for row in rows
         ]
 
         return WorkOrderTimeBreakdown(

@@ -89,11 +89,23 @@ def create_product_with_leaf_operations(
                 {
                     "name": "Подготовка",
                     "children": [
-                        {"name": "Фронт", "children": []},
-                        {"name": "Спинка", "children": []},
+                        {
+                            "name": "Фронт",
+                            "standard_time_seconds": 90,
+                            "children": [],
+                        },
+                        {
+                            "name": "Спинка",
+                            "standard_time_seconds": 120,
+                            "children": [],
+                        },
                     ],
                 },
-                {"name": "Пошив", "children": []},
+                {
+                    "name": "Пошив",
+                    "standard_time_seconds": 300,
+                    "children": [],
+                },
             ],
         },
     )
@@ -302,6 +314,16 @@ def test_get_order_time_breakdown_returns_operation_worker_totals(
                     user_id=second_worker["id"],
                     timer_type_code=TIMER_TYPE_TO_CODE[TimerType.OPERATION],
                     order_id=order_id,
+                    operation_id=leaf_ids[0],
+                    started_at=121_000,
+                    ended_at=171_000,
+                    created_at=121_000,
+                ),
+                TimerSession(
+                    shift_id=second_shift.id,
+                    user_id=second_worker["id"],
+                    timer_type_code=TIMER_TYPE_TO_CODE[TimerType.OPERATION],
+                    order_id=order_id,
                     operation_id=leaf_ids[2],
                     started_at=1_000,
                     ended_at=61_000,
@@ -338,7 +360,7 @@ def test_get_order_time_breakdown_returns_operation_worker_totals(
     assert response.status_code == 200
     payload = response.json()
     assert payload["order_id"] == order_id
-    assert payload["total_elapsed_ms"] == 210_000
+    assert payload["total_elapsed_ms"] == 260_000
     rows = {
         (item["operation_id"], item["worker_user_id"]): item
         for item in payload["items"]
@@ -348,7 +370,13 @@ def test_get_order_time_breakdown_returns_operation_worker_totals(
         "name"
     ]
     assert rows[(leaf_ids[0], first_worker["id"])]["elapsed_ms"] == 150_000
+    assert rows[(leaf_ids[0], first_worker["id"])]["standard_time_seconds"] == 90
+    assert rows[(leaf_ids[0], first_worker["id"])]["average_elapsed_ms"] == 40_000
+    assert rows[(leaf_ids[0], second_worker["id"])]["elapsed_ms"] == 50_000
+    assert rows[(leaf_ids[0], second_worker["id"])]["average_elapsed_ms"] == 40_000
     assert rows[(leaf_ids[2], second_worker["id"])]["elapsed_ms"] == 60_000
+    assert rows[(leaf_ids[2], second_worker["id"])]["standard_time_seconds"] == 300
+    assert rows[(leaf_ids[2], second_worker["id"])]["average_elapsed_ms"] == 12_000
     assert (leaf_ids[1], first_worker["id"]) not in rows
 
 

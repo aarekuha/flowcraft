@@ -5,6 +5,11 @@ class OperationCreate(BaseModel):
     operation_catalog_entry_id: int | None = Field(default=None, ge=1)
     name: str | None = Field(default=None, min_length=1, max_length=255)
     price_cents: int | None = Field(default=None, ge=0)
+    standard_time_seconds: int | None = Field(
+        default=None,
+        ge=0,
+        le=2_147_483_647,
+    )
     children: list["OperationCreate"] = Field(default_factory=list)
 
     @field_validator("name")
@@ -33,12 +38,18 @@ class OperationRead(BaseModel):
     operation_catalog_entry_id: int | None
     name: str
     price_cents: int | None = None
+    standard_time_seconds: int | None = None
     children: list["OperationRead"] = Field(default_factory=list)
 
 
 class OperationCostUpdate(BaseModel):
     id: int
     price_cents: int | None = Field(default=None, ge=0)
+    standard_time_seconds: int | None = Field(
+        default=None,
+        ge=0,
+        le=2_147_483_647,
+    )
     children: list["OperationCostUpdate"] = Field(default_factory=list)
 
 

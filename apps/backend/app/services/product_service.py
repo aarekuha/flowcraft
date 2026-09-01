@@ -114,26 +114,37 @@ class ProductService:
         payload: ProductCostsUpdate,
     ) -> ProductDetail:
         product = self._get_product_or_404(product_id)
-        requested_operation_prices = self._collect_operation_prices(payload.operations)
+        requested_operation_costs = self._collect_operation_costs(payload.operations)
         operations = self.session.scalars(
             select(Operation).where(Operation.product_id == product.id)
         ).all()
         operations_by_id = {operation.id: operation for operation in operations}
 
-        unknown_operation_ids = set(requested_operation_prices) - set(operations_by_id)
+        unknown_operation_ids = set(requested_operation_costs) - set(operations_by_id)
         if unknown_operation_ids:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail="Operation prices must reference existing product operations.",
             )
 
-        for operation_id, requested_price_cents in requested_operation_prices.items():
+        for operation_id, requested_costs in requested_operation_costs.items():
             operation = operations_by_id[operation_id]
             current_price_cents = None if operation.children else operation.price_cents
-            if requested_price_cents != current_price_cents:
+            current_standard_time_seconds = (
+                None if operation.children else operation.standard_time_seconds
+            )
+            if requested_costs[0] != current_price_cents:
                 raise HTTPException(
                     status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                     detail="Operation prices cannot be changed after product creation.",
+                )
+            if requested_costs[1] != current_standard_time_seconds:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=(
+                        "Operation standard times cannot be changed after product "
+                        "creation."
+                    ),
                 )
 
         product.material_cost_cents = payload.material_cost_cents
@@ -204,6 +215,9 @@ class ProductService:
             ),
             name=operation_name,
             price_cents=payload.price_cents if not is_group else None,
+            standard_time_seconds=(
+                payload.standard_time_seconds if not is_group else None
+            ),
             sort_order=sort_order,
             product=product,
         )
@@ -230,6 +244,11 @@ class ProductService:
                     raise HTTPException(
                         status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                         detail="Operation groups cannot have prices.",
+                    )
+                if operation.standard_time_seconds is not None:
+                    raise HTTPException(
+                        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                        detail="Operation groups cannot have standard times.",
                     )
                 if operation.operation_catalog_entry_id is not None:
                     raise HTTPException(
@@ -338,15 +357,15 @@ class ProductService:
                 detail="Product with this name and version already exists.",
             )
 
-    def _collect_operation_prices(
+    def _collect_operation_costs(
         self,
         operations: Sequence[OperationCostUpdate],
-    ) -> dict[int, int | None]:
-        prices: dict[int, int | None] = {}
+    ) -> dict[int, tuple[int | None, int | None]]:
+        costs: dict[int, tuple[int | None, int | None]] = {}
 
         def walk(nodes: Sequence[OperationCostUpdate]) -> None:
             for operation in nodes:
-                if operation.id in prices:
+                if operation.id in costs:
                     raise HTTPException(
                         status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                         detail=(
@@ -354,11 +373,14 @@ class ProductService:
                         ),
                     )
 
-                prices[operation.id] = operation.price_cents
+                costs[operation.id] = (
+                    operation.price_cents,
+                    operation.standard_time_seconds,
+                )
                 walk(operation.children)
 
         walk(operations)
-        return prices
+        return costs
 
     def _serialize_operation(self, operation: Operation) -> OperationRead:
         ordered_children = sorted(operation.children, key=lambda item: item.sort_order)
@@ -367,6 +389,9 @@ class ProductService:
             operation_catalog_entry_id=operation.operation_catalog_entry_id,
             name=self._get_operation_name(operation),
             price_cents=None if ordered_children else operation.price_cents,
+            standard_time_seconds=(
+                None if ordered_children else operation.standard_time_seconds
+            ),
             children=[self._serialize_operation(child) for child in ordered_children],
         )
 

@@ -1,5 +1,8 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import QRCode from "qrcode";
+import type { IScannerControls } from "@zxing/browser";
+import { useRoute, useRouter } from "vue-router";
 import flowcraftLogoUrl from "@/shared/assets/flowcraft_logo.png";
 
 import {
@@ -121,6 +124,7 @@ type FlatOperationNodeRow = {
   operationCatalogEntryId: number | null;
   name: string;
   priceCents: number | null;
+  standardTimeSeconds: number | null;
   level: number;
   isGroup: boolean;
   canMoveUp: boolean;
@@ -257,11 +261,15 @@ const CONSTRUCTOR_DIRECTORY_TAB_STORAGE_KEY = "flowcraft.constructor-directory-t
 const PREPARATION_TIMER_ID = "worker:preparation";
 const BREAK_TIMER_ID = "worker:break";
 const IDLE_TIMER_ID = "worker:idle";
+const PRINT_QR_CODE_COUNT = 5;
 const SMARTPHONE_MEDIA_QUERY = "(max-width: 760px)";
 const PROJECT_PAGE_SIZE = 10;
 const WORK_ORDER_PAGE_SIZE = PROJECT_PAGE_SIZE;
 const LEATHER_TYPE_PAGE_SIZE = PROJECT_PAGE_SIZE;
 const OPERATION_CATALOG_PAGE_SIZE = PROJECT_PAGE_SIZE;
+
+const route = useRoute();
+const router = useRouter();
 
 const activeTab = ref<TabId>(readStoredTab<TabId>(ACTIVE_TAB_STORAGE_KEY, tabs.map((tab) => tab.id), "constructor"));
 const brigadierTab = ref<BrigadierTabId>(
@@ -335,6 +343,7 @@ const productName = ref("");
 const productVersion = ref("");
 const productMaterialCostCents = ref<number | null>(null);
 const operationTree = ref<OperationNode[]>([]);
+const operationStandardTimeInputErrors = ref<Record<number, string>>({});
 const productPendingDelete = ref<ProductSummary | null>(null);
 const userPendingDelete = ref<UserRecord | null>(null);
 const editingUserId = ref<number | null>(null);
@@ -450,6 +459,14 @@ const isDeleteModalOpen = computed(() => productPendingDelete.value !== null);
 const isUserDeleteModalOpen = computed(() => userPendingDelete.value !== null);
 const isViewMode = computed(() => modalMode.value === "view");
 const printableWorkOrder = ref<WorkOrderDetail | null>(null);
+const printableWorkOrderQrCode = ref("");
+const workerOrderFocusMessage = ref("");
+const workerQrScannerVideo = ref<HTMLVideoElement | null>(null);
+const isWorkerQrScannerOpen = ref(false);
+const workerQrScannerStarting = ref(false);
+const workerQrScannerError = ref("");
+let workerQrScannerControls: IScannerControls | null = null;
+let workerQrScannerRunId = 0;
 const workOrderStatusTab = computed<WorkOrderStatusTabId>(() =>
   brigadierTab.value === "orders" ? "created" : brigadierTab.value,
 );
@@ -479,6 +496,17 @@ const canManageWorkOrders = computed(
 const canAcceptQualityControl = computed(
   () => currentSession.value?.userRoles.includes("quality_control") ?? false,
 );
+const workerOrderRouteId = computed(() => {
+  const routeOrderId = route.params.orderId;
+  const value = Array.isArray(routeOrderId) ? routeOrderId[0] : routeOrderId;
+
+  if (!value || !/^\d+$/.test(value)) {
+    return null;
+  }
+
+  const orderId = Number.parseInt(value, 10);
+  return orderId > 0 ? orderId : null;
+});
 
 const shouldShowValidation = computed(
   () => modalMode.value === "create" || modalMode.value === "copy",
@@ -504,7 +532,12 @@ const activeOperationCatalogEntryById = computed(() => {
   }
   return entries;
 });
-const operationErrors = computed(() => validateOperationTree(operationTree.value));
+const operationErrors = computed(() =>
+  validateOperationTree(
+    operationTree.value,
+    operationStandardTimeInputErrors.value,
+  ),
+);
 const hasOperationErrors = computed(
   () => Object.keys(operationErrors.value).length > 0,
 );
@@ -631,7 +664,7 @@ const modalDescription = computed(() => {
   }
 
   if (modalMode.value === "view") {
-    return "Структура изделия и цены операций доступны для просмотра, стоимость материала можно изменить.";
+    return "Структура изделия, цены и нормы операций доступны для просмотра, стоимость материала можно изменить.";
   }
 
   return "Заполните карточку изделия и задайте дерево производственных операций.";
@@ -1251,6 +1284,24 @@ watch(activeTab, (value) => {
   }
 });
 
+watch(workerOrderRouteId, (orderId) => {
+  workerOrderFocusMessage.value = "";
+  if (orderId === null || authInitializing.value || !currentSession.value) {
+    return;
+  }
+
+  if (!canLoadWorkerWorkspace()) {
+    return;
+  }
+
+  if (activeTab.value !== "worker") {
+    activeTab.value = "worker";
+    return;
+  }
+
+  void loadWorkerWorkspace();
+});
+
 watch(availableTabs, (nextTabs) => {
   if (!nextTabs.length) {
     return;
@@ -1340,6 +1391,7 @@ watch(
 );
 
 onBeforeUnmount(() => {
+  closeWorkerQrScanner();
   window.removeEventListener("keydown", handleWindowKeydown);
   window.removeEventListener("resize", updateSmartphoneViewport);
   clearWorkerAssignmentStatusDropdownCloseTimeout();
@@ -1631,6 +1683,10 @@ async function initializePage() {
 }
 
 async function loadProtectedData() {
+  if (workerOrderRouteId.value !== null && canLoadWorkerWorkspace()) {
+    activeTab.value = "worker";
+  }
+
   const protectedDataLoaders = [
     loadProducts(),
     loadUsers(),
@@ -1694,6 +1750,7 @@ function redirectToAuth(message = "Требуется аутентификаци
   workerAssignmentsError.value = "";
   workerAssignmentsLoading.value = false;
   resetWorkerTimerState();
+  closeWorkerQrScanner();
   closeChangePasswordModal();
   closeBrigadierOrderModal();
   closeWorkOrderActionConfirm();
@@ -2039,6 +2096,7 @@ async function loadWorkerWorkspace() {
   const assignmentsLoaded = await loadWorkerAssignments();
   if (assignmentsLoaded) {
     await loadWorkerTimerState();
+    await focusWorkerOrderFromRoute();
   }
 }
 
@@ -2154,6 +2212,7 @@ function resetForm() {
   productVersion.value = "";
   productMaterialCostCents.value = null;
   operationTree.value = [];
+  operationStandardTimeInputErrors.value = {};
   nextOperationId = 1;
 }
 
@@ -2414,6 +2473,11 @@ function handleWindowKeydown(event: KeyboardEvent) {
     return;
   }
 
+  if (isWorkerQrScannerOpen.value) {
+    closeWorkerQrScanner();
+    return;
+  }
+
   if (changePasswordModalOpen.value) {
     closeChangePasswordModal();
     return;
@@ -2658,6 +2722,211 @@ function toggleWorkerGroup(groupKey: string) {
     ...workerGroupExpanded.value,
     [groupKey]: !workerGroupExpanded.value[groupKey],
   };
+}
+
+async function focusWorkerOrderFromRoute() {
+  const orderId = workerOrderRouteId.value;
+  if (orderId === null) {
+    workerOrderFocusMessage.value = "";
+    return;
+  }
+
+  const focusedGroupKey = String(orderId);
+  const focusedGroupExists = workerTimerGroups.value.some(
+    (group) => group.groupKey === focusedGroupKey,
+  );
+  const nextExpanded: Record<string, boolean> = {};
+
+  for (const group of workerTimerGroups.value) {
+    nextExpanded[group.groupKey] = group.groupKey === focusedGroupKey;
+  }
+
+  workerGroupExpanded.value = nextExpanded;
+
+  if (!focusedGroupExists) {
+    workerOrderFocusMessage.value =
+      "Для вас нет активных операций по этому заказу.";
+    return;
+  }
+
+  workerOrderFocusMessage.value = "";
+  await nextTick();
+  document
+    .querySelector<HTMLElement>(`[data-worker-order-id="${orderId}"]`)
+    ?.scrollIntoView({ behavior: "smooth", block: "center" });
+}
+
+async function openWorkerQrScanner() {
+  if (isWorkerQrScannerOpen.value) {
+    return;
+  }
+
+  const runId = ++workerQrScannerRunId;
+  isWorkerQrScannerOpen.value = true;
+  workerQrScannerStarting.value = true;
+  workerQrScannerError.value = "";
+
+  if (!navigator.mediaDevices?.getUserMedia) {
+    workerQrScannerStarting.value = false;
+    workerQrScannerError.value = window.isSecureContext
+      ? "Этот браузер не поддерживает доступ к камере."
+      : "Для доступа к камере откройте FlowCraft по HTTPS.";
+    return;
+  }
+
+  await nextTick();
+
+  const videoElement = workerQrScannerVideo.value;
+  if (!videoElement) {
+    workerQrScannerStarting.value = false;
+    workerQrScannerError.value = "Не удалось подготовить окно камеры.";
+    return;
+  }
+
+  try {
+    const { BrowserQRCodeReader } = await import("@zxing/browser");
+    if (runId !== workerQrScannerRunId) {
+      return;
+    }
+
+    const reader = new BrowserQRCodeReader(undefined, {
+      delayBetweenScanAttempts: 200,
+      delayBetweenScanSuccess: 500,
+    });
+    const controls = await reader.decodeFromConstraints(
+      {
+        audio: false,
+        video: {
+          facingMode: { ideal: "environment" },
+          width: { ideal: 1280 },
+          height: { ideal: 720 },
+        },
+      },
+      videoElement,
+      (result, _error, scannerControls) => {
+        if (!result || runId !== workerQrScannerRunId) {
+          return;
+        }
+
+        const orderId = parseWorkerOrderQrCode(result.getText());
+        if (orderId === null) {
+          workerQrScannerError.value =
+            "Этот QR-код не является ссылкой на таймеры заказа FlowCraft.";
+          return;
+        }
+
+        workerQrScannerControls = scannerControls;
+        closeWorkerQrScanner();
+        void navigateToScannedWorkerOrder(orderId);
+      },
+    );
+
+    if (runId !== workerQrScannerRunId || !isWorkerQrScannerOpen.value) {
+      controls.stop();
+      return;
+    }
+
+    workerQrScannerControls = controls;
+  } catch (error) {
+    if (runId !== workerQrScannerRunId) {
+      return;
+    }
+
+    workerQrScannerError.value = getWorkerQrScannerError(error);
+  } finally {
+    if (runId === workerQrScannerRunId) {
+      workerQrScannerStarting.value = false;
+    }
+  }
+}
+
+function closeWorkerQrScanner() {
+  workerQrScannerRunId += 1;
+  workerQrScannerControls?.stop();
+  workerQrScannerControls = null;
+
+  const stream = workerQrScannerVideo.value?.srcObject;
+  if (stream instanceof MediaStream) {
+    for (const track of stream.getTracks()) {
+      track.stop();
+    }
+  }
+
+  if (workerQrScannerVideo.value) {
+    workerQrScannerVideo.value.srcObject = null;
+  }
+
+  isWorkerQrScannerOpen.value = false;
+  workerQrScannerStarting.value = false;
+  workerQrScannerError.value = "";
+}
+
+function parseWorkerOrderQrCode(value: string): number | null {
+  let scannedUrl: URL;
+
+  try {
+    scannedUrl = new URL(value.trim());
+  } catch {
+    return null;
+  }
+
+  if (
+    !["http:", "https:"].includes(scannedUrl.protocol) ||
+    !getWorkerQrAllowedOrigins().has(scannedUrl.origin) ||
+    scannedUrl.search ||
+    scannedUrl.hash
+  ) {
+    return null;
+  }
+
+  const match = /^\/worker\/orders\/([1-9]\d*)\/timers\/?$/.exec(
+    scannedUrl.pathname,
+  );
+  return match ? Number.parseInt(match[1], 10) : null;
+}
+
+function getWorkerQrAllowedOrigins(): Set<string> {
+  const allowedOrigins = new Set([window.location.origin]);
+  const configuredAppUrl = import.meta.env.VITE_PUBLIC_APP_URL?.trim();
+
+  if (configuredAppUrl) {
+    try {
+      allowedOrigins.add(new URL(configuredAppUrl).origin);
+    } catch {
+      return allowedOrigins;
+    }
+  }
+
+  return allowedOrigins;
+}
+
+function getWorkerQrScannerError(error: unknown): string {
+  if (error instanceof DOMException) {
+    switch (error.name) {
+      case "NotAllowedError":
+      case "SecurityError":
+        return "Разрешите доступ к камере в настройках браузера.";
+      case "NotFoundError":
+      case "OverconstrainedError":
+        return "На устройстве не найдена доступная камера.";
+      case "NotReadableError":
+        return "Камера занята другим приложением или недоступна.";
+    }
+  }
+
+  return "Не удалось запустить камеру. Проверьте разрешение и повторите попытку.";
+}
+
+async function navigateToScannedWorkerOrder(orderId: number) {
+  const isCurrentOrder = workerOrderRouteId.value === orderId;
+  await router.push({
+    name: "worker-order-timers",
+    params: { orderId: String(orderId) },
+  });
+
+  if (isCurrentOrder) {
+    await focusWorkerOrderFromRoute();
+  }
 }
 
 async function setWorkerAssignmentStatus(
@@ -3098,6 +3367,7 @@ function addRootOperation() {
 
 function addChildOperation(parentId: number) {
   operationTree.value = appendChildOperation(operationTree.value, parentId);
+  pruneOperationStandardTimeInputErrors();
 }
 
 function addSiblingOperation(operationId: number) {
@@ -3114,6 +3384,7 @@ function moveOperationDown(operationId: number) {
 
 function indentOperation(operationId: number) {
   operationTree.value = indentOperationNode(operationTree.value, operationId);
+  pruneOperationStandardTimeInputErrors();
 }
 
 function outdentOperation(operationId: number) {
@@ -3122,6 +3393,7 @@ function outdentOperation(operationId: number) {
 
 function removeOperation(operationId: number) {
   operationTree.value = deleteOperation(operationTree.value, operationId);
+  pruneOperationStandardTimeInputErrors();
 }
 
 function handleOperationNameInput(operationId: number, event: Event) {
@@ -3304,6 +3576,66 @@ function handleOperationPriceInput(operationId: number, event: Event) {
   );
 }
 
+function handleOperationStandardTimeInput(operationId: number, event: Event) {
+  const target = event.target;
+
+  if (isViewMode.value || !(target instanceof HTMLInputElement)) {
+    return;
+  }
+
+  const standardTimeSeconds = parseStandardTimeInput(target.value);
+  if (standardTimeSeconds === undefined) {
+    operationStandardTimeInputErrors.value = {
+      ...operationStandardTimeInputErrors.value,
+      [operationId]: "Норма времени должна быть указана в формате мм:сс.",
+    };
+    return;
+  }
+
+  clearOperationStandardTimeInputError(operationId);
+  operationTree.value = updateOperationStandardTime(
+    operationTree.value,
+    operationId,
+    standardTimeSeconds,
+  );
+}
+
+function normalizeOperationStandardTimeInput(operationId: number, event: Event) {
+  const target = event.target;
+
+  if (!(target instanceof HTMLInputElement)) {
+    return;
+  }
+
+  if (!operationStandardTimeInputErrors.value[operationId]) {
+    const row = flatOperationRows.value.find((item) => item.id === operationId);
+    target.value = formatStandardTimeInput(row?.standardTimeSeconds ?? null);
+  }
+}
+
+function clearOperationStandardTimeInputError(operationId: number) {
+  if (!operationStandardTimeInputErrors.value[operationId]) {
+    return;
+  }
+
+  const nextErrors = { ...operationStandardTimeInputErrors.value };
+  delete nextErrors[operationId];
+  operationStandardTimeInputErrors.value = nextErrors;
+}
+
+function pruneOperationStandardTimeInputErrors() {
+  const leafOperationIds = new Set(
+    flatOperationRows.value
+      .filter((row) => !row.isGroup)
+      .map((row) => row.id),
+  );
+  operationStandardTimeInputErrors.value = Object.fromEntries(
+    Object.entries(operationStandardTimeInputErrors.value).filter(([operationId]) =>
+      leafOperationIds.has(Number(operationId)),
+    ),
+  );
+}
+
 function updateOperationPrice(
   operations: OperationNode[],
   operationId: number,
@@ -3320,6 +3652,30 @@ function updateOperationPrice(
     return {
       ...operation,
       children: updateOperationPrice(operation.children, operationId, priceCents),
+    };
+  });
+}
+
+function updateOperationStandardTime(
+  operations: OperationNode[],
+  operationId: number,
+  standardTimeSeconds: number | null,
+): OperationNode[] {
+  return operations.map((operation) => {
+    if (operation.id === operationId) {
+      return {
+        ...operation,
+        standardTimeSeconds,
+      };
+    }
+
+    return {
+      ...operation,
+      children: updateOperationStandardTime(
+        operation.children,
+        operationId,
+        standardTimeSeconds,
+      ),
     };
   });
 }
@@ -3457,6 +3813,7 @@ function createOperationNode(): OperationNode {
     operationCatalogEntryId: null,
     name: "",
     priceCents: null,
+    standardTimeSeconds: null,
     children: [],
   };
 }
@@ -3471,6 +3828,7 @@ function appendChildOperation(
         ...operation,
         operationCatalogEntryId: null,
         priceCents: null,
+        standardTimeSeconds: null,
         children: [...operation.children, createOperationNode()],
       };
     }
@@ -3546,6 +3904,7 @@ function indentOperationNode(
   const [movedOperation] = siblings.splice(currentIndex, 1);
   siblings[currentIndex - 1].operationCatalogEntryId = null;
   siblings[currentIndex - 1].priceCents = null;
+  siblings[currentIndex - 1].standardTimeSeconds = null;
   siblings[currentIndex - 1].children = [
     ...siblings[currentIndex - 1].children,
     movedOperation,
@@ -3626,6 +3985,7 @@ function flattenOperations(
         operationCatalogEntryId: operation.operationCatalogEntryId,
         name: operation.name,
         priceCents: operation.priceCents,
+        standardTimeSeconds: operation.standardTimeSeconds,
         level,
         isGroup: operation.children.length > 0,
         canMoveUp: index > 0,
@@ -3677,6 +4037,7 @@ function getOperationsAtPath(
 
 function validateOperationTree(
   operations: OperationNode[],
+  standardTimeInputErrors: Record<number, string>,
 ): Record<number, string> {
   const errors: Record<number, string> = {};
   const usedOperationCatalogEntryIds = new Set<number>();
@@ -3691,12 +4052,16 @@ function validateOperationTree(
         errors[node.id] = "Имя операции не должно быть пустым.";
       } else if (isGroup && node.priceCents !== null) {
         errors[node.id] = "У группы операций не должно быть цены.";
+      } else if (isGroup && node.standardTimeSeconds !== null) {
+        errors[node.id] = "У группы операций не должно быть нормы времени.";
       } else if (!isGroup && !entry) {
         errors[node.id] = "Выберите операцию из справочника.";
       } else if (entry && usedOperationCatalogEntryIds.has(entry.id)) {
         errors[node.id] = "Операция должна быть уникальной в изделии.";
       } else if (!isGroup && node.priceCents !== null && node.priceCents < 0) {
         errors[node.id] = "Цена операции не может быть отрицательной.";
+      } else if (standardTimeInputErrors[node.id]) {
+        errors[node.id] = standardTimeInputErrors[node.id];
       }
 
       if (entry) {
@@ -3716,6 +4081,7 @@ function cloneOperations(operations: OperationNode[]): OperationNode[] {
     operationCatalogEntryId: operation.operationCatalogEntryId,
     name: operation.name,
     priceCents: operation.priceCents,
+    standardTimeSeconds: operation.standardTimeSeconds,
     children: cloneOperations(operation.children),
   }));
 }
@@ -3737,6 +4103,7 @@ function serializeOperations(
         operation_catalog_entry_id: null,
         name: operation.name.trim(),
         price_cents: null,
+        standard_time_seconds: null,
         children: serializeOperations(operation.children),
       };
     }
@@ -3750,6 +4117,7 @@ function serializeOperations(
       operation_catalog_entry_id: entry.id,
       name: entry.name,
       price_cents: operation.priceCents,
+      standard_time_seconds: operation.standardTimeSeconds,
       children: [],
     };
   });
@@ -3850,6 +4218,35 @@ function formatMoneyInput(cents: number | null): string {
   return Number.isInteger(value)
     ? String(value)
     : value.toFixed(2).replace(/0+$/, "").replace(/\.$/, "");
+}
+
+function parseStandardTimeInput(value: string): number | null | undefined {
+  const normalizedValue = value.trim();
+  if (!normalizedValue) {
+    return null;
+  }
+
+  const match = /^(\d+):([0-5]\d)$/.exec(normalizedValue);
+  if (!match) {
+    return undefined;
+  }
+
+  const minutes = Number(match[1]);
+  const seconds = Number(match[2]);
+  const totalSeconds = minutes * 60 + seconds;
+  return Number.isSafeInteger(totalSeconds) && totalSeconds <= 2_147_483_647
+    ? totalSeconds
+    : undefined;
+}
+
+function formatStandardTimeInput(totalSeconds: number | null): string {
+  if (totalSeconds === null) {
+    return "";
+  }
+
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
 }
 
 function formatWorkerGroupProductMeta(group: WorkerTimerGroup): string {
@@ -4280,12 +4677,22 @@ async function printWorkOrder(order: WorkOrderSummary) {
   setWorkOrderPrintBusy(order.id, true);
   brigadierOrdersError.value = "";
   printableWorkOrder.value = null;
+  printableWorkOrderQrCode.value = "";
 
   try {
-    printableWorkOrder.value = await fetchWorkOrder(order.id);
+    const orderDetails = await fetchWorkOrder(order.id);
+    const orderTimersUrl = getWorkerOrderTimersUrl(orderDetails.id);
+    printableWorkOrderQrCode.value = await QRCode.toDataURL(orderTimersUrl, {
+      errorCorrectionLevel: "M",
+      margin: 4,
+      width: 512,
+    });
+    printableWorkOrder.value = orderDetails;
     await nextTick();
+    await waitForPrintableQrImages();
     const clearPrintableWorkOrder = () => {
       printableWorkOrder.value = null;
+      printableWorkOrderQrCode.value = "";
       window.removeEventListener("afterprint", clearPrintableWorkOrder);
     };
     window.addEventListener("afterprint", clearPrintableWorkOrder, { once: true });
@@ -4302,6 +4709,19 @@ async function printWorkOrder(order: WorkOrderSummary) {
   } finally {
     setWorkOrderPrintBusy(order.id, false);
   }
+}
+
+function getWorkerOrderTimersUrl(orderId: number): string {
+  const configuredAppUrl = import.meta.env.VITE_PUBLIC_APP_URL?.trim();
+  const publicAppUrl = configuredAppUrl || window.location.origin;
+  return new URL(`/worker/orders/${orderId}/timers`, publicAppUrl).toString();
+}
+
+async function waitForPrintableQrImages() {
+  const qrImages = document.querySelectorAll<HTMLImageElement>(
+    ".print-order-qr img",
+  );
+  await Promise.all([...qrImages].map((image) => image.decode()));
 }
 
 function closeBrigadierOrderModal() {
@@ -5163,21 +5583,35 @@ async function handleResetUserPassword(user: UserRecord) {
               </p>
             </div>
 
-            <button
-              type="button"
-              class="primary-button"
-              :disabled="!currentWorker || workerTimerSubmitting"
-              @click="isWorkerDayActive ? requestEndWorkerDay() : void startWorkerDay()"
-            >
-              <span class="button-content">
-                <span
-                  class="button-icon"
-                  :class="isWorkerDayActive ? 'button-icon--stop' : 'button-icon--play'"
-                  aria-hidden="true"
-                />
-                <span>{{ isWorkerDayActive ? "Закончить рабочий день" : "Начать рабочий день" }}</span>
-              </span>
-            </button>
+            <div class="worker-panel__actions">
+              <button
+                type="button"
+                class="secondary-button"
+                :disabled="!currentWorker"
+                @click="void openWorkerQrScanner()"
+              >
+                <span class="button-content">
+                  <span class="button-icon button-icon--search" aria-hidden="true" />
+                  <span>Сканировать QR</span>
+                </span>
+              </button>
+
+              <button
+                type="button"
+                class="primary-button"
+                :disabled="!currentWorker || workerTimerSubmitting"
+                @click="isWorkerDayActive ? requestEndWorkerDay() : void startWorkerDay()"
+              >
+                <span class="button-content">
+                  <span
+                    class="button-icon"
+                    :class="isWorkerDayActive ? 'button-icon--stop' : 'button-icon--play'"
+                    aria-hidden="true"
+                  />
+                  <span>{{ isWorkerDayActive ? "Закончить рабочий день" : "Начать рабочий день" }}</span>
+                </span>
+              </button>
+            </div>
           </div>
 
           <div v-if="!currentWorker" class="empty-table-state">
@@ -5302,15 +5736,27 @@ async function handleResetUserPassword(user: UserRecord) {
               <p>Загрузка назначенных операций...</p>
             </div>
 
-            <div v-else-if="workerTimerGroups.length === 0" class="empty-table-state">
-              <p>{{ getWorkerAssignmentsEmptyMessage() }}</p>
-            </div>
+            <template v-else>
+              <div v-if="workerOrderFocusMessage" class="banner">
+                <p>{{ workerOrderFocusMessage }}</p>
+              </div>
 
-            <div v-else class="worker-groups">
+              <div
+                v-if="workerTimerGroups.length === 0 && !workerOrderFocusMessage"
+                class="empty-table-state"
+              >
+                <p>{{ getWorkerAssignmentsEmptyMessage() }}</p>
+              </div>
+
+              <div v-else class="worker-groups">
               <section
                 v-for="group in workerTimerGroups"
                 :key="group.groupKey"
                 class="worker-group"
+                :class="{
+                  'worker-group--focused': workerOrderRouteId === Number(group.groupKey),
+                }"
+                :data-worker-order-id="group.groupKey"
               >
                 <button
                   type="button"
@@ -5405,7 +5851,8 @@ async function handleResetUserPassword(user: UserRecord) {
                   </div>
                 </div>
               </section>
-            </div>
+              </div>
+            </template>
           </template>
         </article>
       </section>
@@ -7953,6 +8400,7 @@ async function handleResetUserPassword(user: UserRecord) {
               Заказ {{ workOrderTimeBreakdownModal.order.orderNumber }} ·
               {{ workOrderTimeBreakdownModal.order.productName }}
               · {{ workOrderTimeBreakdownModal.order.productVersion }}
+              · {{ workOrderTimeBreakdownModal.order.quantity }} шт.
             </p>
           </div>
 
@@ -7994,6 +8442,8 @@ async function handleResetUserPassword(user: UserRecord) {
                   <th>Операция</th>
                   <th>Исполнитель</th>
                   <th>Время</th>
+                  <th>Норма на операцию</th>
+                  <th>Среднее на изделие</th>
                 </tr>
               </thead>
               <tbody>
@@ -8004,6 +8454,14 @@ async function handleResetUserPassword(user: UserRecord) {
                   <td>{{ item.operationName }}</td>
                   <td>{{ item.workerUserName }}</td>
                   <td>{{ formatTimerDuration(item.elapsedMs) }}</td>
+                  <td>
+                    {{
+                      item.standardTimeSeconds === null
+                        ? "Не указана"
+                        : formatStandardTimeInput(item.standardTimeSeconds)
+                    }}
+                  </td>
+                  <td>{{ formatTimerDuration(item.averageElapsedMs) }}</td>
                 </tr>
               </tbody>
             </table>
@@ -8150,6 +8608,7 @@ async function handleResetUserPassword(user: UserRecord) {
                     <th>Операция</th>
                     <th>Тип</th>
                     <th>Цена, ₽</th>
+                    <th>Норма на одно изделие, мм:сс</th>
                     <th>Действия</th>
                   </tr>
                 </thead>
@@ -8275,6 +8734,35 @@ async function handleResetUserPassword(user: UserRecord) {
                           !isViewMode &&
                           (operationErrors[row.id]?.startsWith('Цена') ||
                             operationErrors[row.id]?.startsWith('У группы'))
+                        "
+                        class="field-error"
+                      >
+                        {{ operationErrors[row.id] }}
+                      </p>
+                    </td>
+                    <td>
+                      <span v-if="row.isGroup" class="readonly-note">
+                        Норма только у операций
+                      </span>
+                      <span v-else-if="isViewMode" class="operation-text">
+                        {{ formatStandardTimeInput(row.standardTimeSeconds) || "Не указана" }}
+                      </span>
+                      <input
+                        v-else
+                        :value="formatStandardTimeInput(row.standardTimeSeconds)"
+                        type="text"
+                        inputmode="numeric"
+                        class="operation-input operation-input--standard-time"
+                        placeholder="мм:сс"
+                        :aria-label="`Норма времени операции ${row.name || row.id}`"
+                        @input="handleOperationStandardTimeInput(row.id, $event)"
+                        @blur="normalizeOperationStandardTimeInput(row.id, $event)"
+                      />
+                      <p
+                        v-if="
+                          !isViewMode &&
+                          (operationErrors[row.id]?.startsWith('Норма') ||
+                            operationErrors[row.id]?.includes('нормы времени'))
                         "
                         class="field-error"
                       >
@@ -8604,6 +9092,54 @@ async function handleResetUserPassword(user: UserRecord) {
     </div>
 
     <div
+      v-if="isWorkerQrScannerOpen"
+      class="modal-backdrop"
+      @click.self="closeWorkerQrScanner"
+    >
+      <section
+        class="confirm-modal worker-qr-scanner-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="worker-qr-scanner-title"
+      >
+        <div class="confirm-modal__content">
+          <p class="confirm-modal__eyebrow">Быстрый переход</p>
+          <h2 id="worker-qr-scanner-title">Сканирование QR-кода</h2>
+          <p class="confirm-modal__description">
+            Наведите камеру на QR-код в печатной форме заказа.
+          </p>
+
+          <div class="worker-qr-scanner-preview">
+            <video
+              ref="workerQrScannerVideo"
+              autoplay
+              muted
+              playsinline
+              aria-label="Изображение с камеры для сканирования QR-кода"
+            />
+            <span class="worker-qr-scanner-frame" aria-hidden="true" />
+            <span v-if="workerQrScannerStarting" class="worker-qr-scanner-loading">
+              Запуск камеры...
+            </span>
+          </div>
+
+          <p v-if="workerQrScannerError" class="field-error" role="alert">
+            {{ workerQrScannerError }}
+          </p>
+        </div>
+
+        <div class="confirm-modal__actions">
+          <button type="button" class="ghost-button" @click="closeWorkerQrScanner">
+            <span class="button-content">
+              <span class="button-icon button-icon--close" aria-hidden="true" />
+              <span>Закрыть</span>
+            </span>
+          </button>
+        </div>
+      </section>
+    </div>
+
+    <div
       v-if="isWorkerDayEndConfirmOpen"
       class="modal-backdrop"
       @click.self="closeWorkerDayEndConfirm"
@@ -8682,6 +9218,25 @@ async function handleResetUserPassword(user: UserRecord) {
           </tr>
         </tbody>
       </table>
+
+      <div v-if="printableWorkOrderQrCode" class="print-order-qr-list">
+        <figure
+          v-for="copyIndex in PRINT_QR_CODE_COUNT"
+          :key="copyIndex"
+          class="print-order-qr"
+        >
+          <img
+            :src="printableWorkOrderQrCode"
+            :alt="`QR-код таймеров заказа ${printableWorkOrder.orderNumber}`"
+          />
+          <figcaption>
+            <strong>{{ printableWorkOrder.orderNumber }}</strong>
+            <span>{{ printableWorkOrder.productName }}</span>
+            <span>{{ printableWorkOrder.leatherTypeName ?? "вид кожи не указан" }}</span>
+            <span>{{ printableWorkOrder.quantity }} шт.</span>
+          </figcaption>
+        </figure>
+      </div>
     </section>
   </main>
 </template>
@@ -8975,6 +9530,14 @@ h2 {
   margin-bottom: 0;
 }
 
+.worker-panel__actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
 .worker-panel__subtitle {
   margin: 10px 0 0;
   color: var(--color-text-secondary);
@@ -9032,6 +9595,11 @@ h2 {
   border-radius: 22px;
   background: var(--color-surface-alt);
   border: 1px solid var(--color-border);
+}
+
+.worker-group--focused {
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 3px rgba(47, 110, 163, 0.14);
 }
 
 .worker-group__head {
@@ -10276,6 +10844,46 @@ h2 {
   min-width: 132px;
 }
 
+.worker-qr-scanner-modal {
+  width: min(560px, calc(100vw - 48px));
+}
+
+.worker-qr-scanner-preview {
+  position: relative;
+  aspect-ratio: 4 / 3;
+  overflow: hidden;
+  border-radius: 18px;
+  background: #111;
+}
+
+.worker-qr-scanner-preview video {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.worker-qr-scanner-frame {
+  position: absolute;
+  inset: 13%;
+  border: 3px solid rgba(255, 255, 255, 0.9);
+  border-radius: 18px;
+  box-shadow: 0 0 0 999px rgba(17, 17, 17, 0.24);
+  pointer-events: none;
+}
+
+.worker-qr-scanner-loading {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgba(17, 17, 17, 0.7);
+  color: #fff;
+  font-weight: 700;
+  text-align: center;
+}
+
 .product-form {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr) auto;
@@ -10529,20 +11137,58 @@ h2 {
   background: #f1f3f5;
 }
 
+.print-order-qr-list {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 3mm;
+  margin-top: 8mm;
+  break-inside: avoid;
+  page-break-inside: avoid;
+}
+
+.print-order-qr {
+  display: grid;
+  justify-items: center;
+  gap: 1mm;
+  margin: 0;
+  color: #111;
+  text-align: center;
+}
+
+.print-order-qr img {
+  display: block;
+  width: 30mm;
+  height: 30mm;
+}
+
+.print-order-qr figcaption {
+  width: 30mm;
+  display: grid;
+  gap: 0.5mm;
+  font-size: 20px;
+  line-height: 1.2;
+  overflow-wrap: anywhere;
+}
+
+.print-order-qr figcaption strong {
+  font-size: 23px;
+}
+
 .brigadier-modal {
   width: min(980px, calc(100vw - 48px));
 }
 
 .time-breakdown-modal {
-  width: min(720px, calc(100vw - 48px));
+  width: min(1040px, calc(100vw - 48px));
 }
 
 .time-breakdown-table-wrap {
   margin-top: 0;
 }
 
-.time-breakdown-table th:last-child,
-.time-breakdown-table td:last-child {
+.time-breakdown-table th:nth-child(n + 3),
+.time-breakdown-table td:nth-child(n + 3) {
   text-align: right;
   white-space: nowrap;
 }
@@ -11887,6 +12533,11 @@ h2 {
   }
 
   .primary-button {
+    width: 100%;
+  }
+
+  .worker-panel__actions {
+    display: grid;
     width: 100%;
   }
 

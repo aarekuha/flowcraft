@@ -5,6 +5,7 @@ export type OperationNode = {
   operationCatalogEntryId: number | null;
   name: string;
   priceCents: number | null;
+  standardTimeSeconds: number | null;
   children: OperationNode[];
 };
 
@@ -43,6 +44,7 @@ export type ProductCreatePayload = {
     operation_catalog_entry_id?: number | null;
     name: string;
     price_cents?: number | null;
+    standard_time_seconds?: number | null;
     children: ProductCreatePayload["operations"];
   }>;
 };
@@ -52,6 +54,7 @@ export type ProductCostsUpdatePayload = {
   operations: Array<{
     id: number;
     price_cents?: number | null;
+    standard_time_seconds?: number | null;
     children: ProductCostsUpdatePayload["operations"];
   }>;
 };
@@ -61,6 +64,7 @@ type OperationNodeApi = {
   operation_catalog_entry_id: number | null;
   name: string;
   price_cents: number | null;
+  standard_time_seconds: number | null;
   children: OperationNodeApi[];
 };
 
@@ -191,6 +195,7 @@ function mapOperationNode(operation: OperationNodeApi): OperationNode {
     operationCatalogEntryId: operation.operation_catalog_entry_id,
     name: operation.name,
     priceCents: operation.price_cents,
+    standardTimeSeconds: operation.standard_time_seconds,
     children: operation.children.map(mapOperationNode),
   };
 }

@@ -12,6 +12,11 @@ export const router = createRouter({
       component: WorkerHomePage,
     },
     {
+      path: "/worker/orders/:orderId/timers",
+      name: "worker-order-timers",
+      component: WorkerHomePage,
+    },
+    {
       path: "/monitoring",
       name: "brigadier-monitoring",
       component: BrigadierMonitoringPage,

@@ -161,6 +161,8 @@ class WorkOrderTimeBreakdownItem(BaseModel):
     worker_user_id: int
     worker_user_name: str
     elapsed_ms: int
+    standard_time_seconds: int | None
+    average_elapsed_ms: int
 
 
 class WorkOrderTimeBreakdown(BaseModel):
