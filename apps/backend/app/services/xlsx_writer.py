@@ -1,16 +1,34 @@
 from __future__ import annotations
 
+# ruff: noqa: I001
+
 from collections.abc import Sequence
+from dataclasses import dataclass
 from html import escape
 from io import BytesIO
 from math import isfinite
 from zipfile import ZIP_DEFLATED, ZipFile
 
-CellValue = str | int | float | None
+@dataclass(frozen=True, slots=True)
+class XlsxDuration:
+    milliseconds: int
+
+
+@dataclass(frozen=True, slots=True)
+class XlsxTotal:
+    value: str | int | float | XlsxDuration | None
+
+
+CellValue = str | int | float | XlsxDuration | XlsxTotal | None
 SheetRows = Sequence[Sequence[CellValue]]
 
 
-def build_xlsx(sheets: Sequence[tuple[str, SheetRows]]) -> bytes:
+def build_xlsx(
+    sheets: Sequence[tuple[str, SheetRows]],
+    *,
+    auto_width: bool = False,
+    freeze_header: bool = False,
+) -> bytes:
     buffer = BytesIO()
     with ZipFile(buffer, "w", ZIP_DEFLATED) as archive:
         archive.writestr("[Content_Types].xml", _content_types(len(sheets)))
@@ -24,7 +42,11 @@ def build_xlsx(sheets: Sequence[tuple[str, SheetRows]]) -> bytes:
         for index, (_, rows) in enumerate(sheets, start=1):
             archive.writestr(
                 f"xl/worksheets/sheet{index}.xml",
-                _worksheet(rows),
+                _worksheet(
+                    rows,
+                    auto_width=auto_width,
+                    freeze_header=freeze_header,
+                ),
             )
     return buffer.getvalue()
 
@@ -103,21 +125,45 @@ def _styles() -> str:
     return (
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
         '<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+        '<numFmts count="1"><numFmt numFmtId="164" formatCode="[h]:mm:ss"/>'
+        '</numFmts>'
         '<fonts count="2"><font><sz val="11"/><name val="Calibri"/></font>'
         '<font><b/><sz val="11"/><name val="Calibri"/></font></fonts>'
-        '<fills count="1"><fill><patternFill patternType="none"/></fill></fills>'
+        '<fills count="3"><fill><patternFill patternType="none"/></fill>'
+        '<fill><patternFill patternType="gray125"/></fill>'
+        '<fill><patternFill patternType="solid"><fgColor rgb="FFDCEAF5"/>'
+        '<bgColor indexed="64"/></patternFill></fill></fills>'
         '<borders count="1"><border/></borders>'
         '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" '
         'borderId="0"/></cellStyleXfs>'
-        '<cellXfs count="2"><xf numFmtId="0" fontId="0" fillId="0" '
+        '<cellXfs count="5"><xf numFmtId="0" fontId="0" fillId="0" '
         'borderId="0" xfId="0"/>'
         '<xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" '
-        'applyFont="1"/></cellXfs>'
+        'applyFont="1"/>'
+        '<xf numFmtId="164" fontId="0" fillId="0" borderId="0" xfId="0" '
+        'applyNumberFormat="1"/>'
+        '<xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" '
+        'applyFont="1" applyFill="1"/>'
+        '<xf numFmtId="164" fontId="1" fillId="2" borderId="0" xfId="0" '
+        'applyFont="1" applyFill="1" applyNumberFormat="1"/></cellXfs>'
         "</styleSheet>"
     )
 
 
-def _worksheet(rows: SheetRows) -> str:
+def _worksheet(
+    rows: SheetRows,
+    *,
+    auto_width: bool,
+    freeze_header: bool,
+) -> str:
+    sheet_view = (
+        '<sheetViews><sheetView workbookViewId="0">'
+        '<pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/>'
+        '</sheetView></sheetViews>'
+        if freeze_header
+        else ""
+    )
+    columns = _columns(rows) if auto_width else ""
     row_items = "".join(
         f'<row r="{row_index}">{_cells(row, row_index)}</row>'
         for row_index, row in enumerate(rows, start=1)
@@ -125,9 +171,39 @@ def _worksheet(rows: SheetRows) -> str:
     return (
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
         '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
-        f"<sheetData>{row_items}</sheetData>"
+        f"{sheet_view}{columns}<sheetData>{row_items}</sheetData>"
         "</worksheet>"
     )
+
+
+def _columns(rows: SheetRows) -> str:
+    column_count = max((len(row) for row in rows), default=0)
+    widths: list[int] = []
+    for column_index in range(column_count):
+        width = max(
+            (
+                len(_display_value(row[column_index]))
+                for row in rows
+                if column_index < len(row)
+            ),
+            default=0,
+        )
+        widths.append(min(max(width + 2, 10), 36))
+    items = "".join(
+        f'<col min="{index}" max="{index}" width="{width}" customWidth="1"/>'
+        for index, width in enumerate(widths, start=1)
+    )
+    return f"<cols>{items}</cols>" if items else ""
+
+
+def _display_value(value: CellValue) -> str:
+    if isinstance(value, XlsxTotal):
+        value = value.value
+    if value is None:
+        return ""
+    if isinstance(value, XlsxDuration):
+        return "00:00:00"
+    return str(value)
 
 
 def _cells(row: Sequence[CellValue], row_index: int) -> str:
@@ -138,9 +214,24 @@ def _cells(row: Sequence[CellValue], row_index: int) -> str:
 
 
 def _cell(value: CellValue, reference: str, *, is_header: bool) -> str:
-    style = ' s="1"' if is_header else ""
+    is_total = isinstance(value, XlsxTotal)
+    if is_total:
+        value = value.value
+    if is_total and isinstance(value, XlsxDuration):
+        style = ' s="4"'
+    elif is_total:
+        style = ' s="3"'
+    elif isinstance(value, XlsxDuration):
+        style = ' s="2"'
+    elif is_header:
+        style = ' s="1"'
+    else:
+        style = ""
     if value is None:
         return f'<c r="{reference}"{style}/>'
+    if isinstance(value, XlsxDuration):
+        days = max(value.milliseconds, 0) / 86_400_000
+        return f'<c r="{reference}"{style}><v>{days:.12f}</v></c>'
     if isinstance(value, int):
         return f'<c r="{reference}"{style}><v>{value}</v></c>'
     if isinstance(value, float) and isfinite(value):

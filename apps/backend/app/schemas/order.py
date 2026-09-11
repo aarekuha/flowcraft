@@ -1,3 +1,4 @@
+from datetime import date
 from enum import StrEnum
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -14,6 +15,7 @@ class WorkOrderSortField(StrEnum):
     DEFECT = "defect"
     NAME = "name"
     ORDER_NUMBER = "order_number"
+    PLANNED_COMPLETION = "planned_completion"
     QUALITY_CONTROL = "quality_control"
     TAKEN = "taken"
 
@@ -57,6 +59,7 @@ class WorkOrderAssignmentWorkerStatusUpdate(BaseModel):
 
 class WorkOrderCreate(BaseModel):
     order_number: str = Field(min_length=1, max_length=64)
+    planned_completion_date: date
     product_id: int
     leather_type_id: int | None = None
     quantity: int = Field(gt=0)
@@ -81,6 +84,10 @@ class WorkOrderUpdateAssignments(BaseModel):
 
 class WorkOrderStatusUpdate(BaseModel):
     is_completed: bool
+
+
+class WorkOrderPlannedCompletionDateUpdate(BaseModel):
+    planned_completion_date: date
 
 
 class WorkOrderQualityControlStatusUpdate(BaseModel):
@@ -110,6 +117,7 @@ class WorkOrderListItem(BaseModel):
     leather_type_id: int | None
     leather_type_name: str | None
     quantity: int
+    planned_completion_date: date | None
     estimated_minutes: int
     total_spent_minutes: int
     has_spent_time: bool
@@ -142,6 +150,7 @@ class WorkOrderDetail(BaseModel):
     leather_type_id: int | None
     leather_type_name: str | None
     quantity: int
+    planned_completion_date: date | None
     estimated_minutes: int
     total_spent_minutes: int
     has_spent_time: bool
@@ -168,4 +177,5 @@ class WorkOrderTimeBreakdownItem(BaseModel):
 class WorkOrderTimeBreakdown(BaseModel):
     order_id: int
     items: list[WorkOrderTimeBreakdownItem] = Field(default_factory=list)
+    total_standard_time_seconds: int
     total_elapsed_ms: int

@@ -89,7 +89,7 @@ class TimerService:
         shift = self._get_open_shift(user_id)
         if shift is None:
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail="Рабочий день не начат.",
             )
 
@@ -243,7 +243,7 @@ class TimerService:
         if payload.timer_type == TimerType.OPERATION:
             if payload.order_id is None or payload.operation_id is None:
                 raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                     detail="Для производственного таймера нужны заказ и операция.",
                 )
 
@@ -255,7 +255,7 @@ class TimerService:
             assignment = self.session.scalars(assignment_stmt).one_or_none()
             if assignment is None:
                 raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                     detail="Операция не назначена текущему исполнителю.",
                 )
 
@@ -273,7 +273,7 @@ class TimerService:
                 )
             ):
                 raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                     detail="Операция скрыта или отмечена выполненной.",
                 )
 
@@ -291,14 +291,14 @@ class TimerService:
                 or order.taken_at is None
             ):
                 raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                     detail="Операция недоступна для запуска таймера.",
                 )
             return
 
         if payload.order_id is not None or payload.operation_id is not None:
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail=(
                     "Служебные таймеры не должны быть привязаны "
                     "к заказу или операции."

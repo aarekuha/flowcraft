@@ -123,7 +123,7 @@ class ProductService:
         unknown_operation_ids = set(requested_operation_costs) - set(operations_by_id)
         if unknown_operation_ids:
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail="Operation prices must reference existing product operations.",
             )
 
@@ -135,12 +135,12 @@ class ProductService:
             )
             if requested_costs[0] != current_price_cents:
                 raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                     detail="Operation prices cannot be changed after product creation.",
                 )
             if requested_costs[1] != current_standard_time_seconds:
                 raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                     detail=(
                         "Operation standard times cannot be changed after product "
                         "creation."
@@ -242,17 +242,17 @@ class ProductService:
             if operation.children:
                 if operation.price_cents is not None:
                     raise HTTPException(
-                        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                        status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                         detail="Operation groups cannot have prices.",
                     )
                 if operation.standard_time_seconds is not None:
                     raise HTTPException(
-                        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                        status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                         detail="Operation groups cannot have standard times.",
                     )
                 if operation.operation_catalog_entry_id is not None:
                     raise HTTPException(
-                        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                        status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                         detail=(
                             "Operation groups must not reference the operation "
                             "catalog."
@@ -315,7 +315,7 @@ class ProductService:
 
         if entry is None:
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail="Operations must be selected from the operation catalog.",
             )
 
@@ -337,7 +337,7 @@ class ProductService:
                 entry = resolved_entries[id(operation)]
                 if entry.id in seen_entry_ids:
                     raise HTTPException(
-                        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                        status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                         detail="Operations must be unique within a product.",
                     )
                 seen_entry_ids.add(entry.id)
@@ -353,7 +353,7 @@ class ProductService:
 
         if existing_product_id is not None:
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail="Product with this name and version already exists.",
             )
 
@@ -367,7 +367,7 @@ class ProductService:
             for operation in nodes:
                 if operation.id in costs:
                     raise HTTPException(
-                        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                        status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                         detail=(
                             "Operation prices must reference each operation only once."
                         ),
@@ -418,7 +418,7 @@ class ProductService:
             user = self.session.get(User, author_user_id)
             if user is None or user.deleted_at is not None:
                 raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                     detail="Author user not found.",
                 )
             return user
@@ -431,7 +431,7 @@ class ProductService:
         default_user = self.session.scalars(stmt).first()
         if default_user is None:
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail="Create at least one user before creating products.",
             )
         return default_user

@@ -4,6 +4,7 @@ import QRCode from "qrcode";
 import type { IScannerControls } from "@zxing/browser";
 import { useRoute, useRouter } from "vue-router";
 import flowcraftLogoUrl from "@/shared/assets/flowcraft_logo.png";
+import ReportsPanel from "@/pages/worker-home/ReportsPanel.vue";
 
 import {
   changePassword,
@@ -41,6 +42,7 @@ import {
   fetchWorkerAssignedWorkOrders,
   updateWorkOrderAssignments,
   updateWorkOrderDeletedStatus,
+  updateWorkOrderPlannedCompletionDate,
   updateWorkOrderQualityControlStatus,
   updateWorkOrderStatus,
   updateWorkOrderTakenStatus,
@@ -94,7 +96,7 @@ import {
   type UserRole,
 } from "@/shared/api/users";
 
-type TabId = "worker" | "brigadier" | "constructor" | "stats" | "users";
+type TabId = "worker" | "brigadier" | "constructor" | "stats" | "reports" | "users";
 type ModalMode = "create" | "copy" | "view" | null;
 type WorkOrderStatusTabId = Exclude<WorkOrderStatusFilter, "all">;
 type BrigadierTabId = "orders" | WorkOrderStatusTabId;
@@ -179,6 +181,7 @@ const tabs: Array<{ id: TabId; label: string; icon: string }> = [
   { id: "brigadier", label: "Бригадир", icon: "brigadier" },
   { id: "constructor", label: "Конструктор", icon: "constructor" },
   { id: "stats", label: "Статистика", icon: "stats" },
+  { id: "reports", label: "Отчеты", icon: "stats" },
   { id: "users", label: "Пользователи", icon: "users" },
 ];
 
@@ -187,6 +190,7 @@ const tabRoles: Record<TabId, UserRole[]> = {
   brigadier: ["brigadier", "quality_control"],
   constructor: ["constructor"],
   stats: ["brigadier", "admin"],
+  reports: ["reports"],
   users: ["admin"],
 };
 
@@ -228,6 +232,7 @@ const userRoleOptions: Array<{
   { value: "brigadier", label: "Бригадир", icon: "brigadier" },
   { value: "constructor", label: "Конструктор", icon: "constructor" },
   { value: "quality_control", label: "ОТК", icon: "quality-control" },
+  { value: "reports", label: "Отчеты", icon: "stats" },
   { value: "admin", label: "Администратор", icon: "admin" },
 ];
 
@@ -353,6 +358,7 @@ const brigadierModalProduct = ref<ProductDetail | null>(null);
 const brigadierModalOrderId = ref<number | null>(null);
 const brigadierModalAssignments = ref<BrigadierOrderAssignment[]>([]);
 const brigadierModalQuantity = ref("1");
+const brigadierModalPlannedCompletionDate = ref("");
 const brigadierModalDefectQuantity = ref("0");
 const brigadierModalOrderNumber = ref("");
 const brigadierModalLeatherTypeId = ref("");
@@ -762,6 +768,7 @@ const isBrigadierOrderAttributesEditable = computed(
     (brigadierModalMode.value === "manage" &&
       !isDeletedBrigadierOrderModal.value &&
       !isCompletedBrigadierOrderModal.value &&
+      !isQualityControlStageBrigadierOrderModal.value &&
       !brigadierModalHasSpentTime.value),
 );
 
@@ -775,12 +782,20 @@ const isBrigadierAssignmentsEditable = computed(
         !isQualityControlStageBrigadierOrderModal.value)),
 );
 
+const isBrigadierPlannedCompletionDateChanged = computed(
+  () =>
+    brigadierModalMode.value !== "create" &&
+    brigadierModalPlannedCompletionDate.value !==
+      (brigadierCurrentOrder.value?.plannedCompletionDate ?? ""),
+);
+
 const isBrigadierSaveAvailable = computed(
   () =>
     brigadierModalMode.value === "create" ||
     isQualityControlOrderModal.value ||
     isBrigadierOrderAttributesEditable.value ||
-    isBrigadierAssignmentsEditable.value,
+    isBrigadierAssignmentsEditable.value ||
+    isBrigadierPlannedCompletionDateChanged.value,
 );
 
 const brigadierModalLeatherTypeName = computed(() => {
@@ -836,18 +851,18 @@ const brigadierModalTitle = computed(() =>
 
 const brigadierModalDescription = computed(() =>
   brigadierModalMode.value === "quality_control"
-    ? "Проверьте заказ и укажите количество брака."
+    ? "Проверьте заказ, укажите количество брака и при необходимости скорректируйте плановую дату."
     : isDeletedBrigadierOrderModal.value
-    ? "Удаленный заказ доступен только для просмотра."
+    ? "В удаленном заказе можно изменить плановую дату сдачи."
     : isCompletedBrigadierOrderModal.value
-    ? "Выполненный заказ доступен только для просмотра."
+    ? "В выполненном заказе можно изменить плановую дату сдачи."
     : isQualityControlStageBrigadierOrderModal.value
-    ? "Заказ на стадии ОТК доступен только для просмотра назначений."
+    ? "На стадии ОТК можно изменить плановую дату, назначения доступны для просмотра."
     : brigadierModalHasSpentTime.value
-    ? "По заказу уже есть трудозатраты: можно изменить исполнителей до передачи в ОТК, вид кожи и количество заблокированы."
+    ? "По заказу уже есть трудозатраты: можно изменить плановую дату и исполнителей до передачи в ОТК, вид кожи и количество заблокированы."
     : brigadierModalMode.value === "manage"
-    ? "Можно изменить вид кожи, количество изделий и назначенных исполнителей до передачи в ОТК."
-    : "Укажите количество изделий и распределите исполнителей по операциям.",
+    ? "Можно изменить плановую дату, вид кожи, количество изделий и назначенных исполнителей до передачи в ОТК."
+    : "Укажите плановую дату, количество изделий и распределите исполнителей по операциям.",
 );
 
 const brigadierModalSaveLabel = computed(() =>
@@ -868,7 +883,7 @@ const brigadierSaveConfirmTitle = computed(() =>
 
 const brigadierSaveConfirmDescription = computed(() =>
   brigadierModalMode.value === "quality_control"
-    ? "Будет сохранено количество брака и установлено время проведения ОТК."
+    ? "Будут сохранены плановая дата и количество брака, затем установлено время проведения ОТК."
     : brigadierModalMode.value === "manage"
     ? "Назначения исполнителей будут обновлены в заказе."
     : "Заказ будет создан и появится во вкладке созданных заказов.",
@@ -1025,6 +1040,14 @@ const brigadierQuantityError = computed(() => {
     : "Укажите количество изделий больше нуля.";
 });
 
+const brigadierPlannedCompletionDateError = computed(() =>
+  !brigadierModalPlannedCompletionDate.value &&
+  (brigadierModalMode.value === "create" ||
+    Boolean(brigadierCurrentOrder.value?.plannedCompletionDate))
+    ? "Укажите плановую дату сдачи заказа."
+    : "",
+);
+
 const brigadierLeatherTypeError = computed(() =>
   brigadierModalLeatherTypeNameDraft.value.trim() && !brigadierModalLeatherTypeId.value
     ? "Выберите вид кожи из списка."
@@ -1087,6 +1110,13 @@ const brigadierSaveIssue = computed<{
     };
   }
 
+  if (brigadierPlannedCompletionDateError.value) {
+    return {
+      message: brigadierPlannedCompletionDateError.value,
+      selector: '[data-field="brigadier-planned-completion-date"]',
+    };
+  }
+
   if (brigadierLeatherTypeError.value) {
     return {
       message: brigadierLeatherTypeError.value,
@@ -1120,7 +1150,20 @@ const brigadierModalCanSave = computed(() => {
     return (
       Boolean(brigadierModalProduct.value) &&
       brigadierModalOrderId.value !== null &&
-      !brigadierDefectQuantityError.value
+      !brigadierDefectQuantityError.value &&
+      !brigadierPlannedCompletionDateError.value
+    );
+  }
+
+  if (
+    brigadierModalMode.value === "manage" &&
+    !isBrigadierOrderAttributesEditable.value &&
+    !isBrigadierAssignmentsEditable.value
+  ) {
+    return (
+      Boolean(brigadierModalProduct.value) &&
+      Boolean(brigadierModalPlannedCompletionDate.value) &&
+      isBrigadierPlannedCompletionDateChanged.value
     );
   }
 
@@ -1128,6 +1171,7 @@ const brigadierModalCanSave = computed(() => {
     Boolean(brigadierModalProduct.value) &&
     !brigadierOrderNumberError.value &&
     !brigadierQuantityError.value &&
+    !brigadierPlannedCompletionDateError.value &&
     !brigadierLeatherTypeError.value &&
     brigadierModalAssignments.value.length > 0 &&
     !firstBrigadierAssignmentError.value
@@ -1175,7 +1219,7 @@ const assignedWorkerTimerDefinitions = computed<WorkerTimerDefinition[]>(() => {
         assignmentId: assignment.id,
         assignmentStatus: assignment.workerStatus,
         orderGroupKey: String(order.id),
-        productLabel: `${order.productName} · ${order.productVersion}`,
+        productLabel: order.productName,
         productQuantity: order.quantity,
         leatherTypeName: order.leatherTypeName,
         orderNumber: order.orderNumber,
@@ -1460,7 +1504,9 @@ function toggleWorkOrderSort(field: WorkOrderSortBy) {
 function getDefaultWorkOrderSortDirection(
   field: WorkOrderSortBy,
 ): WorkOrderSortDirection {
-  return field === "name" || field === "order_number"
+  return field === "name" ||
+    field === "order_number" ||
+    field === "planned_completion"
     ? "asc"
     : "desc";
 }
@@ -4184,6 +4230,8 @@ function formatUserRole(role: UserRole): string {
       return "Конструктор";
     case "quality_control":
       return "ОТК";
+    case "reports":
+      return "Отчеты";
     case "admin":
       return "Администратор";
   }
@@ -4451,6 +4499,7 @@ async function openBrigadierCreateOrder(productId: number) {
   brigadierModalError.value = "";
   brigadierSaveLoading.value = false;
   brigadierModalQuantity.value = "1";
+  brigadierModalPlannedCompletionDate.value = "";
   brigadierModalDefectQuantity.value = "0";
   brigadierModalOrderNumber.value = "";
   brigadierModalLeatherTypeId.value = "";
@@ -4496,6 +4545,7 @@ async function openBrigadierManageOrder(order: WorkOrderSummary) {
   brigadierModalError.value = "";
   brigadierSaveLoading.value = false;
   brigadierModalQuantity.value = String(order.quantity);
+  brigadierModalPlannedCompletionDate.value = order.plannedCompletionDate ?? "";
   brigadierModalDefectQuantity.value = String(order.defectQuantity);
   brigadierModalOrderNumber.value = order.orderNumber;
   brigadierModalLeatherTypeId.value =
@@ -4525,6 +4575,8 @@ async function openBrigadierManageOrder(order: WorkOrderSummary) {
       activeLeatherTypes.value.find((item) => item.id === orderDetail.leatherTypeId)
         ?.name ?? "";
     brigadierModalHasSpentTime.value = orderDetail.hasSpentTime;
+    brigadierModalPlannedCompletionDate.value =
+      orderDetail.plannedCompletionDate ?? "";
     brigadierModalAssignments.value = mergeBrigadierAssignments(
       buildBrigadierAssignments(product.operations),
       orderDetail,
@@ -4547,6 +4599,7 @@ async function openQualityControlOrder(order: WorkOrderSummary) {
   brigadierModalError.value = "";
   brigadierSaveLoading.value = false;
   brigadierModalQuantity.value = String(order.quantity);
+  brigadierModalPlannedCompletionDate.value = order.plannedCompletionDate ?? "";
   brigadierModalDefectQuantity.value = String(order.defectQuantity ?? 0);
   brigadierModalOrderNumber.value = order.orderNumber;
   brigadierModalLeatherTypeId.value =
@@ -4571,6 +4624,8 @@ async function openQualityControlOrder(order: WorkOrderSummary) {
         leatherType.isActive || leatherType.id === orderDetail.leatherTypeId,
     );
     brigadierModalQuantity.value = String(orderDetail.quantity);
+    brigadierModalPlannedCompletionDate.value =
+      orderDetail.plannedCompletionDate ?? "";
     brigadierModalDefectQuantity.value = String(orderDetail.defectQuantity);
     brigadierModalLeatherTypeId.value =
       orderDetail.leatherTypeId === null ? "" : String(orderDetail.leatherTypeId);
@@ -4735,6 +4790,7 @@ function closeBrigadierOrderModal() {
   brigadierModalOrderId.value = null;
   brigadierModalAssignments.value = [];
   brigadierModalQuantity.value = "1";
+  brigadierModalPlannedCompletionDate.value = "";
   brigadierModalDefectQuantity.value = "0";
   brigadierModalOrderNumber.value = "";
   brigadierModalLeatherTypeId.value = "";
@@ -5116,6 +5172,33 @@ function formatDuration(totalMinutes: number): string {
   return `${hours} ч ${minutes} мин`;
 }
 
+function formatPlannedCompletionDate(value: string | null): string {
+  if (!value) {
+    return "—";
+  }
+
+  const [year, month, day] = value.split("-");
+  return year && month && day ? `${day}.${month}.${year}` : value;
+}
+
+function isWorkOrderOverdue(order: WorkOrderSummary): boolean {
+  if (
+    !order.plannedCompletionDate ||
+    order.completedAtTs !== null ||
+    order.deletedAtTs !== null
+  ) {
+    return false;
+  }
+
+  const today = new Date();
+  const todayIso = [
+    today.getFullYear(),
+    String(today.getMonth() + 1).padStart(2, "0"),
+    String(today.getDate()).padStart(2, "0"),
+  ].join("-");
+  return order.plannedCompletionDate < todayIso;
+}
+
 function formatTimerDuration(totalMs: number): string {
   const totalSeconds = Math.max(0, Math.floor(totalMs / 1000));
   const hours = Math.floor(totalSeconds / 3600);
@@ -5125,6 +5208,10 @@ function formatTimerDuration(totalMs: number): string {
   return [hours, minutes, seconds]
     .map((value) => String(value).padStart(2, "0"))
     .join(":");
+}
+
+function calculateAverageDuration(totalMs: number, quantity: number): number {
+  return quantity > 0 ? Math.floor(totalMs / quantity) : 0;
 }
 
 function formatDurationCompact(totalMs: number): string {
@@ -5262,15 +5349,31 @@ async function saveBrigadierOrder() {
   const assignments = brigadierModalAssignments.value.map((assignment) => ({ ...assignment }));
   const estimatedMinutes = estimateWorkOrderMinutes(quantity, assignments);
   const isCreateMode = brigadierModalMode.value === "create";
+  const shouldUpdatePlannedCompletionDate =
+    !isCreateMode &&
+    Boolean(brigadierModalPlannedCompletionDate.value) &&
+    isBrigadierPlannedCompletionDateChanged.value;
 
   try {
+    if (shouldUpdatePlannedCompletionDate && brigadierCurrentOrder.value) {
+      await updateWorkOrderPlannedCompletionDate(
+        brigadierCurrentOrder.value.id,
+        brigadierModalPlannedCompletionDate.value,
+      );
+    }
+
     if (isQualityControlOrderModal.value && brigadierCurrentOrder.value) {
       await acceptWorkOrderQualityControl(
         brigadierCurrentOrder.value.id,
         Number.parseInt(brigadierModalDefectQuantity.value, 10),
       );
       brigadierTab.value = "completed";
-    } else if (!isCreateMode && brigadierCurrentOrder.value) {
+    } else if (
+      !isCreateMode &&
+      brigadierCurrentOrder.value &&
+      (isBrigadierOrderAttributesEditable.value ||
+        isBrigadierAssignmentsEditable.value)
+    ) {
       await updateWorkOrderAssignments(brigadierCurrentOrder.value.id, {
         leather_type_id: leatherTypeId,
         quantity,
@@ -5280,9 +5383,10 @@ async function saveBrigadierOrder() {
           worker_user_id: assignment.workerUserId,
         })),
       });
-    } else {
+    } else if (isCreateMode) {
       await createWorkOrder({
         order_number: brigadierModalOrderNumber.value.trim(),
+        planned_completion_date: brigadierModalPlannedCompletionDate.value,
         product_id: brigadierModalProduct.value.id,
         leather_type_id: leatherTypeId,
         quantity,
@@ -5333,8 +5437,9 @@ async function persistUserChanges(user: UserRecord) {
   usersError.value = "";
 
   try {
+    let savedUser: UserRecord;
     if (user.isNew) {
-      await createUserApi({
+      savedUser = await createUserApi({
         name: editingUserDraft.value.name.trim(),
         phone: editingUserDraft.value.phone.trim(),
         roles: editingUserDraft.value.roles,
@@ -5342,13 +5447,16 @@ async function persistUserChanges(user: UserRecord) {
         author_user_id: editingUserDraft.value.authorUserId,
       });
     } else {
-      await updateUserApi(user.id, {
+      savedUser = await updateUserApi(user.id, {
         name: editingUserDraft.value.name.trim(),
         phone: editingUserDraft.value.phone.trim(),
         roles: editingUserDraft.value.roles,
         is_active: editingUserDraft.value.isActive,
         author_user_id: editingUserDraft.value.authorUserId,
       });
+    }
+    if (savedUser.id === currentSession.value?.userId) {
+      currentSession.value = await fetchCurrentSession();
     }
 
     editingUserId.value = null;
@@ -5986,7 +6094,25 @@ async function handleResetUserPassword(user: UserRecord) {
                         </button>
                       </th>
                       <th>Вид кожи</th>
-                      <th>Версия</th>
+                      <th>Количество изделий</th>
+                      <th>
+                        <button
+                          type="button"
+                          class="sort-header-button"
+                          :class="{
+                            'sort-header-button--active':
+                              isWorkOrderSortFieldActive('planned_completion'),
+                          }"
+                          @click="toggleWorkOrderSort('planned_completion')"
+                        >
+                          <span>Плановая дата сдачи</span>
+                          <span
+                            class="sort-header-button__icon"
+                            :class="`sort-header-button__icon--${getWorkOrderSortDirection('planned_completion')}`"
+                            aria-hidden="true"
+                          />
+                        </button>
+                      </th>
                       <th v-if="workOrderStatusTab === 'quality_control'">
                         <button
                           type="button"
@@ -6107,7 +6233,14 @@ async function handleResetUserPassword(user: UserRecord) {
                       <td>{{ order.orderNumber }}</td>
                       <td>{{ order.productName }}</td>
                       <td>{{ order.leatherTypeName ?? "вид кожи не указан" }}</td>
-                      <td>{{ order.productVersion }}</td>
+                      <td>{{ order.quantity }} шт.</td>
+                      <td
+                        :class="{
+                          'work-order-deadline--overdue': isWorkOrderOverdue(order),
+                        }"
+                      >
+                        {{ formatPlannedCompletionDate(order.plannedCompletionDate) }}
+                      </td>
                       <td v-if="workOrderStatusTab === 'quality_control'">
                         {{ order.qualityControlAt ?? "—" }}
                       </td>
@@ -6150,6 +6283,17 @@ async function handleResetUserPassword(user: UserRecord) {
                       </template>
                       <td>
                         <div class="table-actions">
+                          <button
+                            v-if="workOrderStatusTab === 'quality_control'"
+                            type="button"
+                            class="action-link"
+                            @click="openBrigadierManageOrder(order)"
+                          >
+                            <span class="button-content">
+                              <span class="button-icon button-icon--edit" aria-hidden="true" />
+                              <span>Изменить срок</span>
+                            </span>
+                          </button>
                           <button
                             v-if="workOrderStatusTab !== 'quality_control'"
                             type="button"
@@ -6288,7 +6432,15 @@ async function handleResetUserPassword(user: UserRecord) {
                   <div class="mobile-card__meta">
                     <span>{{ order.productName }}</span>
                     <span>Вид кожи: {{ order.leatherTypeName ?? "вид кожи не указан" }}</span>
-                    <span>Версия {{ order.productVersion }} · {{ order.quantity }} шт.</span>
+                    <span>Количество изделий: {{ order.quantity }} шт.</span>
+                    <span
+                      :class="{
+                        'work-order-deadline--overdue': isWorkOrderOverdue(order),
+                      }"
+                    >
+                      Плановая сдача:
+                      {{ formatPlannedCompletionDate(order.plannedCompletionDate) }}
+                    </span>
                     <span>Создан: {{ order.createdAt }}</span>
                     <span v-if="workOrderStatusTab !== 'created'">
                       В работе с {{ order.takenAt ?? "—" }}
@@ -6310,7 +6462,6 @@ async function handleResetUserPassword(user: UserRecord) {
                     </span>
                   </div>
                   <button
-                    v-if="workOrderStatusTab !== 'quality_control'"
                     type="button"
                     class="secondary-button"
                     @click="openBrigadierManageOrder(order)"
@@ -6906,6 +7057,12 @@ async function handleResetUserPassword(user: UserRecord) {
             </div>
           </template>
         </article>
+      </section>
+
+      <section v-else-if="activeTab === 'reports'">
+        <ReportsPanel
+          :products="products"
+        />
       </section>
 
       <section v-else-if="activeTab === 'constructor'">
@@ -8110,6 +8267,19 @@ async function handleResetUserPassword(user: UserRecord) {
                   {{ brigadierQuantityError }}
                 </p>
               </label>
+
+              <label class="field">
+                <span class="field__label">Плановая дата сдачи</span>
+                <input
+                  v-model="brigadierModalPlannedCompletionDate"
+                  type="date"
+                  class="text-input"
+                  data-field="brigadier-planned-completion-date"
+                />
+                <p v-if="brigadierPlannedCompletionDateError" class="field-error">
+                  {{ brigadierPlannedCompletionDateError }}
+                </p>
+              </label>
             </div>
           </div>
 
@@ -8432,10 +8602,7 @@ async function handleResetUserPassword(user: UserRecord) {
         </div>
 
         <template v-else-if="workOrderTimeBreakdownModal.breakdown">
-          <div
-            v-if="workOrderTimeBreakdownModal.breakdown.items.length > 0"
-            class="table-wrap time-breakdown-table-wrap"
-          >
+          <div class="table-wrap time-breakdown-table-wrap">
             <table class="products-table time-breakdown-table">
               <thead>
                 <tr>
@@ -8447,6 +8614,11 @@ async function handleResetUserPassword(user: UserRecord) {
                 </tr>
               </thead>
               <tbody>
+                <tr v-if="workOrderTimeBreakdownModal.breakdown.items.length === 0">
+                  <td colspan="5" class="time-breakdown-table__empty">
+                    По заказу пока нет завершенных таймеров операций.
+                  </td>
+                </tr>
                 <tr
                   v-for="item in workOrderTimeBreakdownModal.breakdown.items"
                   :key="`${item.operationId ?? 'deleted'}:${item.workerUserId}`"
@@ -8464,18 +8636,41 @@ async function handleResetUserPassword(user: UserRecord) {
                   <td>{{ formatTimerDuration(item.averageElapsedMs) }}</td>
                 </tr>
               </tbody>
+              <tfoot>
+                <tr class="time-breakdown-total-row">
+                  <th colspan="2" scope="row">Итого</th>
+                  <td>
+                    <span class="time-breakdown-total-row__label">По всему заказу</span>
+                    <strong>
+                      {{ formatTimerDuration(workOrderTimeBreakdownModal.breakdown.totalElapsedMs) }}
+                    </strong>
+                  </td>
+                  <td>
+                    <span class="time-breakdown-total-row__label">План на изделие</span>
+                    <strong>
+                      {{
+                        formatTimerDuration(
+                          workOrderTimeBreakdownModal.breakdown.totalStandardTimeSeconds * 1000,
+                        )
+                      }}
+                    </strong>
+                  </td>
+                  <td>
+                    <span class="time-breakdown-total-row__label">На одно изделие</span>
+                    <strong>
+                      {{
+                        formatTimerDuration(
+                          calculateAverageDuration(
+                            workOrderTimeBreakdownModal.breakdown.totalElapsedMs,
+                            workOrderTimeBreakdownModal.order.quantity,
+                          ),
+                        )
+                      }}
+                    </strong>
+                  </td>
+                </tr>
+              </tfoot>
             </table>
-          </div>
-
-          <div v-else class="empty-table-state">
-            <p>По заказу пока нет завершенных таймеров операций.</p>
-          </div>
-
-          <div class="time-breakdown-total">
-            <span>Итого</span>
-            <strong>
-              {{ formatTimerDuration(workOrderTimeBreakdownModal.breakdown.totalElapsedMs) }}
-            </strong>
           </div>
         </template>
       </section>
@@ -11021,6 +11216,11 @@ h2 {
   outline-offset: 3px;
 }
 
+.work-order-deadline--overdue {
+  color: var(--color-danger);
+  font-weight: 800;
+}
+
 .pagination-bar {
   display: flex;
   align-items: center;
@@ -11193,25 +11393,32 @@ h2 {
   white-space: nowrap;
 }
 
-.time-breakdown-total {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  margin-top: 18px;
-  padding: 16px 18px;
-  border-radius: 18px;
+.time-breakdown-table .time-breakdown-table__empty {
+  padding: 24px;
+  color: var(--color-text-secondary);
+  text-align: center;
+}
+
+.time-breakdown-total-row th,
+.time-breakdown-total-row td {
   background: var(--color-surface-soft);
   color: var(--color-text);
   font-family: "Sora", "Inter", sans-serif;
+  vertical-align: top;
 }
 
-.time-breakdown-total span {
+.time-breakdown-total-row th {
+  text-align: left;
+}
+
+.time-breakdown-total-row__label {
+  display: block;
   color: var(--color-text-secondary);
   font-weight: 700;
+  margin-bottom: 4px;
 }
 
-.time-breakdown-total strong {
+.time-breakdown-total-row strong {
   font-size: 1.15rem;
 }
 

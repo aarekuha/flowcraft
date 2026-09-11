@@ -811,18 +811,18 @@ class StatisticsService:
         if date_from is not None or date_to is not None:
             if date_from is None or date_to is None:
                 raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                     detail="Укажите обе даты периода.",
                 )
             if date_to < date_from:
                 raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                     detail="Дата окончания периода не может быть раньше даты начала.",
                 )
             period_days = (date_to - date_from).days + 1
             if period_days > MAX_STATISTICS_PERIOD_DAYS:
                 raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                     detail=(
                         "Период статистики не может быть больше "
                         f"{MAX_STATISTICS_PERIOD_DAYS} дней."

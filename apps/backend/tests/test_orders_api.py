@@ -39,6 +39,24 @@ def create_worker_user(client: TestClient, name: str = "Ирина Соколо�
     return response.json()
 
 
+def create_brigadier_user(
+    client: TestClient,
+    name: str = "Бригадир Производства",
+) -> dict:
+    phone_suffix = (sum(ord(char) for char in name) + 6000) % 10_000
+    response = client.post(
+        "/api/users",
+        json={
+            "name": name,
+            "phone": f"+7999555{phone_suffix:04d}",
+            "roles": ["brigadier"],
+            "is_active": True,
+        },
+    )
+    assert response.status_code == 201
+    return response.json()
+
+
 def create_quality_control_user(
     client: TestClient,
     name: str = "ОТК Контролер",
@@ -130,6 +148,7 @@ def collect_leaf_operation_ids(product: dict) -> list[int]:
 def test_create_order_and_get_it(client: TestClient) -> None:
     author = create_author_user(client)
     worker = create_worker_user(client)
+    brigadier = create_brigadier_user(client)
     leather_type = create_leather_type(client)
     product = create_product_with_leaf_operations(client, author["id"])
     leaf_ids = collect_leaf_operation_ids(product)
@@ -138,6 +157,7 @@ def test_create_order_and_get_it(client: TestClient) -> None:
         "/api/orders",
         json={
             "order_number": "FC-0101",
+            "planned_completion_date": "2026-09-30",
             "product_id": product["id"],
             "leather_type_id": leather_type["id"],
             "quantity": 12,
@@ -154,6 +174,7 @@ def test_create_order_and_get_it(client: TestClient) -> None:
     created_order = create_response.json()
     assert created_order["order_number"] == "FC-0101"
     assert created_order["quantity"] == 12
+    assert created_order["planned_completion_date"] == "2026-09-30"
     assert created_order["product_name"] == product["name"]
     assert created_order["leather_type_id"] == leather_type["id"]
     assert created_order["leather_type_name"] == leather_type["name"]
@@ -171,6 +192,35 @@ def test_create_order_and_get_it(client: TestClient) -> None:
     assert get_response.json()["order_number"] == "FC-0101"
     assert get_response.json()["leather_type_name"] == leather_type["name"]
 
+    delete_response = client.patch(
+        f"/api/orders/{created_order['id']}/deleted-status",
+        json={"is_deleted": True},
+    )
+    assert delete_response.status_code == 200
+
+    forbidden_planned_date_response = client.patch(
+        f"/api/orders/{created_order['id']}/planned-completion-date",
+        json={"planned_completion_date": "2026-10-05"},
+    )
+    assert forbidden_planned_date_response.status_code == 403
+
+    setup_response = client.post(
+        "/api/auth/setup-password",
+        json={
+            "phone": brigadier["phone"],
+            "new_password": "password123",
+        },
+    )
+    assert setup_response.status_code == 200
+
+    planned_date_response = client.patch(
+        f"/api/orders/{created_order['id']}/planned-completion-date",
+        json={"planned_completion_date": "2026-10-05"},
+    )
+    assert planned_date_response.status_code == 200
+    assert planned_date_response.json()["planned_completion_date"] == "2026-10-05"
+    assert planned_date_response.json()["deleted_at"] is not None
+
 
 def test_create_order_allows_empty_operation_workers(client: TestClient) -> None:
     author = create_author_user(client)
@@ -181,6 +231,7 @@ def test_create_order_allows_empty_operation_workers(client: TestClient) -> None
         "/api/orders",
         json={
             "order_number": "FC-0110",
+            "planned_completion_date": "2026-09-30",
             "product_id": product["id"],
             "quantity": 4,
             "assignments": [
@@ -195,12 +246,10 @@ def test_create_order_allows_empty_operation_workers(client: TestClient) -> None
     payload = create_response.json()
     assert len(payload["assignments"]) == 3
     assert all(
-        assignment["worker_user_id"] is None
-        for assignment in payload["assignments"]
+        assignment["worker_user_id"] is None for assignment in payload["assignments"]
     )
     assert all(
-        assignment["worker_user_name"] is None
-        for assignment in payload["assignments"]
+        assignment["worker_user_name"] is None for assignment in payload["assignments"]
     )
 
 
@@ -214,6 +263,7 @@ def test_list_orders_returns_assignments_count(client: TestClient) -> None:
         "/api/orders",
         json={
             "order_number": "FC-0102",
+            "planned_completion_date": "2026-09-30",
             "product_id": product["id"],
             "quantity": 5,
             "assignments": [
@@ -257,6 +307,7 @@ def test_get_order_time_breakdown_returns_operation_worker_totals(
         "/api/orders",
         json={
             "order_number": "FC-0140",
+            "planned_completion_date": "2026-09-30",
             "product_id": product["id"],
             "quantity": 5,
             "assignments": [
@@ -360,15 +411,17 @@ def test_get_order_time_breakdown_returns_operation_worker_totals(
     assert response.status_code == 200
     payload = response.json()
     assert payload["order_id"] == order_id
+    assert payload["total_standard_time_seconds"] == 510
     assert payload["total_elapsed_ms"] == 260_000
     rows = {
         (item["operation_id"], item["worker_user_id"]): item
         for item in payload["items"]
     }
     assert rows[(leaf_ids[0], first_worker["id"])]["operation_name"] == "Фронт"
-    assert rows[(leaf_ids[0], first_worker["id"])]["worker_user_name"] == first_worker[
-        "name"
-    ]
+    assert (
+        rows[(leaf_ids[0], first_worker["id"])]["worker_user_name"]
+        == first_worker["name"]
+    )
     assert rows[(leaf_ids[0], first_worker["id"])]["elapsed_ms"] == 150_000
     assert rows[(leaf_ids[0], first_worker["id"])]["standard_time_seconds"] == 90
     assert rows[(leaf_ids[0], first_worker["id"])]["average_elapsed_ms"] == 40_000
@@ -412,6 +465,7 @@ def test_worker_assignments_returns_current_worker_in_work_orders(
             "/api/orders",
             json={
                 "order_number": order_number,
+                "planned_completion_date": "2026-09-30",
                 "product_id": product["id"],
                 "quantity": 1,
                 "assignments": [
@@ -493,6 +547,7 @@ def test_worker_assignment_status_filters_by_current_worker(
         "/api/orders",
         json={
             "order_number": "FC-WA-STATUS",
+            "planned_completion_date": "2026-09-30",
             "product_id": product["id"],
             "quantity": 1,
             "assignments": [
@@ -588,6 +643,7 @@ def test_list_orders_filters_sorts_and_paginates(client: TestClient) -> None:
             "/api/orders",
             json={
                 "order_number": order_number,
+                "planned_completion_date": "2026-09-30",
                 "product_id": product["id"],
                 "quantity": 1,
                 "assignments": [
@@ -630,8 +686,7 @@ def test_list_orders_filters_sorts_and_paginates(client: TestClient) -> None:
     assert completed_response.status_code == 200
 
     first_page_response = client.get(
-        "/api/orders?status=created&sort_by=name&sort_direction=asc"
-        "&page=1&page_size=1"
+        "/api/orders?status=created&sort_by=name&sort_direction=asc&page=1&page_size=1"
     )
     assert first_page_response.status_code == 200
     first_page = first_page_response.json()
@@ -641,8 +696,7 @@ def test_list_orders_filters_sorts_and_paginates(client: TestClient) -> None:
     assert first_page["items"][0]["order_number"] == "FC-0301"
 
     second_page_response = client.get(
-        "/api/orders?status=created&sort_by=name&sort_direction=asc"
-        "&page=2&page_size=1"
+        "/api/orders?status=created&sort_by=name&sort_direction=asc&page=2&page_size=1"
     )
     assert second_page_response.status_code == 200
     second_page = second_page_response.json()
@@ -654,23 +708,18 @@ def test_list_orders_filters_sorts_and_paginates(client: TestClient) -> None:
     assert search_payload["total"] == 1
     assert search_payload["items"][0]["product_name"] == "Beta Pack"
 
-    cyrillic_search_response = client.get(
-        "/api/orders?status=created&search=сУм"
-    )
+    cyrillic_search_response = client.get("/api/orders?status=created&search=сУм")
     assert cyrillic_search_response.status_code == 200
     cyrillic_search_payload = cyrillic_search_response.json()
     assert cyrillic_search_payload["total"] == 1
     assert cyrillic_search_payload["items"][0]["order_number"] == "FC-0304"
 
-    hidden_completed_response = client.get(
-        "/api/orders?status=created&search=0303"
-    )
+    hidden_completed_response = client.get("/api/orders?status=created&search=0303")
     assert hidden_completed_response.status_code == 200
     assert hidden_completed_response.json()["total"] == 0
 
     visible_completed_response = client.get(
-        "/api/orders?status=completed&search=0303&sort_by=completed"
-        "&sort_direction=desc"
+        "/api/orders?status=completed&search=0303&sort_by=completed&sort_direction=desc"
     )
     assert visible_completed_response.status_code == 200
     visible_completed_payload = visible_completed_response.json()
@@ -690,6 +739,7 @@ def test_list_orders_filters_sorts_and_paginates(client: TestClient) -> None:
         "defect",
         "name",
         "order_number",
+        "planned_completion",
         "quality_control",
         "taken",
     ]:
@@ -704,6 +754,7 @@ def test_create_order_rejects_duplicate_number(client: TestClient) -> None:
     leaf_ids = collect_leaf_operation_ids(product)
     payload = {
         "order_number": "FC-0103",
+        "planned_completion_date": "2026-09-30",
         "product_id": product["id"],
         "quantity": 3,
         "assignments": [
@@ -737,6 +788,7 @@ def test_create_order_rejects_inactive_product(client: TestClient) -> None:
         "/api/orders",
         json={
             "order_number": "FC-0104",
+            "planned_completion_date": "2026-09-30",
             "product_id": product["id"],
             "quantity": 1,
             "assignments": [
@@ -767,6 +819,7 @@ def test_create_order_rejects_inactive_leather_type(client: TestClient) -> None:
         "/api/orders",
         json={
             "order_number": "FC-0108",
+            "planned_completion_date": "2026-09-30",
             "product_id": product["id"],
             "leather_type_id": leather_type["id"],
             "quantity": 1,
@@ -792,6 +845,7 @@ def test_create_order_rejects_non_worker_assignment(client: TestClient) -> None:
         "/api/orders",
         json={
             "order_number": "FC-0105",
+            "planned_completion_date": "2026-09-30",
             "product_id": product["id"],
             "quantity": 2,
             "assignments": [
@@ -816,6 +870,7 @@ def test_update_order_assignments_changes_worker(client: TestClient) -> None:
         "/api/orders",
         json={
             "order_number": "FC-0106",
+            "planned_completion_date": "2026-09-30",
             "product_id": product["id"],
             "quantity": 7,
             "assignments": [
@@ -862,6 +917,7 @@ def test_update_order_allows_empty_operation_workers(client: TestClient) -> None
         "/api/orders",
         json={
             "order_number": "FC-0111",
+            "planned_completion_date": "2026-09-30",
             "product_id": product["id"],
             "quantity": 5,
             "assignments": [
@@ -892,12 +948,10 @@ def test_update_order_allows_empty_operation_workers(client: TestClient) -> None
     assert payload["estimated_minutes"] == 300
     assert payload["total_spent_minutes"] == 0
     assert all(
-        assignment["worker_user_id"] is None
-        for assignment in payload["assignments"]
+        assignment["worker_user_id"] is None for assignment in payload["assignments"]
     )
     assert all(
-        assignment["worker_user_name"] is None
-        for assignment in payload["assignments"]
+        assignment["worker_user_name"] is None for assignment in payload["assignments"]
     )
 
 
@@ -914,6 +968,7 @@ def test_update_order_allows_quantity_change_without_spent_time(
         "/api/orders",
         json={
             "order_number": "FC-0113",
+            "planned_completion_date": "2026-09-30",
             "product_id": product["id"],
             "quantity": 7,
             "assignments": [
@@ -959,6 +1014,7 @@ def test_update_order_allows_leather_type_change_without_spent_time(
         "/api/orders",
         json={
             "order_number": "FC-0114",
+            "planned_completion_date": "2026-09-30",
             "product_id": product["id"],
             "leather_type_id": first_leather_type["id"],
             "quantity": 3,
@@ -1005,6 +1061,7 @@ def test_update_order_allows_assignment_change_after_taken_before_quality_contro
         "/api/orders",
         json={
             "order_number": "FC-0117",
+            "planned_completion_date": "2026-09-30",
             "product_id": product["id"],
             "quantity": 3,
             "assignments": [
@@ -1057,6 +1114,7 @@ def test_update_order_rejects_assignment_change_in_quality_control(
         "/api/orders",
         json={
             "order_number": "FC-0119",
+            "planned_completion_date": "2026-09-30",
             "product_id": product["id"],
             "quantity": 3,
             "assignments": [
@@ -1113,6 +1171,7 @@ def test_update_order_allows_quantity_change_after_taken_without_spent_time(
         "/api/orders",
         json={
             "order_number": "FC-0118",
+            "planned_completion_date": "2026-09-30",
             "product_id": product["id"],
             "quantity": 3,
             "assignments": [
@@ -1163,6 +1222,7 @@ def test_update_order_rejects_changes_after_spent_time(
         "/api/orders",
         json={
             "order_number": "FC-0116",
+            "planned_completion_date": "2026-09-30",
             "product_id": product["id"],
             "quantity": 3,
             "assignments": [
@@ -1237,6 +1297,7 @@ def test_update_order_rejects_completed_order_assignments(
         "/api/orders",
         json={
             "order_number": "FC-0115",
+            "planned_completion_date": "2026-09-30",
             "product_id": product["id"],
             "quantity": 6,
             "assignments": [
@@ -1291,6 +1352,7 @@ def test_update_order_allows_existing_inactive_leather_type(client: TestClient) 
         "/api/orders",
         json={
             "order_number": "FC-0109",
+            "planned_completion_date": "2026-09-30",
             "product_id": product["id"],
             "leather_type_id": leather_type["id"],
             "quantity": 2,
@@ -1342,6 +1404,7 @@ def test_update_order_status_marks_completed_and_returns_to_work(
         "/api/orders",
         json={
             "order_number": "FC-0107",
+            "planned_completion_date": "2026-09-30",
             "product_id": product["id"],
             "quantity": 4,
             "assignments": [
@@ -1411,6 +1474,7 @@ def test_quality_control_lifecycle_and_permissions(client: TestClient) -> None:
         "/api/orders",
         json={
             "order_number": "FC-0114",
+            "planned_completion_date": "2026-09-30",
             "product_id": product["id"],
             "quantity": 4,
             "assignments": [
@@ -1525,6 +1589,7 @@ def test_quality_control_acceptance_uses_current_user_roles(
         "/api/orders",
         json={
             "order_number": "FC-0115",
+            "planned_completion_date": "2026-09-30",
             "product_id": product["id"],
             "quantity": 4,
             "assignments": [
@@ -1589,6 +1654,7 @@ def test_order_lifecycle_filters_and_soft_delete(client: TestClient) -> None:
         "/api/orders",
         json={
             "order_number": "FC-0112",
+            "planned_completion_date": "2026-09-30",
             "product_id": product["id"],
             "quantity": 6,
             "assignments": [
@@ -1633,9 +1699,7 @@ def test_order_lifecycle_filters_and_soft_delete(client: TestClient) -> None:
     assert delete_response.status_code == 200
     assert delete_response.json()["deleted_at"] is not None
 
-    in_work_after_delete_response = client.get(
-        "/api/orders?status=in_work&search=0112"
-    )
+    in_work_after_delete_response = client.get("/api/orders?status=in_work&search=0112")
     assert in_work_after_delete_response.status_code == 200
     assert in_work_after_delete_response.json()["total"] == 0
 

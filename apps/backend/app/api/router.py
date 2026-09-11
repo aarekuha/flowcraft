@@ -6,6 +6,7 @@ from app.api.routes.leather_types import router as leather_types_router
 from app.api.routes.operation_catalog import router as operation_catalog_router
 from app.api.routes.orders import router as orders_router
 from app.api.routes.products import router as products_router
+from app.api.routes.reports import router as reports_router
 from app.api.routes.statistics import router as statistics_router
 from app.api.routes.timers import router as timers_router
 from app.api.routes.users import router as users_router
@@ -25,6 +26,7 @@ api_router.include_router(
 )
 api_router.include_router(orders_router, prefix="/orders", tags=["orders"])
 api_router.include_router(products_router, prefix="/products", tags=["products"])
+api_router.include_router(reports_router, prefix="/reports", tags=["reports"])
 api_router.include_router(statistics_router, prefix="/statistics", tags=["statistics"])
 api_router.include_router(timers_router, prefix="/timers", tags=["timers"])
 api_router.include_router(users_router, prefix="/users", tags=["users"])
