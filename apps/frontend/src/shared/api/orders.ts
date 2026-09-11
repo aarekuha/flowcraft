@@ -22,6 +22,7 @@ export type WorkOrderSummary = {
   leatherTypeId: number | null;
   leatherTypeName: string | null;
   quantity: number;
+  plannedCompletionDate: string | null;
   estimatedMinutes: number;
   totalSpentMinutes: number;
   hasSpentTime: boolean;
@@ -50,6 +51,7 @@ export type WorkOrderDetail = {
   leatherTypeId: number | null;
   leatherTypeName: string | null;
   quantity: number;
+  plannedCompletionDate: string | null;
   estimatedMinutes: number;
   totalSpentMinutes: number;
   hasSpentTime: boolean;
@@ -75,6 +77,7 @@ export type WorkOrderSortBy =
   | "defect"
   | "name"
   | "order_number"
+  | "planned_completion"
   | "quality_control"
   | "taken";
 export type WorkOrderSortDirection = "asc" | "desc";
@@ -118,11 +121,13 @@ export type WorkOrderTimeBreakdownItem = {
 export type WorkOrderTimeBreakdown = {
   orderId: number;
   items: WorkOrderTimeBreakdownItem[];
+  totalStandardTimeSeconds: number;
   totalElapsedMs: number;
 };
 
 export type WorkOrderCreatePayload = {
   order_number: string;
+  planned_completion_date: string;
   product_id: number;
   leather_type_id?: number | null;
   quantity: number;
@@ -160,6 +165,7 @@ type WorkOrderSummaryApi = {
   leather_type_id: number | null;
   leather_type_name: string | null;
   quantity: number;
+  planned_completion_date: string | null;
   estimated_minutes: number;
   total_spent_minutes: number;
   has_spent_time: boolean;
@@ -182,6 +188,7 @@ type WorkOrderDetailApi = {
   leather_type_id: number | null;
   leather_type_name: string | null;
   quantity: number;
+  planned_completion_date: string | null;
   estimated_minutes: number;
   total_spent_minutes: number;
   has_spent_time: boolean;
@@ -216,6 +223,7 @@ type WorkOrderTimeBreakdownItemApi = {
 type WorkOrderTimeBreakdownApi = {
   order_id: number;
   items: WorkOrderTimeBreakdownItemApi[];
+  total_standard_time_seconds: number;
   total_elapsed_ms: number;
 };
 
@@ -325,6 +333,24 @@ export async function updateWorkOrderAssignments(
     },
     body: JSON.stringify(payload),
   });
+
+  return handleJsonResponse<WorkOrderDetailApi>(response).then(mapWorkOrderDetail);
+}
+
+export async function updateWorkOrderPlannedCompletionDate(
+  orderId: number,
+  plannedCompletionDate: string,
+): Promise<WorkOrderDetail> {
+  const response = await apiFetch(
+    `/api/orders/${orderId}/planned-completion-date`,
+    {
+      method: "PATCH",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ planned_completion_date: plannedCompletionDate }),
+    },
+  );
 
   return handleJsonResponse<WorkOrderDetailApi>(response).then(mapWorkOrderDetail);
 }
@@ -442,6 +468,7 @@ function mapWorkOrderTimeBreakdown(
       standardTimeSeconds: item.standard_time_seconds,
       averageElapsedMs: item.average_elapsed_ms,
     })),
+    totalStandardTimeSeconds: breakdown.total_standard_time_seconds,
     totalElapsedMs: breakdown.total_elapsed_ms,
   };
 }
@@ -456,6 +483,7 @@ function mapWorkOrderSummary(order: WorkOrderSummaryApi): WorkOrderSummary {
     leatherTypeId: order.leather_type_id,
     leatherTypeName: order.leather_type_name,
     quantity: order.quantity,
+    plannedCompletionDate: order.planned_completion_date,
     estimatedMinutes: order.estimated_minutes,
     totalSpentMinutes: order.total_spent_minutes,
     hasSpentTime: order.has_spent_time,
@@ -497,6 +525,7 @@ function mapWorkOrderDetail(order: WorkOrderDetailApi): WorkOrderDetail {
     leatherTypeId: order.leather_type_id,
     leatherTypeName: order.leather_type_name,
     quantity: order.quantity,
+    plannedCompletionDate: order.planned_completion_date,
     estimatedMinutes: order.estimated_minutes,
     totalSpentMinutes: order.total_spent_minutes,
     hasSpentTime: order.has_spent_time,

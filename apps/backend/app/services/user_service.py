@@ -160,7 +160,7 @@ class UserService:
         author_user = self.session.get(User, author_user_id)
         if author_user is None or author_user.deleted_at is not None:
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail="Author user not found.",
             )
         return author_user.id
@@ -175,7 +175,7 @@ class UserService:
             try:
                 if normalize_phone(user.phone) == normalized_phone:
                     raise HTTPException(
-                        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                        status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                         detail="Пользователь с таким номером телефона уже существует.",
                     )
             except ValueError:
@@ -209,7 +209,7 @@ class UserService:
                 return
 
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="Нельзя убрать последнего активного администратора.",
         )
 

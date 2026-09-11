@@ -24,7 +24,7 @@ def test_create_and_list_user(client: TestClient) -> None:
     payload = user_payload(
         "Анна Петрова",
         "+79990000010",
-        roles=["worker", "constructor"],
+        roles=["worker", "constructor", "reports"],
     )
 
     create_response = client.post("/api/users", json=payload)

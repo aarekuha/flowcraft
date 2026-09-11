@@ -14,6 +14,7 @@ from app.schemas.order import (
     WorkOrderDeletedStatusUpdate,
     WorkOrderDetail,
     WorkOrderPage,
+    WorkOrderPlannedCompletionDateUpdate,
     WorkOrderQualityControlAccept,
     WorkOrderQualityControlStatusUpdate,
     WorkOrderSortField,
@@ -138,6 +139,25 @@ def update_order_assignments(
 
 
 @router.patch(
+    "/{order_id}/planned-completion-date",
+    response_model=WorkOrderDetail,
+    summary="Update work order planned completion date",
+)
+def update_order_planned_completion_date(
+    order_id: int,
+    payload: WorkOrderPlannedCompletionDateUpdate,
+    _auth_session: AuthenticatedSession = Depends(
+        require_any_role("brigadier", "quality_control")
+    ),
+    session: Session = Depends(get_session),
+) -> WorkOrderDetail:
+    return OrderService(session).update_order_planned_completion_date(
+        order_id,
+        payload,
+    )
+
+
+@router.patch(
     "/{order_id}/status",
     response_model=WorkOrderDetail,
     summary="Update work order status",
@@ -174,9 +194,7 @@ def update_order_quality_control_status(
 def accept_order_quality_control(
     order_id: int,
     payload: WorkOrderQualityControlAccept,
-    _auth_session: AuthenticatedSession = Depends(
-        require_any_role("quality_control")
-    ),
+    _auth_session: AuthenticatedSession = Depends(require_any_role("quality_control")),
     session: Session = Depends(get_session),
 ) -> WorkOrderDetail:
     return OrderService(session).accept_order_quality_control(order_id, payload)

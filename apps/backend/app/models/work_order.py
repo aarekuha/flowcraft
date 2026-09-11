@@ -1,4 +1,6 @@
-from sqlalchemy import BigInteger, ForeignKey, Integer, String, UniqueConstraint
+from datetime import date
+
+from sqlalchemy import BigInteger, Date, ForeignKey, Integer, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
@@ -24,6 +26,7 @@ class WorkOrder(Base):
         index=True,
     )
     quantity: Mapped[int] = mapped_column(Integer, nullable=False)
+    planned_completion_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     estimated_minutes: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     total_spent_minutes: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     created_at: Mapped[int] = mapped_column(BigInteger, nullable=False)

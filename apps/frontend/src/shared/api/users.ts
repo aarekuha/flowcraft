@@ -5,6 +5,7 @@ export type UserRole =
   | "brigadier"
   | "constructor"
   | "quality_control"
+  | "reports"
   | "admin";
 
 export type UserRecord = {

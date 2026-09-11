@@ -100,7 +100,7 @@ class LeatherTypeService:
         for leather_type in self.session.scalars(stmt):
             if self._normalize_search(leather_type.name) == normalized_name:
                 raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                     detail="Leather type with this name already exists.",
                 )
 

@@ -103,7 +103,7 @@ class OperationCatalogService:
         for entry in self.session.scalars(stmt):
             if self._normalize_search(entry.name) == normalized_name:
                 raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                     detail="Operation with this name already exists.",
                 )
 

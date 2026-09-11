@@ -29,6 +29,7 @@ from app.schemas.order import (
     WorkOrderDetail,
     WorkOrderListItem,
     WorkOrderPage,
+    WorkOrderPlannedCompletionDateUpdate,
     WorkOrderQualityControlAccept,
     WorkOrderQualityControlStatusUpdate,
     WorkOrderSortField,
@@ -82,6 +83,7 @@ class OrderService:
                 WorkOrder.leather_type_id,
                 LeatherType.name.label("leather_type_name"),
                 WorkOrder.quantity,
+                WorkOrder.planned_completion_date,
                 WorkOrder.estimated_minutes,
                 WorkOrder.total_spent_minutes,
                 WorkOrder.created_at,
@@ -132,6 +134,7 @@ class OrderService:
                 leather_type_id=row.leather_type_id,
                 leather_type_name=row.leather_type_name,
                 quantity=row.quantity,
+                planned_completion_date=row.planned_completion_date,
                 estimated_minutes=row.estimated_minutes,
                 total_spent_minutes=row.total_spent_minutes,
                 has_spent_time=row.spent_sessions_count > 0,
@@ -266,6 +269,12 @@ class OrderService:
                 sort_direction,
             )
 
+        if sort_by == WorkOrderSortField.PLANNED_COMPLETION:
+            return self._build_nullable_timestamp_sort(
+                WorkOrder.planned_completion_date,
+                sort_direction,
+            )
+
         if sort_by == WorkOrderSortField.TAKEN:
             return self._build_nullable_timestamp_sort(
                 WorkOrder.taken_at,
@@ -363,9 +372,9 @@ class OrderService:
         rows = self.session.execute(stmt).all()
         operation_elapsed_ms: dict[int | None, int] = {}
         for row in rows:
-            operation_elapsed_ms[row.operation_id] = (
-                operation_elapsed_ms.get(row.operation_id, 0) + int(row.elapsed_ms)
-            )
+            operation_elapsed_ms[row.operation_id] = operation_elapsed_ms.get(
+                row.operation_id, 0
+            ) + int(row.elapsed_ms)
 
         items = [
             WorkOrderTimeBreakdownItem(
@@ -385,6 +394,10 @@ class OrderService:
         return WorkOrderTimeBreakdown(
             order_id=order_id,
             items=items,
+            total_standard_time_seconds=sum(
+                assignment.operation.standard_time_seconds or 0
+                for assignment in order.assignments
+            ),
             total_elapsed_ms=sum(item.elapsed_ms for item in items),
         )
 
@@ -498,6 +511,7 @@ class OrderService:
             product_id=product.id,
             leather_type_id=payload.leather_type_id,
             quantity=payload.quantity,
+            planned_completion_date=payload.planned_completion_date,
             estimated_minutes=payload.estimated_minutes,
             total_spent_minutes=0,
             created_at=timestamp,
@@ -506,6 +520,18 @@ class OrderService:
         order.assignments = self._build_assignments(payload.assignments)
 
         self.session.add(order)
+        self.session.commit()
+        self.session.refresh(order)
+        return self.get_order(order.id)
+
+    def update_order_planned_completion_date(
+        self,
+        order_id: int,
+        payload: WorkOrderPlannedCompletionDateUpdate,
+    ) -> WorkOrderDetail:
+        order = self._get_order_or_404(order_id)
+        order.planned_completion_date = payload.planned_completion_date
+        order.updated_at = self._now_ts()
         self.session.commit()
         self.session.refresh(order)
         return self.get_order(order.id)
@@ -556,7 +582,7 @@ class OrderService:
         self._validate_order_is_not_deleted(order)
         if payload.is_completed:
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail="Use quality control acceptance to complete order.",
             )
         if not payload.is_completed and order.completed_at is not None:
@@ -581,12 +607,12 @@ class OrderService:
         if payload.is_in_quality_control:
             if order.taken_at is None:
                 raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                     detail="Only orders in work can be sent to quality control.",
                 )
             if order.completed_at is not None:
                 raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                     detail="Completed order cannot be sent to quality control.",
                 )
 
@@ -612,13 +638,13 @@ class OrderService:
 
         if order.quality_control_at is None or order.completed_at is not None:
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail="Only orders in quality control can be accepted.",
             )
 
         if payload.defect_quantity > order.quantity:
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail="Defect quantity cannot exceed order quantity.",
             )
 
@@ -749,19 +775,19 @@ class OrderService:
     def _validate_order_is_not_deleted(self, order: WorkOrder) -> None:
         if order.deleted_at is not None:
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail="Deleted order cannot be changed.",
             )
 
     def _validate_order_assignments_can_be_changed(self, order: WorkOrder) -> None:
         if order.completed_at is not None:
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail="Completed order assignments cannot be changed.",
             )
         if order.quality_control_at is not None:
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail=(
                     "Order assignments cannot be changed after quality control stage."
                 ),
@@ -770,7 +796,7 @@ class OrderService:
     def _validate_order_has_no_spent_time(self, order: WorkOrder) -> None:
         if self._order_has_spent_time(order.id):
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail="Order cannot be changed after time has been spent.",
             )
 
@@ -861,7 +887,7 @@ class OrderService:
     def _validate_product_is_active(self, product: Product) -> None:
         if not product.is_active:
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail="Only active products can be taken into work.",
             )
 
@@ -880,13 +906,13 @@ class OrderService:
         leather_type = self.session.get(LeatherType, leather_type_id)
         if leather_type is None:
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail="Leather type not found.",
             )
 
         if not leather_type.is_active:
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail="Only active leather types can be selected.",
             )
 
@@ -905,7 +931,7 @@ class OrderService:
         existing_order_id = self.session.execute(stmt).scalar_one_or_none()
         if existing_order_id is not None:
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail="Order with this number already exists.",
             )
 
@@ -919,7 +945,7 @@ class OrderService:
         ).all()
         if not operations:
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail="Product has no operations.",
             )
 
@@ -928,13 +954,13 @@ class OrderService:
 
         if len(set(assigned_operation_ids)) != len(assigned_operation_ids):
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail="Operations must be assigned only once per order.",
             )
 
         if set(assigned_operation_ids) != leaf_operation_ids:
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail="Assignments must cover every leaf operation of the product.",
             )
 
@@ -955,12 +981,12 @@ class OrderService:
             worker = workers_by_id.get(assignment.worker_user_id)
             if worker is None or worker.deleted_at is not None:
                 raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                     detail="Assigned worker not found.",
                 )
             if not worker.is_active or "worker" not in worker.roles:
                 raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                     detail="Assigned user must be an active worker.",
                 )
 
@@ -1052,6 +1078,7 @@ class OrderService:
             if order.leather_type is not None
             else None,
             quantity=order.quantity,
+            planned_completion_date=order.planned_completion_date,
             estimated_minutes=order.estimated_minutes,
             total_spent_minutes=order.total_spent_minutes,
             has_spent_time=self._order_has_spent_time(order.id),
