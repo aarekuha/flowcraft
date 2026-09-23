@@ -16,6 +16,15 @@ import {
   type ReportFilterOptions,
   type OrderBatchReport,
 } from "@/shared/api/reports";
+import {
+  clearReportFilterIds,
+  formatReportCompletionDate,
+  formatReportDay,
+  formatReportMonth,
+  formatReportProductName,
+  matchesReportFilter,
+  toggleReportFilterId,
+} from "@/shared/lib/reportFormatting";
 
 type ReportTab = "products" | "product-time" | "order-batches";
 
@@ -26,9 +35,12 @@ const props = defineProps<{
 const activeReport = ref<ReportTab>("products");
 const dateTo = ref(toDateInput(new Date()));
 const dateFrom = ref(toDateInput(addDays(new Date(), -29)));
-const productId = ref("");
-const workerUserId = ref("");
-const operationCatalogEntryId = ref("");
+const selectedProductIds = ref<number[]>([]);
+const selectedWorkerUserIds = ref<number[]>([]);
+const selectedOperationCatalogEntryIds = ref<number[]>([]);
+const productSearch = ref("");
+const workerSearch = ref("");
+const operationSearch = ref("");
 const orderNumber = ref("");
 const productQuantityReport = ref<ProductQuantityReport | null>(null);
 const productTimeReport = ref<ProductTimeReport | null>(null);
@@ -45,11 +57,30 @@ const sortedProducts = computed(() =>
 );
 const workers = computed(() =>
   [...filterOptions.value.workers]
+    .filter((worker) => worker.isActive && !worker.isDeleted)
     .sort((left, right) => left.name.localeCompare(right.name, "ru")),
 );
 const sortedOperations = computed(() =>
   [...filterOptions.value.operations].sort((left, right) => left.name.localeCompare(right.name, "ru")),
 );
+const filteredProducts = computed(() => {
+  const query = productSearch.value.trim().toLocaleLowerCase("ru");
+  return query
+    ? sortedProducts.value.filter((product) => matchesReportFilter(formatReportProductName(product.name, product.version), query))
+    : sortedProducts.value;
+});
+const filteredWorkers = computed(() => {
+  const query = workerSearch.value.trim().toLocaleLowerCase("ru");
+  return query
+    ? workers.value.filter((worker) => matchesReportFilter(worker.name, query))
+    : workers.value;
+});
+const filteredOperations = computed(() => {
+  const query = operationSearch.value.trim().toLocaleLowerCase("ru");
+  return query
+    ? sortedOperations.value.filter((operation) => matchesReportFilter(operation.name, query))
+    : sortedOperations.value;
+});
 const periodError = computed(() => {
   if (!dateFrom.value || !dateTo.value) {
     return "Укажите начало и окончание периода.";
@@ -74,6 +105,10 @@ async function loadFilterOptions() {
   filterOptionsError.value = "";
   try {
     filterOptions.value = await fetchReportFilterOptions();
+    const availableWorkerIds = new Set(workers.value.map((worker) => worker.id));
+    const availableOperationIds = new Set(sortedOperations.value.map((operation) => operation.id));
+    selectedWorkerUserIds.value = selectedWorkerUserIds.value.filter((id) => availableWorkerIds.has(id));
+    selectedOperationCatalogEntryIds.value = selectedOperationCatalogEntryIds.value.filter((id) => availableOperationIds.has(id));
   } catch (reportError) {
     filterOptionsError.value = getErrorMessage(
       reportError,
@@ -157,17 +192,14 @@ function getFilters(): ReportFilters {
     dateFrom: dateFrom.value,
     dateTo: dateTo.value,
   };
-  const selectedProductId = Number.parseInt(productId.value, 10);
-  const selectedWorkerId = Number.parseInt(workerUserId.value, 10);
-  const selectedOperationId = Number.parseInt(operationCatalogEntryId.value, 10);
-  if (Number.isInteger(selectedProductId)) {
-    filters.productId = selectedProductId;
+  if (selectedProductIds.value.length > 0) {
+    filters.productIds = selectedProductIds.value;
   }
-  if (activeReport.value !== "products" && Number.isInteger(selectedWorkerId)) {
-    filters.workerUserId = selectedWorkerId;
+  if (activeReport.value !== "products" && selectedWorkerUserIds.value.length > 0) {
+    filters.workerUserIds = selectedWorkerUserIds.value;
   }
-  if (activeReport.value === "order-batches" && Number.isInteger(selectedOperationId)) {
-    filters.operationCatalogEntryId = selectedOperationId;
+  if (activeReport.value === "order-batches" && selectedOperationCatalogEntryIds.value.length > 0) {
+    filters.operationCatalogEntryIds = selectedOperationCatalogEntryIds.value;
   }
   if (activeReport.value !== "products" && orderNumber.value.trim()) {
     filters.orderNumber = orderNumber.value.trim();
@@ -187,17 +219,42 @@ async function selectOrderBatchPage(page: number) {
   await loadReport();
 }
 
-function formatMonth(value: string): string {
-  const [year, month] = value.split("-");
-  return `${month}.${year}`;
+function productSelectionLabel(): string {
+  if (selectedProductIds.value.length === 0) {
+    return "Все изделия";
+  }
+  if (selectedProductIds.value.length === 1) {
+    const product = sortedProducts.value.find((item) => item.id === selectedProductIds.value[0]);
+    return product ? formatReportProductName(product.name, product.version) : "Выбрано: 1";
+  }
+  return `Выбрано: ${selectedProductIds.value.length}`;
 }
 
-function formatDay(value: string): string {
-  const [year, month, day] = value.split("-");
-  return `${day}.${month}.${year}`;
+function workerSelectionLabel(): string {
+  if (selectedWorkerUserIds.value.length === 0) {
+    return "Все исполнители";
+  }
+  if (selectedWorkerUserIds.value.length === 1) {
+    return workers.value.find((item) => item.id === selectedWorkerUserIds.value[0])?.name ?? "Выбрано: 1";
+  }
+  return `Выбрано: ${selectedWorkerUserIds.value.length}`;
+}
+
+function operationSelectionLabel(): string {
+  if (selectedOperationCatalogEntryIds.value.length === 0) {
+    return "Все операции";
+  }
+  if (selectedOperationCatalogEntryIds.value.length === 1) {
+    return sortedOperations.value.find((item) => item.id === selectedOperationCatalogEntryIds.value[0])?.name ?? "Выбрано: 1";
+  }
+  return `Выбрано: ${selectedOperationCatalogEntryIds.value.length}`;
 }
 
 function formatDuration(totalMs: number): string {
+  if (totalMs === 0) {
+    return "";
+  }
+
   const totalSeconds = Math.max(0, Math.floor(totalMs / 1000));
   const hours = Math.floor(totalSeconds / 3600);
   const minutes = Math.floor((totalSeconds % 3600) / 60);
@@ -208,11 +265,11 @@ function formatDuration(totalMs: number): string {
 }
 
 function formatPercentage(value: number): string {
-  return `${(value * 100).toFixed(1)}%`;
+  return value === 0 ? "" : `${(value * 100).toFixed(1)}%`;
 }
 
-function formatCompletionDate(value: number): string {
-  return new Intl.DateTimeFormat("ru-RU", { dateStyle: "short" }).format(new Date(value));
+function formatQuantity(value: number): number | string {
+  return value === 0 ? "" : value;
 }
 
 function toDateInput(value: Date): string {
@@ -277,37 +334,93 @@ function getErrorMessage(value: unknown, fallback: string): string {
         <span>По</span>
         <input v-model="dateTo" type="date" />
       </label>
-      <label class="reports-field">
+      <div class="reports-field">
         <span>Изделие</span>
-        <select v-model="productId">
-          <option value="">Все изделия</option>
-          <option v-for="product in sortedProducts" :key="product.id" :value="String(product.id)">
-            {{ product.name }}
-          </option>
-        </select>
-      </label>
-      <label v-if="activeReport !== 'products'" class="reports-field">
+        <details class="reports-multi-select">
+          <summary>{{ productSelectionLabel() }}</summary>
+          <div class="reports-multi-select__menu">
+            <input v-model="productSearch" type="search" placeholder="Найти изделие" @click.stop />
+            <label class="reports-multi-select__option">
+              <input
+                type="checkbox"
+                :checked="selectedProductIds.length === 0"
+                @change="selectedProductIds = clearReportFilterIds()"
+              />
+              <span>Все изделия</span>
+            </label>
+            <label
+              v-for="product in filteredProducts"
+              :key="product.id"
+              class="reports-multi-select__option"
+            >
+              <input
+                type="checkbox"
+                :checked="selectedProductIds.includes(product.id)"
+                @change="selectedProductIds = toggleReportFilterId(selectedProductIds, product.id)"
+              />
+              <span>{{ formatReportProductName(product.name, product.version) }}</span>
+            </label>
+          </div>
+        </details>
+      </div>
+      <div v-if="activeReport !== 'products'" class="reports-field">
         <span>Исполнитель</span>
-        <select v-model="workerUserId">
-          <option value="">Все исполнители</option>
-          <option v-for="worker in workers" :key="worker.id" :value="String(worker.id)">
-            {{ worker.name }}{{ worker.isDeleted ? " (удалён)" : !worker.isActive ? " (неактивен)" : "" }}
-          </option>
-        </select>
-      </label>
-      <label v-if="activeReport === 'order-batches'" class="reports-field">
+        <details class="reports-multi-select">
+          <summary>{{ workerSelectionLabel() }}</summary>
+          <div class="reports-multi-select__menu">
+            <input v-model="workerSearch" type="search" placeholder="Найти исполнителя" @click.stop />
+            <label class="reports-multi-select__option">
+              <input
+                type="checkbox"
+                :checked="selectedWorkerUserIds.length === 0"
+                @change="selectedWorkerUserIds = clearReportFilterIds()"
+              />
+              <span>Все исполнители</span>
+            </label>
+            <label
+              v-for="worker in filteredWorkers"
+              :key="worker.id"
+              class="reports-multi-select__option"
+            >
+              <input
+                type="checkbox"
+                :checked="selectedWorkerUserIds.includes(worker.id)"
+                @change="selectedWorkerUserIds = toggleReportFilterId(selectedWorkerUserIds, worker.id)"
+              />
+              <span>{{ worker.name }}</span>
+            </label>
+          </div>
+        </details>
+      </div>
+      <div v-if="activeReport === 'order-batches'" class="reports-field">
         <span>Операция</span>
-        <select v-model="operationCatalogEntryId">
-          <option value="">Все операции</option>
-          <option
-            v-for="operation in sortedOperations"
-            :key="operation.id"
-            :value="String(operation.id)"
-          >
-            {{ operation.name }}{{ operation.isActive ? "" : " (неактивна)" }}
-          </option>
-        </select>
-      </label>
+        <details class="reports-multi-select">
+          <summary>{{ operationSelectionLabel() }}</summary>
+          <div class="reports-multi-select__menu">
+            <input v-model="operationSearch" type="search" placeholder="Найти операцию" @click.stop />
+            <label class="reports-multi-select__option">
+              <input
+                type="checkbox"
+                :checked="selectedOperationCatalogEntryIds.length === 0"
+                @change="selectedOperationCatalogEntryIds = clearReportFilterIds()"
+              />
+              <span>Все операции</span>
+            </label>
+            <label
+              v-for="operation in filteredOperations"
+              :key="operation.id"
+              class="reports-multi-select__option"
+            >
+              <input
+                type="checkbox"
+                :checked="selectedOperationCatalogEntryIds.includes(operation.id)"
+                @change="selectedOperationCatalogEntryIds = toggleReportFilterId(selectedOperationCatalogEntryIds, operation.id)"
+              />
+              <span>{{ operation.name }}{{ operation.isActive ? "" : " (неактивна)" }}</span>
+            </label>
+          </div>
+        </details>
+      </div>
       <label v-if="activeReport !== 'products'" class="reports-field">
         <span>Номер заказа</span>
         <input v-model="orderNumber" type="text" placeholder="Например, FC-0101" />
@@ -341,9 +454,39 @@ function getErrorMessage(value: unknown, fallback: string): string {
           <h3>Количество изделий по месяцам</h3>
           <div class="report-table-wrap">
             <table class="report-table">
-              <thead><tr><th>Изделие</th><th v-for="month in productQuantityReport.months" :key="month">{{ formatMonth(month) }}</th><th>Итого</th></tr></thead>
-              <tbody><tr v-for="item in productQuantityReport.items" :key="item.productId"><td>{{ item.productName }}</td><td v-for="(value, index) in item.monthQuantities" :key="productQuantityReport.months[index]">{{ value }}</td><td>{{ item.totalQuantity }}</td></tr></tbody>
-              <tfoot><tr><th>Итого</th><td v-for="(value, index) in productQuantityReport.totalByMonth" :key="productQuantityReport.months[index]">{{ value }}</td><td>{{ productQuantityReport.totalQuantity }}</td></tr></tfoot>
+              <thead>
+                <tr>
+                  <th>Изделие</th>
+                  <th>Итого</th>
+                  <th v-for="month in productQuantityReport.months" :key="month">
+                    {{ formatReportMonth(month) }}
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="item in productQuantityReport.items" :key="item.productId">
+                  <td>{{ formatReportProductName(item.productName, item.productVersion) }}</td>
+                  <td>{{ formatQuantity(item.totalQuantity) }}</td>
+                  <td
+                    v-for="(value, index) in item.monthQuantities"
+                    :key="productQuantityReport.months[index]"
+                  >
+                    {{ formatQuantity(value) }}
+                  </td>
+                </tr>
+              </tbody>
+              <tfoot>
+                <tr>
+                  <th>Итого</th>
+                  <td>{{ formatQuantity(productQuantityReport.totalQuantity) }}</td>
+                  <td
+                    v-for="(value, index) in productQuantityReport.totalByMonth"
+                    :key="productQuantityReport.months[index]"
+                  >
+                    {{ formatQuantity(value) }}
+                  </td>
+                </tr>
+              </tfoot>
             </table>
           </div>
         </section>
@@ -351,9 +494,39 @@ function getErrorMessage(value: unknown, fallback: string): string {
           <h3>Количество изделий по дням</h3>
           <div class="report-table-wrap">
             <table class="report-table">
-              <thead><tr><th>Изделие</th><th v-for="day in productQuantityReport.days" :key="day">{{ formatDay(day) }}</th><th>Итого</th></tr></thead>
-              <tbody><tr v-for="item in productQuantityReport.items" :key="item.productId"><td>{{ item.productName }}</td><td v-for="(value, index) in item.dayQuantities" :key="productQuantityReport.days[index]">{{ value }}</td><td>{{ item.totalQuantity }}</td></tr></tbody>
-              <tfoot><tr><th>Итого</th><td v-for="(value, index) in productQuantityReport.totalByDay" :key="productQuantityReport.days[index]">{{ value }}</td><td>{{ productQuantityReport.totalQuantity }}</td></tr></tfoot>
+              <thead>
+                <tr>
+                  <th>Изделие</th>
+                  <th>Итого</th>
+                  <th v-for="day in productQuantityReport.days" :key="day">
+                    {{ formatReportDay(day) }}
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="item in productQuantityReport.items" :key="item.productId">
+                  <td>{{ formatReportProductName(item.productName, item.productVersion) }}</td>
+                  <td>{{ formatQuantity(item.totalQuantity) }}</td>
+                  <td
+                    v-for="(value, index) in item.dayQuantities"
+                    :key="productQuantityReport.days[index]"
+                  >
+                    {{ formatQuantity(value) }}
+                  </td>
+                </tr>
+              </tbody>
+              <tfoot>
+                <tr>
+                  <th>Итого</th>
+                  <td>{{ formatQuantity(productQuantityReport.totalQuantity) }}</td>
+                  <td
+                    v-for="(value, index) in productQuantityReport.totalByDay"
+                    :key="productQuantityReport.days[index]"
+                  >
+                    {{ formatQuantity(value) }}
+                  </td>
+                </tr>
+              </tfoot>
             </table>
           </div>
         </section>
@@ -366,10 +539,10 @@ function getErrorMessage(value: unknown, fallback: string): string {
       </div>
       <template v-else>
         <section v-for="product in productTimeReport.products" :key="product.productId" class="report-section">
-          <h3>{{ product.productName }}</h3>
+          <h3>{{ formatReportProductName(product.productName, product.productVersion) }}</h3>
           <div class="report-table-wrap">
             <table class="report-table report-table--time">
-              <thead><tr><th>Операция</th><th>Исполнитель</th><th v-for="day in productTimeReport.days" :key="day">{{ formatDay(day) }}</th><th>Среднее за период</th><th>% от общего времени</th></tr></thead>
+              <thead><tr><th>Операция</th><th>Исполнитель</th><th v-for="day in productTimeReport.days" :key="day">{{ formatReportDay(day) }}</th><th>Среднее за период</th><th>% от общего времени</th></tr></thead>
               <tbody><tr v-for="item in product.rows" :key="`${item.operationId ?? 'deleted'}:${item.workerUserId}`"><td>{{ item.operationName }}</td><td>{{ item.workerUserName }}</td><td v-for="(value, index) in item.dailyAverageMs" :key="productTimeReport.days[index]">{{ formatDuration(value) }}</td><td>{{ formatDuration(item.averageMs) }}</td><td>{{ formatPercentage(item.shareOfProductTime) }}</td></tr></tbody>
               <tfoot><tr><th colspan="2">Итого</th><td v-for="(value, index) in product.dailyAverageMs" :key="productTimeReport.days[index]">{{ formatDuration(value) }}</td><td>{{ formatDuration(product.averageMs) }}</td><td>100%</td></tr></tfoot>
             </table>
@@ -402,19 +575,6 @@ function getErrorMessage(value: unknown, fallback: string): string {
             </thead>
             <tbody>
               <template v-for="order in orderBatchReport.items" :key="order.orderId">
-                <tr class="report-batch-total">
-                  <th scope="row">{{ order.orderNumber }}</th>
-                  <td>Общее время</td>
-                  <td>
-                    {{ order.productName }}
-                    <span v-if="order.leatherTypeName"> / {{ order.leatherTypeName }}</span>
-                    <small>Завершен {{ formatCompletionDate(order.completedAt) }}</small>
-                  </td>
-                  <td>—</td>
-                  <td>{{ order.submittedQuantity }}</td>
-                  <td>{{ formatDuration(order.totalElapsedMs) }}</td>
-                  <td>{{ formatDuration(order.averageMs) }}</td>
-                </tr>
                 <tr
                   v-for="detail in order.details"
                   :key="`${order.orderId}:${detail.operationId ?? 'deleted'}:${detail.workerUserId ?? 'empty'}`"
@@ -422,19 +582,39 @@ function getErrorMessage(value: unknown, fallback: string): string {
                   <td>{{ order.orderNumber }}</td>
                   <td>{{ detail.workerUserName }}</td>
                   <td>
-                    {{ order.productName }}
+                    {{ formatReportProductName(order.productName, order.productVersion) }}
                     <span v-if="order.leatherTypeName"> / {{ order.leatherTypeName }}</span>
                   </td>
                   <td>{{ detail.operationName }}</td>
-                  <td>{{ order.submittedQuantity }}</td>
+                  <td>{{ formatQuantity(order.submittedQuantity) }}</td>
                   <td>{{ formatDuration(detail.elapsedMs) }}</td>
                   <td>{{ formatDuration(detail.averageMs) }}</td>
+                </tr>
+                <tr class="report-batch-total">
+                  <th scope="row">{{ order.orderNumber }}</th>
+                  <td>Итого по партии</td>
+                  <td>
+                    {{ formatReportProductName(order.productName, order.productVersion) }}
+                    <span v-if="order.leatherTypeName"> / {{ order.leatherTypeName }}</span>
+                    <small>Завершен {{ formatReportCompletionDate(order.completedAt) }}</small>
+                  </td>
+                  <td>—</td>
+                  <td>{{ formatQuantity(order.submittedQuantity) }}</td>
+                  <td>{{ formatDuration(order.totalElapsedMs) }}</td>
+                  <td>{{ formatDuration(order.averageMs) }}</td>
                 </tr>
                 <tr class="report-batch-spacer" aria-hidden="true">
                   <td colspan="7"></td>
                 </tr>
               </template>
             </tbody>
+            <tfoot>
+              <tr>
+                <th colspan="5">Итого за период</th>
+                <td>{{ formatDuration(orderBatchReport.totalElapsedMs) }}</td>
+                <td></td>
+              </tr>
+            </tfoot>
           </table>
         </div>
         <div v-if="orderBatchReport.pages > 1" class="reports-pagination">
@@ -536,7 +716,7 @@ function getErrorMessage(value: unknown, fallback: string): string {
   min-width: 160px;
 }
 
-.reports-field span {
+.reports-field > span {
   color: var(--color-text-secondary);
   font-size: 0.82rem;
   font-weight: 700;
@@ -551,6 +731,72 @@ function getErrorMessage(value: unknown, fallback: string): string {
   color: var(--color-text);
   background: var(--color-surface);
   font: inherit;
+}
+
+.reports-multi-select {
+  position: relative;
+  min-width: 210px;
+}
+
+.reports-multi-select summary {
+  min-height: 42px;
+  max-width: 280px;
+  padding: 10px 34px 9px 12px;
+  overflow: hidden;
+  border: 1px solid var(--color-border);
+  border-radius: 12px;
+  color: var(--color-text);
+  background: var(--color-surface);
+  cursor: pointer;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.reports-multi-select__menu {
+  position: absolute;
+  z-index: 20;
+  top: calc(100% + 6px);
+  left: 0;
+  display: grid;
+  width: max-content;
+  min-width: 100%;
+  max-width: min(360px, 80vw);
+  max-height: 310px;
+  padding: 8px;
+  overflow-y: auto;
+  border: 1px solid var(--color-border);
+  border-radius: 12px;
+  background: var(--color-surface);
+  box-shadow: 0 12px 30px rgb(0 0 0 / 14%);
+}
+
+.reports-multi-select__menu > input {
+  position: sticky;
+  z-index: 1;
+  top: 0;
+  margin-bottom: 6px;
+  background: var(--color-surface);
+}
+
+.reports-multi-select__option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 36px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.reports-multi-select__option:hover {
+  background: var(--color-surface-soft);
+}
+
+.reports-multi-select__option input {
+  width: 16px;
+  min-height: 16px;
+  margin: 0;
+  padding: 0;
 }
 
 .reports-actions {

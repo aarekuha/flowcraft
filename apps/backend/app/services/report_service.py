@@ -37,12 +37,27 @@ from app.services.timer_service import TIMER_TYPE_TO_CODE
 from app.services.xlsx_writer import XlsxDuration, XlsxTotal, build_xlsx
 
 MAX_REPORT_PERIOD_DAYS = 366
+RUSSIAN_MONTH_NAMES = (
+    "Январь",
+    "Февраль",
+    "Март",
+    "Апрель",
+    "Май",
+    "Июнь",
+    "Июль",
+    "Август",
+    "Сентябрь",
+    "Октябрь",
+    "Ноябрь",
+    "Декабрь",
+)
 
 
 @dataclass(slots=True)
 class _ProductQuantityBucket:
     product_id: int
     product_name: str
+    product_version: str
     month_quantities: defaultdict[str, int] = field(
         default_factory=lambda: defaultdict(int)
     )
@@ -71,6 +86,7 @@ class _TimeRowBucket:
 class _TimeProductBucket:
     product_id: int
     product_name: str
+    product_version: str
     rows: dict[tuple[int | None, int], _TimeRowBucket] = field(default_factory=dict)
     elapsed_by_day: defaultdict[str, int] = field(
         default_factory=lambda: defaultdict(int)
@@ -101,11 +117,11 @@ class ReportService:
             self.session.scalars(select(TimerSession.user_id).distinct()).all()
         )
         historical_worker_ids.update(
-            self.session.scalars(
-                select(WorkOrderAssignment.worker_user_id)
-                .where(WorkOrderAssignment.worker_user_id.is_not(None))
-                .distinct()
+            worker_id
+            for worker_id in self.session.scalars(
+                select(WorkOrderAssignment.worker_user_id).distinct()
             ).all()
+            if worker_id is not None
         )
         workers = [
             ReportWorkerFilterOption(
@@ -114,7 +130,11 @@ class ReportService:
                 is_active=user.is_active,
                 is_deleted=user.deleted_at is not None,
             )
-            for user in self.session.scalars(select(User)).all()
+            for user in self.session.scalars(
+                select(User)
+                .where(User.is_active.is_(True))
+                .where(User.deleted_at.is_(None))
+            ).all()
             if "worker" in user.roles or user.id in historical_worker_ids
         ]
         workers.sort(key=lambda item: (item.name.casefold(), item.id))
@@ -137,7 +157,7 @@ class ReportService:
         self,
         date_from: date,
         date_to: date,
-        product_id: int | None = None,
+        product_ids: list[int] | None = None,
     ) -> ProductQuantityReport:
         self._validate_period(date_from, date_to)
         start_ts = self._date_start_ts(date_from)
@@ -146,6 +166,7 @@ class ReportService:
             select(
                 Product.id.label("product_id"),
                 Product.name.label("product_name"),
+                Product.version.label("product_version"),
                 WorkOrder.quantity,
                 WorkOrder.completed_at,
             )
@@ -156,8 +177,8 @@ class ReportService:
             .where(WorkOrder.completed_at >= start_ts)
             .where(WorkOrder.completed_at < end_ts)
         )
-        if product_id is not None:
-            stmt = stmt.where(Product.id == product_id)
+        if product_ids:
+            stmt = stmt.where(Product.id.in_(product_ids))
 
         buckets: dict[int, _ProductQuantityBucket] = {}
         for row in self.session.execute(stmt).all():
@@ -172,6 +193,7 @@ class ReportService:
                 _ProductQuantityBucket(
                     product_id=row.product_id,
                     product_name=row.product_name,
+                    product_version=row.product_version,
                 ),
             )
             bucket.month_quantities[month_key] += row.quantity
@@ -183,6 +205,7 @@ class ReportService:
             ProductQuantityReportRow(
                 product_id=bucket.product_id,
                 product_name=bucket.product_name,
+                product_version=bucket.product_version,
                 month_quantities=[bucket.month_quantities[key] for key in months],
                 day_quantities=[bucket.day_quantities[key] for key in days],
                 total_quantity=sum(bucket.day_quantities.values()),
@@ -214,8 +237,8 @@ class ReportService:
         self,
         date_from: date,
         date_to: date,
-        product_id: int | None = None,
-        worker_user_id: int | None = None,
+        product_ids: list[int] | None = None,
+        worker_user_ids: list[int] | None = None,
         order_number: str | None = None,
     ) -> ProductTimeReport:
         self._validate_period(date_from, date_to)
@@ -228,6 +251,7 @@ class ReportService:
             select(
                 Product.id.label("product_id"),
                 Product.name.label("product_name"),
+                Product.version.label("product_version"),
                 WorkOrder.id.label("order_id"),
                 WorkOrder.quantity,
                 WorkShift.business_date,
@@ -259,6 +283,7 @@ class ReportService:
             .group_by(
                 Product.id,
                 Product.name,
+                Product.version,
                 WorkOrder.id,
                 WorkOrder.quantity,
                 WorkShift.business_date,
@@ -269,10 +294,10 @@ class ReportService:
                 User.name,
             )
         )
-        if product_id is not None:
-            stmt = stmt.where(Product.id == product_id)
-        if worker_user_id is not None:
-            stmt = stmt.where(User.id == worker_user_id)
+        if product_ids:
+            stmt = stmt.where(Product.id.in_(product_ids))
+        if worker_user_ids:
+            stmt = stmt.where(User.id.in_(worker_user_ids))
         normalized_order_number = (order_number or "").strip().casefold()
         if normalized_order_number:
             stmt = stmt.where(
@@ -288,6 +313,7 @@ class ReportService:
                 _TimeProductBucket(
                     product_id=row.product_id,
                     product_name=row.product_name,
+                    product_version=row.product_version,
                 ),
             )
             row_key = (row.operation_id, row.worker_user_id)
@@ -355,6 +381,7 @@ class ReportService:
                 ProductTimeReportSection(
                     product_id=product.product_id,
                     product_name=product.product_name,
+                    product_version=product.product_version,
                     rows=detail_rows,
                     daily_average_ms=[
                         self._average_for_orders(
@@ -384,9 +411,9 @@ class ReportService:
         self,
         date_from: date,
         date_to: date,
-        product_id: int | None = None,
-        worker_user_id: int | None = None,
-        operation_catalog_entry_id: int | None = None,
+        product_ids: list[int] | None = None,
+        worker_user_ids: list[int] | None = None,
+        operation_catalog_entry_ids: list[int] | None = None,
         order_number: str | None = None,
         page: int | None = 1,
         page_size: int | None = 20,
@@ -400,14 +427,14 @@ class ReportService:
             WorkOrder.completed_at >= start_ts,
             WorkOrder.completed_at < end_ts,
         ]
-        if product_id is not None:
-            conditions.append(WorkOrder.product_id == product_id)
+        if product_ids:
+            conditions.append(WorkOrder.product_id.in_(product_ids))
         normalized_order_number = (order_number or "").strip().casefold()
         if normalized_order_number:
             conditions.append(
                 func.lower(WorkOrder.order_number).contains(normalized_order_number)
             )
-        if worker_user_id is not None or operation_catalog_entry_id is not None:
+        if worker_user_ids or operation_catalog_entry_ids:
             assignment_match = (
                 select(WorkOrderAssignment.id)
                 .join(Operation, Operation.id == WorkOrderAssignment.operation_id)
@@ -423,17 +450,23 @@ class ReportService:
                 )
                 .where(TimerSession.ended_at.is_not(None))
             )
-            if worker_user_id is not None:
+            if worker_user_ids:
                 assignment_match = assignment_match.where(
-                    WorkOrderAssignment.worker_user_id == worker_user_id
-                )
-                timer_match = timer_match.where(TimerSession.user_id == worker_user_id)
-            if operation_catalog_entry_id is not None:
-                assignment_match = assignment_match.where(
-                    Operation.operation_catalog_entry_id == operation_catalog_entry_id
+                    WorkOrderAssignment.worker_user_id.in_(worker_user_ids)
                 )
                 timer_match = timer_match.where(
-                    Operation.operation_catalog_entry_id == operation_catalog_entry_id
+                    TimerSession.user_id.in_(worker_user_ids)
+                )
+            if operation_catalog_entry_ids:
+                assignment_match = assignment_match.where(
+                    Operation.operation_catalog_entry_id.in_(
+                        operation_catalog_entry_ids
+                    )
+                )
+                timer_match = timer_match.where(
+                    Operation.operation_catalog_entry_id.in_(
+                        operation_catalog_entry_ids
+                    )
                 )
             conditions.append(or_(exists(assignment_match), exists(timer_match)))
 
@@ -450,6 +483,7 @@ class ReportService:
                 WorkOrder.completed_at,
                 Product.id.label("product_id"),
                 Product.name.label("product_name"),
+                Product.version.label("product_version"),
                 LeatherType.name.label("leather_type_name"),
             )
             .select_from(WorkOrder)
@@ -467,8 +501,8 @@ class ReportService:
         }
         details_by_order = self._get_batch_details(
             submitted_quantities,
-            worker_user_id,
-            operation_catalog_entry_id,
+            worker_user_ids,
+            operation_catalog_entry_ids,
         )
         items: list[OrderBatchReportItem] = []
         for row in order_rows:
@@ -480,6 +514,7 @@ class ReportService:
                     order_number=row.order_number,
                     product_id=row.product_id,
                     product_name=row.product_name,
+                    product_version=row.product_version,
                     leather_type_name=row.leather_type_name,
                     quantity=row.quantity,
                     submitted_quantity=submitted_quantities[row.order_id],
@@ -501,10 +536,33 @@ class ReportService:
             if page is not None and page_size is not None
             else 1
         )
+        period_total_stmt = (
+            select(func.sum(TimerSession.ended_at - TimerSession.started_at))
+            .select_from(TimerSession)
+            .join(WorkOrder, WorkOrder.id == TimerSession.order_id)
+            .outerjoin(Operation, Operation.id == TimerSession.operation_id)
+            .where(*conditions)
+            .where(
+                TimerSession.timer_type_code == TIMER_TYPE_TO_CODE[TimerType.OPERATION]
+            )
+            .where(TimerSession.ended_at.is_not(None))
+        )
+        if worker_user_ids:
+            period_total_stmt = period_total_stmt.where(
+                TimerSession.user_id.in_(worker_user_ids)
+            )
+        if operation_catalog_entry_ids:
+            period_total_stmt = period_total_stmt.where(
+                Operation.operation_catalog_entry_id.in_(
+                    operation_catalog_entry_ids
+                )
+            )
+        total_elapsed_ms = int(self.session.scalar(period_total_stmt) or 0)
         return OrderBatchReport(
             date_from=date_from.isoformat(),
             date_to=date_to.isoformat(),
             items=items,
+            total_elapsed_ms=total_elapsed_ms,
             total=total,
             page=effective_page,
             page_size=effective_page_size,
@@ -514,8 +572,8 @@ class ReportService:
     def _get_batch_details(
         self,
         submitted_quantities: dict[int, int],
-        worker_user_id: int | None,
-        operation_catalog_entry_id: int | None,
+        worker_user_ids: list[int] | None,
+        operation_catalog_entry_ids: list[int] | None,
     ) -> dict[int, list[OrderBatchReportDetail]]:
         if not submitted_quantities:
             return {}
@@ -543,27 +601,27 @@ class ReportService:
             .outerjoin(User, User.id == WorkOrderAssignment.worker_user_id)
             .where(WorkOrderAssignment.work_order_id.in_(order_ids))
         )
-        if worker_user_id is not None:
+        if worker_user_ids:
             assignment_stmt = assignment_stmt.where(
-                WorkOrderAssignment.worker_user_id == worker_user_id
+                WorkOrderAssignment.worker_user_id.in_(worker_user_ids)
             )
-        if operation_catalog_entry_id is not None:
+        if operation_catalog_entry_ids:
             assignment_stmt = assignment_stmt.where(
-                Operation.operation_catalog_entry_id == operation_catalog_entry_id
+                Operation.operation_catalog_entry_id.in_(operation_catalog_entry_ids)
             )
 
         buckets: dict[
             int,
             dict[tuple[int | None, int | None], _BatchDetailBucket],
         ] = defaultdict(dict)
-        for row in self.session.execute(assignment_stmt).all():
-            key = (row.operation_id, row.worker_user_id)
-            buckets[row.work_order_id][key] = _BatchDetailBucket(
-                operation_id=row.operation_id,
-                operation_name=row.operation_name,
-                operation_sort_order=row.operation_sort_order,
-                worker_user_id=row.worker_user_id,
-                worker_user_name=row.worker_user_name or "Не назначен",
+        for assignment_row in self.session.execute(assignment_stmt).all():
+            key = (assignment_row.operation_id, assignment_row.worker_user_id)
+            buckets[assignment_row.work_order_id][key] = _BatchDetailBucket(
+                operation_id=assignment_row.operation_id,
+                operation_name=assignment_row.operation_name,
+                operation_sort_order=assignment_row.operation_sort_order,
+                worker_user_id=assignment_row.worker_user_id,
+                worker_user_name=assignment_row.worker_user_name or "Не назначен",
             )
 
         timer_stmt = (
@@ -600,25 +658,25 @@ class ReportService:
                 User.name,
             )
         )
-        if worker_user_id is not None:
-            timer_stmt = timer_stmt.where(TimerSession.user_id == worker_user_id)
-        if operation_catalog_entry_id is not None:
+        if worker_user_ids:
+            timer_stmt = timer_stmt.where(TimerSession.user_id.in_(worker_user_ids))
+        if operation_catalog_entry_ids:
             timer_stmt = timer_stmt.where(
-                Operation.operation_catalog_entry_id == operation_catalog_entry_id
+                Operation.operation_catalog_entry_id.in_(operation_catalog_entry_ids)
             )
-        for row in self.session.execute(timer_stmt).all():
-            key = (row.operation_id, row.worker_user_id)
-            detail = buckets[row.order_id].setdefault(
+        for timer_row in self.session.execute(timer_stmt).all():
+            key = (timer_row.operation_id, timer_row.worker_user_id)
+            detail = buckets[timer_row.order_id].setdefault(
                 key,
                 _BatchDetailBucket(
-                    operation_id=row.operation_id,
-                    operation_name=row.operation_name,
-                    operation_sort_order=row.operation_sort_order or 0,
-                    worker_user_id=row.worker_user_id,
-                    worker_user_name=row.worker_user_name,
+                    operation_id=timer_row.operation_id,
+                    operation_name=timer_row.operation_name,
+                    operation_sort_order=timer_row.operation_sort_order or 0,
+                    worker_user_id=timer_row.worker_user_id,
+                    worker_user_name=timer_row.worker_user_name,
                 ),
             )
-            detail.elapsed_ms += int(row.elapsed_ms)
+            detail.elapsed_ms += int(timer_row.elapsed_ms)
 
         result: dict[int, list[OrderBatchReportDetail]] = {}
         for order_id, order_buckets in buckets.items():
@@ -651,25 +709,53 @@ class ReportService:
         self,
         date_from: date,
         date_to: date,
-        product_id: int | None = None,
+        product_ids: list[int] | None = None,
     ) -> tuple[bytes, str]:
-        report = self.get_product_quantity_report(date_from, date_to, product_id)
+        report = self.get_product_quantity_report(date_from, date_to, product_ids)
         monthly_rows: list[list[str | int | float | None]] = [
-            ["Изделие", *report.months, "Итого"]
+            [
+                "Изделие",
+                "Итого",
+                *[self._format_month(value) for value in report.months],
+            ]
         ]
         monthly_rows.extend(
-            [item.product_name, *item.month_quantities, item.total_quantity]
+            [
+                self._product_label(item.product_name, item.product_version),
+                self._blank_zero(item.total_quantity),
+                *[self._blank_zero(value) for value in item.month_quantities],
+            ]
             for item in report.items
         )
-        monthly_rows.append(["Итого", *report.total_by_month, report.total_quantity])
+        monthly_rows.append(
+            [
+                "Итого",
+                self._blank_zero(report.total_quantity),
+                *[self._blank_zero(value) for value in report.total_by_month],
+            ]
+        )
         daily_rows: list[list[str | int | float | None]] = [
-            ["Изделие", *report.days, "Итого"]
+            [
+                "Изделие",
+                "Итого",
+                *[self._format_day(value) for value in report.days],
+            ]
         ]
         daily_rows.extend(
-            [item.product_name, *item.day_quantities, item.total_quantity]
+            [
+                self._product_label(item.product_name, item.product_version),
+                self._blank_zero(item.total_quantity),
+                *[self._blank_zero(value) for value in item.day_quantities],
+            ]
             for item in report.items
         )
-        daily_rows.append(["Итого", *report.total_by_day, report.total_quantity])
+        daily_rows.append(
+            [
+                "Итого",
+                self._blank_zero(report.total_quantity),
+                *[self._blank_zero(value) for value in report.total_by_day],
+            ]
+        )
         filename = f"flowcraft-products-{report.date_from}_{report.date_to}.xlsx"
         return (
             build_xlsx(
@@ -684,15 +770,15 @@ class ReportService:
         self,
         date_from: date,
         date_to: date,
-        product_id: int | None = None,
-        worker_user_id: int | None = None,
+        product_ids: list[int] | None = None,
+        worker_user_ids: list[int] | None = None,
         order_number: str | None = None,
     ) -> tuple[bytes, str]:
         report = self.get_product_time_report(
             date_from,
             date_to,
-            product_id,
-            worker_user_id,
+            product_ids,
+            worker_user_ids,
             order_number,
         )
         rows: list[list[str | int | float | XlsxDuration | None]] = [
@@ -700,7 +786,7 @@ class ReportService:
                 "Изделие",
                 "Операция",
                 "Исполнитель",
-                *report.days,
+                *[self._format_day(value) for value in report.days],
                 "Среднее за период",
                 "% от общего времени",
             ]
@@ -708,28 +794,34 @@ class ReportService:
         for product in report.products:
             rows.extend(
                 [
-                    product.product_name,
+                    self._product_label(
+                        product.product_name,
+                        product.product_version,
+                    ),
                     item.operation_name,
                     item.worker_user_name,
                     *[
-                        XlsxDuration(milliseconds=value)
+                        self._xlsx_duration_or_none(value)
                         for value in item.daily_average_ms
                     ],
-                    XlsxDuration(milliseconds=item.average_ms),
-                    round(item.share_of_product_time * 100, 2),
+                    self._xlsx_duration_or_none(item.average_ms),
+                    self._blank_zero(round(item.share_of_product_time * 100, 2)),
                 ]
                 for item in product.rows
             )
             rows.append(
                 [
-                    product.product_name,
+                    self._product_label(
+                        product.product_name,
+                        product.product_version,
+                    ),
                     "Итого",
                     "",
                     *[
-                        XlsxDuration(milliseconds=value)
+                        self._xlsx_duration_or_none(value)
                         for value in product.daily_average_ms
                     ],
-                    XlsxDuration(milliseconds=product.average_ms),
+                    self._xlsx_duration_or_none(product.average_ms),
                     100,
                 ]
             )
@@ -747,22 +839,22 @@ class ReportService:
         self,
         date_from: date,
         date_to: date,
-        product_id: int | None = None,
-        worker_user_id: int | None = None,
-        operation_catalog_entry_id: int | None = None,
+        product_ids: list[int] | None = None,
+        worker_user_ids: list[int] | None = None,
+        operation_catalog_entry_ids: list[int] | None = None,
         order_number: str | None = None,
     ) -> tuple[bytes, str]:
         report = self.get_order_batch_report(
             date_from,
             date_to,
-            product_id,
-            worker_user_id,
-            operation_catalog_entry_id,
+            product_ids,
+            worker_user_ids,
+            operation_catalog_entry_ids,
             order_number,
             page=None,
             page_size=None,
         )
-        rows: list[list[str | int | XlsxDuration | XlsxTotal | None]] = [
+        rows: list[list[str | int | float | XlsxDuration | XlsxTotal | None]] = [
             [
                 "Партия",
                 "ФИО",
@@ -774,33 +866,47 @@ class ReportService:
             ]
         ]
         for item in report.items:
-            product_label = item.product_name
+            product_label = self._product_label(
+                item.product_name,
+                item.product_version,
+            )
             if item.leather_type_name:
                 product_label = f"{product_label} / {item.leather_type_name}"
-            rows.append(
-                [
-                    XlsxTotal(item.order_number),
-                    XlsxTotal("Общее время"),
-                    XlsxTotal(product_label),
-                    XlsxTotal(""),
-                    XlsxTotal(item.submitted_quantity),
-                    XlsxTotal(XlsxDuration(item.total_elapsed_ms)),
-                    XlsxTotal(XlsxDuration(item.average_ms)),
-                ]
-            )
             rows.extend(
                 [
                     item.order_number,
                     detail.worker_user_name,
                     product_label,
                     detail.operation_name,
-                    item.submitted_quantity,
-                    XlsxDuration(detail.elapsed_ms),
-                    XlsxDuration(detail.average_ms),
+                    self._blank_zero(item.submitted_quantity),
+                    self._xlsx_duration_or_none(detail.elapsed_ms),
+                    self._xlsx_duration_or_none(detail.average_ms),
                 ]
                 for detail in item.details
             )
+            rows.append(
+                [
+                    XlsxTotal(item.order_number),
+                    XlsxTotal("Итого по партии"),
+                    XlsxTotal(product_label),
+                    XlsxTotal(""),
+                    XlsxTotal(self._blank_zero(item.submitted_quantity)),
+                    XlsxTotal(self._xlsx_duration_or_none(item.total_elapsed_ms)),
+                    XlsxTotal(self._xlsx_duration_or_none(item.average_ms)),
+                ]
+            )
             rows.append([None, None, None, None, None, None, None])
+        rows.append(
+            [
+                XlsxTotal("Итого за период"),
+                XlsxTotal(""),
+                XlsxTotal(""),
+                XlsxTotal(""),
+                XlsxTotal(""),
+                XlsxTotal(self._xlsx_duration_or_none(report.total_elapsed_ms)),
+                XlsxTotal(""),
+            ]
+        )
         filename = f"flowcraft-order-batches-{report.date_from}_{report.date_to}.xlsx"
         return (
             build_xlsx(
@@ -810,6 +916,23 @@ class ReportService:
             ),
             filename,
         )
+
+    def _blank_zero(self, value: int | float) -> int | float | None:
+        return None if value == 0 else value
+
+    def _xlsx_duration_or_none(self, milliseconds: int) -> XlsxDuration | None:
+        return None if milliseconds == 0 else XlsxDuration(milliseconds)
+
+    def _product_label(self, name: str, version: str) -> str:
+        return f"{name} ({version})"
+
+    def _format_month(self, value: str) -> str:
+        year, month = value.split("-")
+        return f"{RUSSIAN_MONTH_NAMES[int(month) - 1]} {year[-2:]}"
+
+    def _format_day(self, value: str) -> str:
+        year, month, day = value.split("-")
+        return f"{day}.{month}.{year[-2:]}"
 
     def _validate_period(self, date_from: date, date_to: date) -> None:
         if date_from > date_to:

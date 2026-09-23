@@ -49,7 +49,7 @@ def _grant_reports_permission(db_session: sessionmaker[Session]) -> None:
         session.close()
 
 
-def test_report_filter_options_include_inactive_and_deleted_entries(
+def test_report_filter_options_include_only_active_users(
     client: TestClient,
     db_session: sessionmaker[Session],
 ) -> None:
@@ -60,6 +60,28 @@ def test_report_filter_options_include_inactive_and_deleted_entries(
     session = db_session()
     try:
         admin = session.query(User).filter(User.phone == "+79990000001").one()
+        active_worker = User(
+            name="Активный мастер",
+            phone="+79990000008",
+            password_hash=None,
+            roles=["worker"],
+            is_active=True,
+            created_at=1,
+            updated_at=1,
+            deleted_at=None,
+            author_user_id=admin.id,
+        )
+        inactive_worker = User(
+            name="Неактивный мастер",
+            phone="+79990000009",
+            password_hash=None,
+            roles=["worker"],
+            is_active=False,
+            created_at=1,
+            updated_at=2,
+            deleted_at=None,
+            author_user_id=admin.id,
+        )
         deleted_worker = User(
             name="Архивный мастер",
             phone="+79990000010",
@@ -77,7 +99,9 @@ def test_report_filter_options_include_inactive_and_deleted_entries(
             created_at=1,
             updated_at=2,
         )
-        session.add_all([deleted_worker, inactive_operation])
+        session.add_all(
+            [active_worker, inactive_worker, deleted_worker, inactive_operation]
+        )
         session.flush()
         product = _create_product(session, "Архивное изделие")
         operation = Operation(
@@ -102,7 +126,7 @@ def test_report_filter_options_include_inactive_and_deleted_entries(
                 worker_user_id=deleted_worker.id,
             )
         )
-        deleted_worker_id = deleted_worker.id
+        active_worker_id = active_worker.id
         inactive_operation_id = inactive_operation.id
         session.commit()
     finally:
@@ -114,10 +138,10 @@ def test_report_filter_options_include_inactive_and_deleted_entries(
     payload = response.json()
     assert payload["workers"] == [
         {
-            "id": deleted_worker_id,
-            "name": "Архивный мастер",
-            "is_active": False,
-            "is_deleted": True,
+            "id": active_worker_id,
+            "name": "Активный мастер",
+            "is_active": True,
+            "is_deleted": False,
         }
     ]
     assert payload["operations"] == [
@@ -142,6 +166,7 @@ def test_product_quantity_report_uses_only_completed_orders(
     session = db_session()
     try:
         product = _create_product(session)
+        product_id = product.id
         session.add_all(
             [
                 WorkOrder(
@@ -189,20 +214,42 @@ def test_product_quantity_report_uses_only_completed_orders(
     assert response.status_code == 200
     payload = response.json()
     assert payload["months"] == ["2026-06", "2026-07"]
+    assert payload["items"][0]["product_version"] == "1.0"
     assert payload["items"][0]["month_quantities"] == [4, 6]
     assert payload["items"][0]["total_quantity"] == 10
     assert payload["total_quantity"] == 10
+
+    multiple_filter_response = client.get(
+        "/api/reports/products?date_from=2026-06-01&date_to=2026-07-31"
+        f"&product_id={product_id}&product_id=999999"
+    )
+    assert multiple_filter_response.status_code == 200
+    assert [
+        item["product_id"] for item in multiple_filter_response.json()["items"]
+    ] == [product_id]
 
     export_response = client.get(
         "/api/reports/products/export.xlsx?date_from=2026-06-01&date_to=2026-07-31"
     )
     assert export_response.status_code == 200
     with ZipFile(BytesIO(export_response.content)) as workbook:
-        assert "xl/worksheets/sheet1.xml" in workbook.namelist()
-        assert "xl/worksheets/sheet2.xml" in workbook.namelist()
+        monthly_sheet = workbook.read("xl/worksheets/sheet1.xml").decode()
+        daily_sheet = workbook.read("xl/worksheets/sheet2.xml").decode()
+        total_header_cell = (
+            '<c r="B1" t="inlineStr" s="1"><is><t>Итого</t></is></c>'
+        )
+        month_header_cell = (
+            '<c r="C1" t="inlineStr" s="1"><is><t>Июнь 26</t></is></c>'
+        )
+        assert total_header_cell in monthly_sheet
+        assert month_header_cell in monthly_sheet
+        assert "Сумка City (1.0)" in monthly_sheet
+        assert total_header_cell in daily_sheet
+        assert "01.06.26" in daily_sheet
+        assert '<c r="C2"/>' in daily_sheet
 
 
-def test_product_time_report_calculates_weighted_average_per_item(
+def test_product_time_report_keeps_historical_users_and_calculates_average(
     client: TestClient,
     db_session: sessionmaker[Session],
 ) -> None:
@@ -227,7 +274,29 @@ def test_product_time_report_calculates_weighted_average_per_item(
             deleted_at=None,
             author_user_id=product.author_user_id,
         )
-        session.add_all([catalog_entry, worker])
+        inactive_worker = User(
+            name="Неактивная Ирина",
+            phone="+79990000012",
+            password_hash=None,
+            roles=["worker"],
+            is_active=False,
+            created_at=1,
+            updated_at=1,
+            deleted_at=None,
+            author_user_id=product.author_user_id,
+        )
+        deleted_worker = User(
+            name="Удаленная Ирина",
+            phone="+79990000013",
+            password_hash=None,
+            roles=["worker"],
+            is_active=True,
+            created_at=1,
+            updated_at=1,
+            deleted_at=2,
+            author_user_id=product.author_user_id,
+        )
+        session.add_all([catalog_entry, worker, inactive_worker, deleted_worker])
         session.flush()
         operation = Operation(
             product_id=product.id,
@@ -265,7 +334,21 @@ def test_product_time_report_calculates_weighted_average_per_item(
             business_date="2026-06-02",
             created_at=1,
         )
-        session.add_all([first_shift, second_shift])
+        inactive_shift = WorkShift(
+            user_id=inactive_worker.id,
+            started_at=1,
+            ended_at=200_000,
+            business_date="2026-06-01",
+            created_at=1,
+        )
+        deleted_shift = WorkShift(
+            user_id=deleted_worker.id,
+            started_at=1,
+            ended_at=200_000,
+            business_date="2026-06-01",
+            created_at=1,
+        )
+        session.add_all([first_shift, second_shift, inactive_shift, deleted_shift])
         session.flush()
         session.add_all(
             [
@@ -299,6 +382,26 @@ def test_product_time_report_calculates_weighted_average_per_item(
                     ended_at=120_000,
                     created_at=0,
                 ),
+                TimerSession(
+                    shift_id=inactive_shift.id,
+                    user_id=inactive_worker.id,
+                    timer_type_code=TIMER_TYPE_TO_CODE[TimerType.OPERATION],
+                    order_id=first_order.id,
+                    operation_id=operation.id,
+                    started_at=0,
+                    ended_at=100_000,
+                    created_at=0,
+                ),
+                TimerSession(
+                    shift_id=deleted_shift.id,
+                    user_id=deleted_worker.id,
+                    timer_type_code=TIMER_TYPE_TO_CODE[TimerType.OPERATION],
+                    order_id=first_order.id,
+                    operation_id=operation.id,
+                    started_at=0,
+                    ended_at=100_000,
+                    created_at=0,
+                ),
             ]
         )
         session.commit()
@@ -306,26 +409,36 @@ def test_product_time_report_calculates_weighted_average_per_item(
         session.close()
 
     response = client.get(
-        "/api/reports/product-time?date_from=2026-06-01&date_to=2026-06-02"
+        "/api/reports/product-time?date_from=2026-06-01&date_to=2026-06-03"
     )
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["days"] == ["2026-06-01", "2026-06-02"]
+    assert payload["days"] == ["2026-06-01", "2026-06-02", "2026-06-03"]
     product = payload["products"][0]
-    assert product["daily_average_ms"] == [100_000, 60_000]
-    assert product["average_ms"] == 124_000
-    assert product["total_elapsed_ms"] == 620_000
-    assert product["rows"][0]["daily_average_ms"] == [100_000, 60_000]
-    assert product["rows"][0]["share_of_product_time"] == 1
+    assert product["product_version"] == "1.0"
+    assert product["daily_average_ms"] == [140_000, 60_000, 0]
+    assert product["average_ms"] == 164_000
+    assert product["total_elapsed_ms"] == 820_000
+    rows_by_worker = {row["worker_user_name"]: row for row in product["rows"]}
+    assert rows_by_worker["Ирина Соколова"]["daily_average_ms"] == [
+        100_000,
+        60_000,
+        0,
+    ]
+    assert rows_by_worker["Ирина Соколова"]["total_elapsed_ms"] == 620_000
+    assert rows_by_worker["Неактивная Ирина"]["total_elapsed_ms"] == 100_000
+    assert rows_by_worker["Удаленная Ирина"]["total_elapsed_ms"] == 100_000
 
     export_response = client.get(
-        "/api/reports/product-time/export.xlsx?date_from=2026-06-01&date_to=2026-06-02"
+        "/api/reports/product-time/export.xlsx?date_from=2026-06-01&date_to=2026-06-03"
     )
     assert export_response.status_code == 200
     with ZipFile(BytesIO(export_response.content)) as workbook:
         styles = workbook.read("xl/styles.xml").decode()
+        sheet = workbook.read("xl/worksheets/sheet1.xml").decode()
         assert 'formatCode="[h]:mm:ss"' in styles
+        assert '<c r="F2"/>' in sheet
 
 
 def test_order_batch_report_groups_timers_and_keeps_zero_time_assignments(
@@ -384,6 +497,7 @@ def test_order_batch_report_groups_timers_and_keeps_zero_time_assignments(
         session.add_all([sewing, packing])
         session.flush()
         worker_id = worker.id
+        sewing_entry_id = sewing_entry.id
         packing_entry_id = packing_entry.id
         order = WorkOrder(
             order_number="9383",
@@ -444,6 +558,8 @@ def test_order_batch_report_groups_timers_and_keeps_zero_time_assignments(
                 ),
             ]
         )
+        worker.is_active = False
+        worker.deleted_at = _timestamp(2026, 8, 11)
         session.commit()
     finally:
         session.close()
@@ -455,10 +571,12 @@ def test_order_batch_report_groups_timers_and_keeps_zero_time_assignments(
     assert response.status_code == 200
     payload = response.json()
     assert payload["total"] == 1
+    assert payload["total_elapsed_ms"] == 300_000
     assert payload["pages"] == 1
     item = payload["items"][0]
     assert item["order_number"] == "9383"
     assert item["product_name"] == "Рюкзак Nord"
+    assert item["product_version"] == "1.0"
     assert item["leather_type_name"] == "Черная кожа"
     assert item["quantity"] == 3
     assert item["submitted_quantity"] == 2
@@ -484,6 +602,21 @@ def test_order_batch_report_groups_timers_and_keeps_zero_time_assignments(
     assert [detail["operation_name"] for detail in filtered_item["details"]] == [
         "Упаковка"
     ]
+    assert filtered_response.json()["total_elapsed_ms"] == 0
+
+    multiple_filter_response = client.get(
+        "/api/reports/order-batches"
+        "?date_from=2026-08-01&date_to=2026-08-31"
+        f"&worker_user_id={worker_id}&worker_user_id=999999"
+        f"&operation_catalog_entry_id={packing_entry_id}"
+        f"&operation_catalog_entry_id={sewing_entry_id}"
+    )
+    assert multiple_filter_response.status_code == 200
+    assert multiple_filter_response.json()["total_elapsed_ms"] == 300_000
+    assert [
+        detail["operation_name"]
+        for detail in multiple_filter_response.json()["items"][0]["details"]
+    ] == ["Пошив", "Упаковка"]
 
     export_response = client.get(
         "/api/reports/order-batches/export.xlsx?date_from=2026-08-01&date_to=2026-08-31"
@@ -494,3 +627,8 @@ def test_order_batch_report_groups_timers_and_keeps_zero_time_assignments(
         sheet = workbook.read("xl/worksheets/sheet1.xml").decode()
         assert 'formatCode="[h]:mm:ss"' in styles
         assert 's="4"' in sheet
+        assert '<c r="F3"/>' in sheet
+        assert '<c r="G3"/>' in sheet
+        assert "Рюкзак Nord (1.0)" in sheet
+        assert sheet.index("Упаковка") < sheet.index("Итого по партии")
+        assert sheet.index("Итого по партии") < sheet.index("Итого за период")
