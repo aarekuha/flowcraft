@@ -395,6 +395,57 @@ def test_statistics_service_returns_overview_for_date_range(
         session.close()
 
 
+@pytest.mark.parametrize(
+    ("is_active", "deleted_at"),
+    [(False, None), (True, _timestamp(2026, 6, 2))],
+)
+def test_statistics_service_excludes_inactive_and_deleted_users(
+    db_session: sessionmaker[Session],
+    is_active: bool,
+    deleted_at: int | None,
+) -> None:
+    worker_id, order_id, operation_id = _bootstrap_worker_graph(db_session)
+    session = db_session()
+    try:
+        shift = WorkShift(
+            user_id=worker_id,
+            started_at=_timestamp(2026, 6, 1, 8),
+            ended_at=_timestamp(2026, 6, 1, 9),
+            business_date="2026-06-01",
+            created_at=_timestamp(2026, 6, 1, 8),
+        )
+        session.add(shift)
+        session.flush()
+        session.add(
+            TimerSession(
+                shift_id=shift.id,
+                user_id=worker_id,
+                timer_type_code=TIMER_TYPE_TO_CODE[TimerType.OPERATION],
+                order_id=order_id,
+                operation_id=operation_id,
+                started_at=_timestamp(2026, 6, 1, 8),
+                ended_at=_timestamp(2026, 6, 1, 8, 2),
+                created_at=_timestamp(2026, 6, 1, 8),
+            )
+        )
+        worker = session.get(User, worker_id)
+        assert worker is not None
+        worker.is_active = is_active
+        worker.deleted_at = deleted_at
+        session.flush()
+
+        overview = StatisticsService(session).get_overview(
+            date_from=date(2026, 6, 1),
+            date_to=date(2026, 6, 1),
+        )
+
+        assert overview.kpis.total_tracked_ms == 0
+        assert overview.kpis.active_orders_count == 0
+        assert overview.workers == []
+    finally:
+        session.close()
+
+
 def test_statistics_service_exports_xlsx_with_minute_values(
     db_session: sessionmaker[Session],
 ) -> None:

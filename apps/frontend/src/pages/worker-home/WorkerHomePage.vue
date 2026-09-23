@@ -95,6 +95,10 @@ import {
   type UserRecord,
   type UserRole,
 } from "@/shared/api/users";
+import {
+  formatStandardTimeInput,
+  parseStandardTimeInput,
+} from "@/shared/lib/standardTime";
 
 type TabId = "worker" | "brigadier" | "constructor" | "stats" | "reports" | "users";
 type ModalMode = "create" | "copy" | "view" | null;
@@ -348,7 +352,11 @@ const productName = ref("");
 const productVersion = ref("");
 const productMaterialCostCents = ref<number | null>(null);
 const operationTree = ref<OperationNode[]>([]);
+const operationStandardTimeInputs = ref<Record<number, string>>({});
 const operationStandardTimeInputErrors = ref<Record<number, string>>({});
+const productModalRef = ref<HTMLElement | null>(null);
+const productOperationsSectionRef = ref<HTMLElement | null>(null);
+const productNameInputRef = ref<HTMLInputElement | null>(null);
 const productPendingDelete = ref<ProductSummary | null>(null);
 const userPendingDelete = ref<UserRecord | null>(null);
 const editingUserId = ref<number | null>(null);
@@ -862,7 +870,7 @@ const brigadierModalDescription = computed(() =>
     ? "По заказу уже есть трудозатраты: можно изменить плановую дату и исполнителей до передачи в ОТК, вид кожи и количество заблокированы."
     : brigadierModalMode.value === "manage"
     ? "Можно изменить плановую дату, вид кожи, количество изделий и назначенных исполнителей до передачи в ОТК."
-    : "Укажите плановую дату, количество изделий и распределите исполнителей по операциям.",
+    : "Укажите количество изделий, при необходимости плановую дату и распределите исполнителей по операциям.",
 );
 
 const brigadierModalSaveLabel = computed(() =>
@@ -1042,8 +1050,7 @@ const brigadierQuantityError = computed(() => {
 
 const brigadierPlannedCompletionDateError = computed(() =>
   !brigadierModalPlannedCompletionDate.value &&
-  (brigadierModalMode.value === "create" ||
-    Boolean(brigadierCurrentOrder.value?.plannedCompletionDate))
+  Boolean(brigadierCurrentOrder.value?.plannedCompletionDate)
     ? "Укажите плановую дату сдачи заказа."
     : "",
 );
@@ -2258,15 +2265,20 @@ function resetForm() {
   productVersion.value = "";
   productMaterialCostCents.value = null;
   operationTree.value = [];
+  operationStandardTimeInputs.value = {};
   operationStandardTimeInputErrors.value = {};
   nextOperationId = 1;
 }
 
-function startCreateProduct() {
+async function startCreateProduct() {
   modalMode.value = "create";
   modalLoading.value = false;
   saveLoading.value = false;
   resetForm();
+  await nextTick();
+  productModalRef.value?.scrollTo({ top: 0, behavior: "auto" });
+  productOperationsSectionRef.value?.scrollTo({ top: 0, behavior: "auto" });
+  productNameInputRef.value?.focus({ preventScroll: true });
 }
 
 async function startCopyProduct(productId: number) {
@@ -3629,6 +3641,11 @@ function handleOperationStandardTimeInput(operationId: number, event: Event) {
     return;
   }
 
+  operationStandardTimeInputs.value = {
+    ...operationStandardTimeInputs.value,
+    [operationId]: target.value,
+  };
+
   const standardTimeSeconds = parseStandardTimeInput(target.value);
   if (standardTimeSeconds === undefined) {
     operationStandardTimeInputErrors.value = {
@@ -3655,8 +3672,20 @@ function normalizeOperationStandardTimeInput(operationId: number, event: Event) 
 
   if (!operationStandardTimeInputErrors.value[operationId]) {
     const row = flatOperationRows.value.find((item) => item.id === operationId);
-    target.value = formatStandardTimeInput(row?.standardTimeSeconds ?? null);
+    const normalizedValue = formatStandardTimeInput(row?.standardTimeSeconds ?? null);
+    operationStandardTimeInputs.value = {
+      ...operationStandardTimeInputs.value,
+      [operationId]: normalizedValue,
+    };
+    target.value = normalizedValue;
   }
+}
+
+function getOperationStandardTimeInput(row: FlatOperationNodeRow): string {
+  return (
+    operationStandardTimeInputs.value[row.id] ??
+    formatStandardTimeInput(row.standardTimeSeconds)
+  );
 }
 
 function clearOperationStandardTimeInputError(operationId: number) {
@@ -3677,6 +3706,11 @@ function pruneOperationStandardTimeInputErrors() {
   );
   operationStandardTimeInputErrors.value = Object.fromEntries(
     Object.entries(operationStandardTimeInputErrors.value).filter(([operationId]) =>
+      leafOperationIds.has(Number(operationId)),
+    ),
+  );
+  operationStandardTimeInputs.value = Object.fromEntries(
+    Object.entries(operationStandardTimeInputs.value).filter(([operationId]) =>
       leafOperationIds.has(Number(operationId)),
     ),
   );
@@ -4266,35 +4300,6 @@ function formatMoneyInput(cents: number | null): string {
   return Number.isInteger(value)
     ? String(value)
     : value.toFixed(2).replace(/0+$/, "").replace(/\.$/, "");
-}
-
-function parseStandardTimeInput(value: string): number | null | undefined {
-  const normalizedValue = value.trim();
-  if (!normalizedValue) {
-    return null;
-  }
-
-  const match = /^(\d+):([0-5]\d)$/.exec(normalizedValue);
-  if (!match) {
-    return undefined;
-  }
-
-  const minutes = Number(match[1]);
-  const seconds = Number(match[2]);
-  const totalSeconds = minutes * 60 + seconds;
-  return Number.isSafeInteger(totalSeconds) && totalSeconds <= 2_147_483_647
-    ? totalSeconds
-    : undefined;
-}
-
-function formatStandardTimeInput(totalSeconds: number | null): string {
-  if (totalSeconds === null) {
-    return "";
-  }
-
-  const minutes = Math.floor(totalSeconds / 60);
-  const seconds = totalSeconds % 60;
-  return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
 }
 
 function formatWorkerGroupProductMeta(group: WorkerTimerGroup): string {
@@ -5386,7 +5391,7 @@ async function saveBrigadierOrder() {
     } else if (isCreateMode) {
       await createWorkOrder({
         order_number: brigadierModalOrderNumber.value.trim(),
-        planned_completion_date: brigadierModalPlannedCompletionDate.value,
+        planned_completion_date: brigadierModalPlannedCompletionDate.value || null,
         product_id: brigadierModalProduct.value.id,
         leather_type_id: leatherTypeId,
         quantity,
@@ -8681,7 +8686,7 @@ async function handleResetUserPassword(user: UserRecord) {
       class="modal-backdrop"
       @click.self="closeProductModal"
     >
-      <section class="modal" role="dialog" aria-modal="true">
+      <section ref="productModalRef" class="modal" role="dialog" aria-modal="true">
         <div class="modal__head">
           <div>
             <h2>{{ modalTitle }}</h2>
@@ -8714,6 +8719,7 @@ async function handleResetUserPassword(user: UserRecord) {
               <label class="field">
                 <span class="field__label">Наименование изделия</span>
                 <input
+                  ref="productNameInputRef"
                   v-model="productName"
                   type="text"
                   class="text-input"
@@ -8770,7 +8776,7 @@ async function handleResetUserPassword(user: UserRecord) {
             </p>
           </div>
 
-          <section class="operations-section">
+          <section ref="productOperationsSectionRef" class="operations-section">
             <div class="operations-section__head">
               <div>
                 <span class="field__label">Таблица-дерево операций</span>
@@ -8802,8 +8808,8 @@ async function handleResetUserPassword(user: UserRecord) {
                   <tr>
                     <th>Операция</th>
                     <th>Тип</th>
-                    <th>Цена, ₽</th>
                     <th>Норма на одно изделие, мм:сс</th>
+                    <th>Цена, ₽</th>
                     <th>Действия</th>
                   </tr>
                 </thead>
@@ -8909,6 +8915,35 @@ async function handleResetUserPassword(user: UserRecord) {
                     </td>
                     <td>
                       <span v-if="row.isGroup" class="readonly-note">
+                        Норма только у операций
+                      </span>
+                      <span v-else-if="isViewMode" class="operation-text">
+                        {{ formatStandardTimeInput(row.standardTimeSeconds) || "Не указана" }}
+                      </span>
+                      <input
+                        v-else
+                        :value="getOperationStandardTimeInput(row)"
+                        type="text"
+                        inputmode="numeric"
+                        class="operation-input operation-input--standard-time"
+                        placeholder="мм:сс"
+                        :aria-label="`Норма времени операции ${row.name || row.id}`"
+                        @input="handleOperationStandardTimeInput(row.id, $event)"
+                        @blur="normalizeOperationStandardTimeInput(row.id, $event)"
+                      />
+                      <p
+                        v-if="
+                          !isViewMode &&
+                          (operationErrors[row.id]?.startsWith('Норма') ||
+                            operationErrors[row.id]?.includes('нормы времени'))
+                        "
+                        class="field-error"
+                      >
+                        {{ operationErrors[row.id] }}
+                      </p>
+                    </td>
+                    <td>
+                      <span v-if="row.isGroup" class="readonly-note">
                         Цена только у операций
                       </span>
                       <span v-else-if="isViewMode" class="operation-text">
@@ -8929,35 +8964,6 @@ async function handleResetUserPassword(user: UserRecord) {
                           !isViewMode &&
                           (operationErrors[row.id]?.startsWith('Цена') ||
                             operationErrors[row.id]?.startsWith('У группы'))
-                        "
-                        class="field-error"
-                      >
-                        {{ operationErrors[row.id] }}
-                      </p>
-                    </td>
-                    <td>
-                      <span v-if="row.isGroup" class="readonly-note">
-                        Норма только у операций
-                      </span>
-                      <span v-else-if="isViewMode" class="operation-text">
-                        {{ formatStandardTimeInput(row.standardTimeSeconds) || "Не указана" }}
-                      </span>
-                      <input
-                        v-else
-                        :value="formatStandardTimeInput(row.standardTimeSeconds)"
-                        type="text"
-                        inputmode="numeric"
-                        class="operation-input operation-input--standard-time"
-                        placeholder="мм:сс"
-                        :aria-label="`Норма времени операции ${row.name || row.id}`"
-                        @input="handleOperationStandardTimeInput(row.id, $event)"
-                        @blur="normalizeOperationStandardTimeInput(row.id, $event)"
-                      />
-                      <p
-                        v-if="
-                          !isViewMode &&
-                          (operationErrors[row.id]?.startsWith('Норма') ||
-                            operationErrors[row.id]?.includes('нормы времени'))
                         "
                         class="field-error"
                       >

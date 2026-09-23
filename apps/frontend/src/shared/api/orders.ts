@@ -127,7 +127,7 @@ export type WorkOrderTimeBreakdown = {
 
 export type WorkOrderCreatePayload = {
   order_number: string;
-  planned_completion_date: string;
+  planned_completion_date: string | null;
   product_id: number;
   leather_type_id?: number | null;
   quantity: number;

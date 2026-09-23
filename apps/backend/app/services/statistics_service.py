@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session, joinedload
 
 from app.models.operation import Operation
 from app.models.timer_session import TimerSession
+from app.models.user import User
 from app.models.work_order import WorkOrder
 from app.schemas.statistics import (
     StatisticsDailyRead,
@@ -534,7 +535,10 @@ class StatisticsService:
                 joinedload(TimerSession.order).joinedload(WorkOrder.leather_type),
                 joinedload(TimerSession.operation).joinedload(Operation.catalog_entry),
             )
+            .join(User, User.id == TimerSession.user_id)
             .where(TimerSession.started_at < period_end)
+            .where(User.is_active.is_(True))
+            .where(User.deleted_at.is_(None))
             .where(
                 (TimerSession.ended_at.is_(None))
                 | (TimerSession.ended_at > period_start)

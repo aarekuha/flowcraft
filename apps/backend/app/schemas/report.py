@@ -22,6 +22,7 @@ class ReportFilterOptions(BaseModel):
 class ProductQuantityReportRow(BaseModel):
     product_id: int
     product_name: str
+    product_version: str
     month_quantities: list[int] = Field(default_factory=list)
     day_quantities: list[int] = Field(default_factory=list)
     total_quantity: int
@@ -52,6 +53,7 @@ class ProductTimeOperationReportRow(BaseModel):
 class ProductTimeReportSection(BaseModel):
     product_id: int
     product_name: str
+    product_version: str
     rows: list[ProductTimeOperationReportRow] = Field(default_factory=list)
     daily_average_ms: list[int] = Field(default_factory=list)
     average_ms: int
@@ -79,6 +81,7 @@ class OrderBatchReportItem(BaseModel):
     order_number: str
     product_id: int
     product_name: str
+    product_version: str
     leather_type_name: str | None
     quantity: int
     submitted_quantity: int
@@ -92,6 +95,7 @@ class OrderBatchReport(BaseModel):
     date_from: str
     date_to: str
     items: list[OrderBatchReportItem] = Field(default_factory=list)
+    total_elapsed_ms: int
     total: int
     page: int
     page_size: int

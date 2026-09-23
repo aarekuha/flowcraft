@@ -3,9 +3,9 @@ import { apiFetch, createRequestError, handleJsonResponse } from "@/shared/api/h
 export type ReportFilters = {
   dateFrom: string;
   dateTo: string;
-  productId?: number;
-  workerUserId?: number;
-  operationCatalogEntryId?: number;
+  productIds?: number[];
+  workerUserIds?: number[];
+  operationCatalogEntryIds?: number[];
   orderNumber?: string;
   page?: number;
   pageSize?: number;
@@ -28,6 +28,7 @@ export type ReportFilterOptions = {
 export type ProductQuantityReportRow = {
   productId: number;
   productName: string;
+  productVersion: string;
   monthQuantities: number[];
   dayQuantities: number[];
   totalQuantity: number;
@@ -58,6 +59,7 @@ export type ProductTimeOperationReportRow = {
 export type ProductTimeReportSection = {
   productId: number;
   productName: string;
+  productVersion: string;
   rows: ProductTimeOperationReportRow[];
   dailyAverageMs: number[];
   averageMs: number;
@@ -85,6 +87,7 @@ export type OrderBatchReportItem = {
   orderNumber: string;
   productId: number;
   productName: string;
+  productVersion: string;
   leatherTypeName: string | null;
   quantity: number;
   submittedQuantity: number;
@@ -98,6 +101,7 @@ export type OrderBatchReport = {
   dateFrom: string;
   dateTo: string;
   items: OrderBatchReportItem[];
+  totalElapsedMs: number;
   total: number;
   page: number;
   pageSize: number;
@@ -112,6 +116,7 @@ type ProductQuantityReportApi = {
   items: Array<{
     product_id: number;
     product_name: string;
+    product_version: string;
     month_quantities: number[];
     day_quantities: number[];
     total_quantity: number;
@@ -142,6 +147,7 @@ type ProductTimeReportApi = {
   products: Array<{
     product_id: number;
     product_name: string;
+    product_version: string;
     rows: Array<{
       operation_id: number | null;
       operation_name: string;
@@ -166,6 +172,7 @@ type OrderBatchReportApi = {
     order_number: string;
     product_id: number;
     product_name: string;
+    product_version: string;
     leather_type_name: string | null;
     quantity: number;
     submitted_quantity: number;
@@ -181,6 +188,7 @@ type OrderBatchReportApi = {
       average_ms: number;
     }>;
   }>;
+  total_elapsed_ms: number;
   total: number;
   page: number;
   page_size: number;
@@ -199,6 +207,7 @@ export async function fetchProductQuantityReport(
     items: report.items.map((item) => ({
       productId: item.product_id,
       productName: item.product_name,
+      productVersion: item.product_version,
       monthQuantities: item.month_quantities,
       dayQuantities: item.day_quantities,
       totalQuantity: item.total_quantity,
@@ -237,6 +246,7 @@ export async function fetchProductTimeReport(
     products: report.products.map((product) => ({
       productId: product.product_id,
       productName: product.product_name,
+      productVersion: product.product_version,
       rows: product.rows.map((item) => ({
         operationId: item.operation_id,
         operationName: item.operation_name,
@@ -266,6 +276,7 @@ export async function fetchOrderBatchReport(
       orderNumber: item.order_number,
       productId: item.product_id,
       productName: item.product_name,
+      productVersion: item.product_version,
       leatherTypeName: item.leather_type_name,
       quantity: item.quantity,
       submittedQuantity: item.submitted_quantity,
@@ -281,6 +292,7 @@ export async function fetchOrderBatchReport(
         averageMs: detail.average_ms,
       })),
     })),
+    totalElapsedMs: report.total_elapsed_ms,
     total: report.total,
     page: report.page,
     pageSize: report.page_size,
@@ -311,15 +323,15 @@ function buildReportQuery(filters: ReportFilters): string {
     date_from: filters.dateFrom,
     date_to: filters.dateTo,
   });
-  if (filters.productId) {
-    params.set("product_id", String(filters.productId));
-  }
-  if (filters.workerUserId) {
-    params.set("worker_user_id", String(filters.workerUserId));
-  }
-  if (filters.operationCatalogEntryId) {
-    params.set("operation_catalog_entry_id", String(filters.operationCatalogEntryId));
-  }
+  filters.productIds?.forEach((productId) => {
+    params.append("product_id", String(productId));
+  });
+  filters.workerUserIds?.forEach((workerUserId) => {
+    params.append("worker_user_id", String(workerUserId));
+  });
+  filters.operationCatalogEntryIds?.forEach((operationCatalogEntryId) => {
+    params.append("operation_catalog_entry_id", String(operationCatalogEntryId));
+  });
   if (filters.orderNumber?.trim()) {
     params.set("order_number", filters.orderNumber.trim());
   }

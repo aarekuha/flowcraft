@@ -253,6 +253,30 @@ def test_create_order_allows_empty_operation_workers(client: TestClient) -> None
     )
 
 
+def test_create_order_allows_missing_planned_completion_date(
+    client: TestClient,
+) -> None:
+    author = create_author_user(client)
+    product = create_product_with_leaf_operations(client, author["id"])
+    leaf_ids = collect_leaf_operation_ids(product)
+
+    response = client.post(
+        "/api/orders",
+        json={
+            "order_number": "FC-0111",
+            "product_id": product["id"],
+            "quantity": 4,
+            "assignments": [
+                {"operation_id": operation_id, "worker_user_id": None}
+                for operation_id in leaf_ids
+            ],
+        },
+    )
+
+    assert response.status_code == 201
+    assert response.json()["planned_completion_date"] is None
+
+
 def test_list_orders_returns_assignments_count(client: TestClient) -> None:
     author = create_author_user(client)
     worker = create_worker_user(client)

@@ -59,7 +59,7 @@ class WorkOrderAssignmentWorkerStatusUpdate(BaseModel):
 
 class WorkOrderCreate(BaseModel):
     order_number: str = Field(min_length=1, max_length=64)
-    planned_completion_date: date
+    planned_completion_date: date | None = None
     product_id: int
     leather_type_id: int | None = None
     quantity: int = Field(gt=0)

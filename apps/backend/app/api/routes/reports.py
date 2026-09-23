@@ -5,6 +5,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import Response
+from pydantic import Field
 from sqlalchemy.orm import Session
 
 from app.api.dependencies import get_session, require_any_role
@@ -14,6 +15,7 @@ from app.schemas.report import OrderBatchReport
 from app.services.report_service import ReportService
 
 router = APIRouter()
+ReportId = Annotated[int, Field(ge=1)]
 
 
 @router.get(
@@ -36,7 +38,7 @@ def get_report_filter_options(
 def get_product_quantity_report(
     date_from: date,
     date_to: date,
-    product_id: Annotated[int | None, Query(ge=1)] = None,
+    product_id: Annotated[list[ReportId] | None, Query()] = None,
     _: object = Depends(require_any_role("reports")),
     session: Session = Depends(get_session),
 ) -> ProductQuantityReport:
@@ -51,7 +53,7 @@ def get_product_quantity_report(
 def export_product_quantity_report(
     date_from: date,
     date_to: date,
-    product_id: Annotated[int | None, Query(ge=1)] = None,
+    product_id: Annotated[list[ReportId] | None, Query()] = None,
     _: object = Depends(require_any_role("reports")),
     session: Session = Depends(get_session),
 ) -> Response:
@@ -71,8 +73,8 @@ def export_product_quantity_report(
 def get_product_time_report(
     date_from: date,
     date_to: date,
-    product_id: Annotated[int | None, Query(ge=1)] = None,
-    worker_user_id: Annotated[int | None, Query(ge=1)] = None,
+    product_id: Annotated[list[ReportId] | None, Query()] = None,
+    worker_user_id: Annotated[list[ReportId] | None, Query()] = None,
     order_number: Annotated[str | None, Query(max_length=64)] = None,
     _: object = Depends(require_any_role("reports")),
     session: Session = Depends(get_session),
@@ -90,8 +92,8 @@ def get_product_time_report(
 def export_product_time_report(
     date_from: date,
     date_to: date,
-    product_id: Annotated[int | None, Query(ge=1)] = None,
-    worker_user_id: Annotated[int | None, Query(ge=1)] = None,
+    product_id: Annotated[list[ReportId] | None, Query()] = None,
+    worker_user_id: Annotated[list[ReportId] | None, Query()] = None,
     order_number: Annotated[str | None, Query(max_length=64)] = None,
     _: object = Depends(require_any_role("reports")),
     session: Session = Depends(get_session),
@@ -114,9 +116,9 @@ def export_product_time_report(
 def get_order_batch_report(
     date_from: date,
     date_to: date,
-    product_id: Annotated[int | None, Query(ge=1)] = None,
-    worker_user_id: Annotated[int | None, Query(ge=1)] = None,
-    operation_catalog_entry_id: Annotated[int | None, Query(ge=1)] = None,
+    product_id: Annotated[list[ReportId] | None, Query()] = None,
+    worker_user_id: Annotated[list[ReportId] | None, Query()] = None,
+    operation_catalog_entry_id: Annotated[list[ReportId] | None, Query()] = None,
     order_number: Annotated[str | None, Query(max_length=64)] = None,
     page: Annotated[int, Query(ge=1)] = 1,
     page_size: Annotated[int, Query(ge=1, le=100)] = 20,
@@ -142,9 +144,9 @@ def get_order_batch_report(
 def export_order_batch_report(
     date_from: date,
     date_to: date,
-    product_id: Annotated[int | None, Query(ge=1)] = None,
-    worker_user_id: Annotated[int | None, Query(ge=1)] = None,
-    operation_catalog_entry_id: Annotated[int | None, Query(ge=1)] = None,
+    product_id: Annotated[list[ReportId] | None, Query()] = None,
+    worker_user_id: Annotated[list[ReportId] | None, Query()] = None,
+    operation_catalog_entry_id: Annotated[list[ReportId] | None, Query()] = None,
     order_number: Annotated[str | None, Query(max_length=64)] = None,
     _: object = Depends(require_any_role("reports")),
     session: Session = Depends(get_session),
