@@ -354,6 +354,8 @@ const productMaterialCostCents = ref<number | null>(null);
 const operationTree = ref<OperationNode[]>([]);
 const operationStandardTimeInputs = ref<Record<number, string>>({});
 const operationStandardTimeInputErrors = ref<Record<number, string>>({});
+const productFormBaseline = ref("");
+const isProductCloseConfirmOpen = ref(false);
 const productModalRef = ref<HTMLElement | null>(null);
 const productOperationsSectionRef = ref<HTMLElement | null>(null);
 const productNameInputRef = ref<HTMLInputElement | null>(null);
@@ -459,6 +461,9 @@ let workOrderTimeBreakdownRequestId = 0;
 let operationNameDropdownCloseTimeoutId: number | null = null;
 const openOperationNameDropdownId = ref<number | null>(null);
 const isModalOpen = computed(() => modalMode.value !== null);
+const hasProductFormChanges = computed(
+  () => isModalOpen.value && getProductFormSignature() !== productFormBaseline.value,
+);
 const isBrigadierOrderModalOpen = computed(() => brigadierModalMode.value !== null);
 const isBrigadierLeatherTypeEditable = computed(
   () => isBrigadierOrderAttributesEditable.value,
@@ -2268,6 +2273,21 @@ function resetForm() {
   operationStandardTimeInputs.value = {};
   operationStandardTimeInputErrors.value = {};
   nextOperationId = 1;
+  setProductFormBaseline();
+}
+
+function getProductFormSignature(): string {
+  return JSON.stringify({
+    name: productName.value,
+    version: productVersion.value,
+    materialCostCents: productMaterialCostCents.value,
+    operations: operationTree.value,
+    standardTimeInputs: operationStandardTimeInputs.value,
+  });
+}
+
+function setProductFormBaseline() {
+  productFormBaseline.value = getProductFormSignature();
 }
 
 async function startCreateProduct() {
@@ -2309,9 +2329,27 @@ async function openProductModal(productId: number, mode: Exclude<ModalMode, "cre
   }
 }
 
+function requestProductModalClose() {
+  if (hasProductFormChanges.value) {
+    isProductCloseConfirmOpen.value = true;
+    return;
+  }
+
+  closeProductModal();
+}
+
+function cancelProductModalClose() {
+  isProductCloseConfirmOpen.value = false;
+}
+
+function discardProductFormChanges() {
+  closeProductModal();
+}
+
 function closeProductModal() {
   clearOperationNameDropdownCloseTimeout();
   openOperationNameDropdownId.value = null;
+  isProductCloseConfirmOpen.value = false;
   modalMode.value = null;
   modalProductId.value = null;
   modalLoading.value = false;
@@ -2586,13 +2624,18 @@ function handleWindowKeydown(event: KeyboardEvent) {
     return;
   }
 
+  if (isProductCloseConfirmOpen.value) {
+    cancelProductModalClose();
+    return;
+  }
+
   if (isBrigadierOrderModalOpen.value) {
     closeBrigadierOrderModal();
     return;
   }
 
   if (isModalOpen.value) {
-    closeProductModal();
+    requestProductModalClose();
   }
 }
 
@@ -2604,6 +2647,7 @@ function fillFormFromProduct(product: ProductDetail) {
   productMaterialCostCents.value = product.materialCostCents;
   operationTree.value = cloneOperations(product.operations);
   nextOperationId = getMaxOperationId(operationTree.value) + 1;
+  setProductFormBaseline();
 }
 
 async function startWorkerDay() {
@@ -8684,7 +8728,6 @@ async function handleResetUserPassword(user: UserRecord) {
     <div
       v-if="isModalOpen"
       class="modal-backdrop"
-      @click.self="closeProductModal"
     >
       <section ref="productModalRef" class="modal" role="dialog" aria-modal="true">
         <div class="modal__head">
@@ -8693,7 +8736,7 @@ async function handleResetUserPassword(user: UserRecord) {
             <p class="modal__description">{{ modalDescription }}</p>
           </div>
 
-          <button type="button" class="ghost-button" @click="closeProductModal">
+          <button type="button" class="ghost-button" @click="requestProductModalClose">
             <span class="button-content">
               <span class="button-icon button-icon--close" aria-hidden="true" />
               <span>Закрыть</span>
@@ -9122,7 +9165,7 @@ async function handleResetUserPassword(user: UserRecord) {
               </span>
             </button>
 
-            <button type="button" class="ghost-button" @click="closeProductModal">
+            <button type="button" class="ghost-button" @click="requestProductModalClose">
               <span class="button-content">
                 <span class="button-icon button-icon--close" aria-hidden="true" />
                 <span>{{ isViewMode ? "Закрыть" : "Отменить" }}</span>
@@ -9130,6 +9173,41 @@ async function handleResetUserPassword(user: UserRecord) {
             </button>
           </div>
         </form>
+      </section>
+    </div>
+
+    <div
+      v-if="isProductCloseConfirmOpen"
+      class="modal-backdrop"
+      @click.self="cancelProductModalClose"
+    >
+      <section class="confirm-modal" role="dialog" aria-modal="true">
+        <div class="confirm-modal__content">
+          <p class="confirm-modal__eyebrow">Несохранённые изменения</p>
+          <h2>Выйти без сохранения?</h2>
+          <p class="confirm-modal__description">
+            Изменения в карточке изделия будут потеряны.
+          </p>
+        </div>
+
+        <div class="confirm-modal__actions">
+          <button type="button" class="ghost-button" @click="cancelProductModalClose">
+            <span class="button-content">
+              <span class="button-icon button-icon--close" aria-hidden="true" />
+              <span>Продолжить редактирование</span>
+            </span>
+          </button>
+          <button
+            type="button"
+            class="ghost-button ghost-button--danger"
+            @click="discardProductFormChanges"
+          >
+            <span class="button-content">
+              <span class="button-icon button-icon--delete" aria-hidden="true" />
+              <span>Выйти без сохранения</span>
+            </span>
+          </button>
+        </div>
       </section>
     </div>
 
