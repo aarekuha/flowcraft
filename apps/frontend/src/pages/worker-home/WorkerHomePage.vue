@@ -530,13 +530,6 @@ const workerOrderRouteId = computed(() => {
 const shouldShowValidation = computed(
   () => modalMode.value === "create" || modalMode.value === "copy",
 );
-const activeOperationCatalogNameByKey = computed(() => {
-  const names = new Map<string, string>();
-  for (const entry of activeOperationCatalogEntries.value) {
-    names.set(normalizeName(entry.name), entry.name);
-  }
-  return names;
-});
 const activeOperationCatalogEntryByKey = computed(() => {
   const entries = new Map<string, OperationCatalogEntry>();
   for (const entry of activeOperationCatalogEntries.value) {
@@ -3507,11 +3500,12 @@ function handleOperationNameInput(operationId: number, event: Event) {
 
   clearOperationNameDropdownCloseTimeout();
   openOperationNameDropdownId.value = operationId;
+  const matchedEntry = getOperationCatalogEntryByName(target.value);
   operationTree.value = renameOperation(
     operationTree.value,
     operationId,
-    getCanonicalOperationName(target.value) ?? target.value,
-    getOperationCatalogEntryByName(target.value)?.id ?? null,
+    target.value,
+    matchedEntry?.id ?? null,
   );
 }
 
@@ -3575,22 +3569,16 @@ function getOperationNameOptions(row: FlatOperationNodeRow): OperationCatalogEnt
   }
 
   const normalizedQuery = normalizeName(row.name);
-  const selectedEntry = getOperationCatalogEntryForRow(row);
-  const selectedName = selectedEntry?.name ?? getCanonicalOperationName(row.name);
-  const selectedNameKey = normalizeName(selectedName ?? "");
-  const shouldFilterByQuery =
-    normalizedQuery !== "" && normalizedQuery !== selectedNameKey;
 
   return [...activeOperationCatalogEntries.value]
     .filter(
       (entry) =>
-        normalizeName(entry.name) === selectedNameKey ||
-        !shouldFilterByQuery ||
+        normalizedQuery === "" ||
         normalizeName(entry.name).includes(normalizedQuery),
     )
     .sort((left, right) => {
-      const leftPriority = normalizeName(left.name) === selectedNameKey ? 0 : 1;
-      const rightPriority = normalizeName(right.name) === selectedNameKey ? 0 : 1;
+      const leftPriority = normalizeName(left.name) === normalizedQuery ? 0 : 1;
+      const rightPriority = normalizeName(right.name) === normalizedQuery ? 0 : 1;
 
       if (leftPriority !== rightPriority) {
         return leftPriority - rightPriority;
@@ -3629,10 +3617,6 @@ function clearOperationGroupName(operationId: number) {
   }
 
   operationTree.value = renameOperation(operationTree.value, operationId, "", null);
-}
-
-function getCanonicalOperationName(value: string): string | null {
-  return activeOperationCatalogNameByKey.value.get(normalizeName(value)) ?? null;
 }
 
 function getOperationCatalogEntryByName(
@@ -8932,7 +8916,11 @@ async function handleResetUserPassword(user: UserRecord) {
                                 v-if="getOperationNameOptions(row).length === 0"
                                 class="assignment-dropdown__empty"
                               >
-                                Справочник операций пуст.
+                                {{
+                                  activeOperationCatalogEntries.length === 0
+                                    ? "Справочник операций пуст."
+                                    : "Подходящие операции не найдены."
+                                }}
                               </div>
                             </div>
                           </div>
