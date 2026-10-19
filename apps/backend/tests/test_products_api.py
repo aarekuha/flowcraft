@@ -27,7 +27,7 @@ def ensure_operation_catalog_entries(
 
 def test_create_and_get_product(client: TestClient) -> None:
     """
-    Проверить создание и чтение изделия:
+    Проверяем создание и чтение изделия:
     - сохранить многострочный комментарий
     - вернуть комментарий в карточке изделия
     """
@@ -104,7 +104,7 @@ def test_create_and_get_product(client: TestClient) -> None:
 
 def test_update_product_costs(client: TestClient) -> None:
     """
-    Проверить редактирование стоимости и комментария изделия:
+    Проверяем редактирование стоимости и комментария изделия:
     - обновить оба доступных поля карточки
     - сохранить неизменными цены операций
     """
@@ -155,7 +155,7 @@ def test_update_product_costs(client: TestClient) -> None:
 
 def test_create_product_rejects_comment_over_limit(client: TestClient) -> None:
     """
-    Проверить ограничение длины комментария:
+    Проверяем ограничение длины комментария:
     - передать 1001 символ
     - получить ошибку валидации
     """

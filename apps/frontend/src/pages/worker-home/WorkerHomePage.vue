@@ -2265,13 +2265,19 @@ function resetForm() {
 }
 
 function getProductFormSignature(): string {
+  const standardTimeInputs = Object.fromEntries(
+    flattenOperations(operationTree.value)
+      .filter((row) => !row.isGroup)
+      .map((row) => [row.id, getOperationStandardTimeInput(row)]),
+  );
+
   return JSON.stringify({
     name: productName.value,
     version: productVersion.value,
     comment: productComment.value,
     materialCostCents: productMaterialCostCents.value,
     operations: operationTree.value,
-    standardTimeInputs: operationStandardTimeInputs.value,
+    standardTimeInputs,
   });
 }
 
