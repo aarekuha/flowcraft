@@ -35,7 +35,6 @@ import {
 import {
   acceptWorkOrderQualityControl,
   createWorkOrder,
-  fetchAllWorkOrders,
   fetchWorkOrder,
   fetchWorkOrderTimeBreakdown,
   fetchWorkOrders,
@@ -1022,22 +1021,6 @@ const workerAssignmentStatusConfirmIcon = computed(() =>
     : "button-icon--check",
 );
 
-const brigadierOrderNumberError = computed(() => {
-  const normalizedOrderNumber = brigadierModalOrderNumber.value.trim();
-
-  if (!normalizedOrderNumber) {
-    return "Укажите номер заказа.";
-  }
-
-  const duplicate = workOrders.value.some(
-    (order) =>
-      order.id !== brigadierModalOrderId.value &&
-      normalizeName(order.orderNumber) === normalizeName(normalizedOrderNumber),
-  );
-
-  return duplicate ? "Заказ с таким номером уже существует." : "";
-});
-
 const brigadierQuantityError = computed(() => {
   const quantity = Number.parseInt(brigadierModalQuantity.value, 10);
 
@@ -1099,13 +1082,6 @@ const brigadierSaveIssue = computed<{
           selector: '[data-field="brigadier-defect-quantity"]',
         }
       : null;
-  }
-
-  if (brigadierOrderNumberError.value) {
-    return {
-      message: brigadierOrderNumberError.value,
-      selector: '[data-field="brigadier-order-number"]',
-    };
   }
 
   if (brigadierQuantityError.value) {
@@ -1174,7 +1150,6 @@ const brigadierModalCanSave = computed(() => {
 
   return (
     Boolean(brigadierModalProduct.value) &&
-    !brigadierOrderNumberError.value &&
     !brigadierQuantityError.value &&
     !brigadierPlannedCompletionDateError.value &&
     !brigadierLeatherTypeError.value &&
@@ -4541,14 +4516,8 @@ async function openBrigadierCreateOrder(productId: number) {
   brigadierModalAssignments.value = [];
 
   try {
-    const [product, allOrders, leatherTypesForSelect] = await Promise.all([
+    const [product, leatherTypesForSelect] = await Promise.all([
       fetchProduct(productId),
-      fetchAllWorkOrders({
-        status: "all",
-        sortBy: "created",
-        sortDirection: "desc",
-        pageSize: 100,
-      }),
       fetchAllLeatherTypes({
         includeInactive: false,
         sortDirection: "asc",
@@ -4558,7 +4527,6 @@ async function openBrigadierCreateOrder(productId: number) {
     brigadierModalProduct.value = product;
     activeLeatherTypes.value = leatherTypesForSelect;
     brigadierModalLeatherTypeNameDraft.value = "";
-    brigadierModalOrderNumber.value = generateNextWorkOrderNumber(allOrders);
     brigadierModalAssignments.value = buildBrigadierAssignments(product.operations);
   } catch (error) {
     if (isUnauthorizedError(error)) {
@@ -4901,16 +4869,6 @@ function handleBrigadierDefectQuantityInput(event: Event) {
   }
 
   brigadierModalDefectQuantity.value = target.value.replace(/[^\d]/g, "");
-}
-
-function handleBrigadierOrderNumberInput(event: Event) {
-  const target = event.target;
-
-  if (!(target instanceof HTMLInputElement)) {
-    return;
-  }
-
-  brigadierModalOrderNumber.value = target.value;
 }
 
 function handleBrigadierLeatherTypeInput(event: Event) {
@@ -5418,7 +5376,6 @@ async function saveBrigadierOrder() {
       });
     } else if (isCreateMode) {
       await createWorkOrder({
-        order_number: brigadierModalOrderNumber.value.trim(),
         planned_completion_date: brigadierModalPlannedCompletionDate.value || null,
         product_id: brigadierModalProduct.value.id,
         leather_type_id: leatherTypeId,
@@ -5446,20 +5403,6 @@ async function saveBrigadierOrder() {
   } finally {
     brigadierSaveLoading.value = false;
   }
-}
-
-function generateNextWorkOrderNumber(orders: WorkOrderSummary[]): string {
-  const maxOrderIndex = orders.reduce((maxValue, order) => {
-    const match = order.orderNumber.match(/(\d+)$/);
-
-    if (!match) {
-      return maxValue;
-    }
-
-    return Math.max(maxValue, Number.parseInt(match[1], 10));
-  }, 0);
-
-  return `FC-${String(maxOrderIndex + 1).padStart(4, "0")}`;
 }
 
 async function persistUserChanges(user: UserRecord) {
@@ -8269,13 +8212,13 @@ async function handleResetUserPassword(user: UserRecord) {
                   type="text"
                   class="text-input"
                   data-field="brigadier-order-number"
-                  :readonly="brigadierModalMode !== 'create'"
-                  placeholder="Например, FC-0001"
-                  @input="handleBrigadierOrderNumberInput"
+                  readonly
+                  :placeholder="
+                    brigadierModalMode === 'create'
+                      ? 'Присваивается автоматически'
+                      : ''
+                  "
                 />
-                <p v-if="brigadierOrderNumberError" class="field-error">
-                  {{ brigadierOrderNumberError }}
-                </p>
               </label>
 
               <label class="field order-form__quantity">
@@ -8465,7 +8408,13 @@ async function handleResetUserPassword(user: UserRecord) {
           <dl class="confirm-modal__details">
             <div>
               <dt>Заказ</dt>
-              <dd>{{ brigadierModalOrderNumber || "—" }}</dd>
+              <dd>
+                {{
+                  brigadierModalMode === "create"
+                    ? "Присваивается автоматически"
+                    : brigadierModalOrderNumber || "—"
+                }}
+              </dd>
             </div>
             <div>
               <dt>Изделие</dt>

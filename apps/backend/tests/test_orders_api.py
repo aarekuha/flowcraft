@@ -222,6 +222,64 @@ def test_create_order_and_get_it(client: TestClient) -> None:
     assert planned_date_response.json()["deleted_at"] is not None
 
 
+def test_create_orders_assigns_sequential_numbers_when_number_omitted(
+    client: TestClient,
+) -> None:
+    """
+    Проверяем автоматическую нумерацию новых заказов:
+    - отправить два заказа без номера
+    - получить последовательные номера начиная с 10000
+    """
+    author = create_author_user(client)
+    product = create_product_with_leaf_operations(client, author["id"])
+    leaf_ids = collect_leaf_operation_ids(product)
+    payload = {
+        "product_id": product["id"],
+        "quantity": 1,
+        "assignments": [
+            {"operation_id": operation_id, "worker_user_id": None}
+            for operation_id in leaf_ids
+        ],
+    }
+
+    first_response = client.post("/api/orders", json=payload)
+    second_response = client.post("/api/orders", json=payload)
+
+    assert first_response.status_code == 201
+    assert second_response.status_code == 201
+    assert first_response.json()["order_number"] == "10000"
+    assert second_response.json()["order_number"] == "10001"
+
+
+def test_create_order_skips_existing_numeric_number(client: TestClient) -> None:
+    """
+    Проверяем пропуск уже занятого цифрового номера:
+    - создать существующий заказ с номером 10000
+    - автоматически назначить следующему заказу номер 10001
+    """
+    author = create_author_user(client)
+    product = create_product_with_leaf_operations(client, author["id"])
+    leaf_ids = collect_leaf_operation_ids(product)
+    payload = {
+        "product_id": product["id"],
+        "quantity": 1,
+        "assignments": [
+            {"operation_id": operation_id, "worker_user_id": None}
+            for operation_id in leaf_ids
+        ],
+    }
+
+    existing_response = client.post(
+        "/api/orders",
+        json={"order_number": "10000", **payload},
+    )
+    automatic_response = client.post("/api/orders", json=payload)
+
+    assert existing_response.status_code == 201
+    assert automatic_response.status_code == 201
+    assert automatic_response.json()["order_number"] == "10001"
+
+
 def test_create_order_allows_empty_operation_workers(client: TestClient) -> None:
     author = create_author_user(client)
     product = create_product_with_leaf_operations(client, author["id"])

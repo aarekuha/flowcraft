@@ -11,6 +11,7 @@ from app.core.security import hash_password
 from app.core.database import Base
 from app.main import create_application
 from app.models.user import User
+from app.models.work_order import WorkOrderNumberCounter
 
 
 @pytest.fixture()
@@ -51,6 +52,7 @@ def client(db_session: sessionmaker[Session]) -> Generator[TestClient, None, Non
 
     bootstrap_session = db_session()
     try:
+        bootstrap_session.add(WorkOrderNumberCounter(id=1, last_value=9999))
         admin_user = User(
             name="Test Admin",
             phone="+79990000001",
