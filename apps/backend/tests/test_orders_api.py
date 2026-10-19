@@ -222,6 +222,61 @@ def test_create_order_and_get_it(client: TestClient) -> None:
     assert planned_date_response.json()["deleted_at"] is not None
 
 
+def test_order_detail_uses_current_product_comment(client: TestClient) -> None:
+    """
+    Проверить актуальный комментарий изделия в заказе:
+    - создать заказ с исходным комментарием изделия
+    - изменить комментарий после создания заказа
+    - вернуть новый комментарий при повторном чтении заказа
+    """
+    author = create_author_user(client)
+    product = create_product_with_leaf_operations(client, author["id"])
+    leaf_ids = collect_leaf_operation_ids(product)
+    initial_comment = "Блок операций 1: подготовка деталей"
+    updated_comment = "Блок операций 1: крой\nБлок операций 2: пошив"
+
+    comment_response = client.patch(
+        f"/api/products/{product['id']}/costs",
+        json={
+            "material_cost_cents": product["material_cost_cents"],
+            "comment": initial_comment,
+            "operations": [],
+        },
+    )
+    assert comment_response.status_code == 200
+
+    create_response = client.post(
+        "/api/orders",
+        json={
+            "product_id": product["id"],
+            "quantity": 1,
+            "assignments": [
+                {"operation_id": operation_id, "worker_user_id": None}
+                for operation_id in leaf_ids
+            ],
+        },
+    )
+
+    assert create_response.status_code == 201
+    created_order = create_response.json()
+    assert created_order["product_comment"] == initial_comment
+
+    update_response = client.patch(
+        f"/api/products/{product['id']}/costs",
+        json={
+            "material_cost_cents": product["material_cost_cents"],
+            "comment": updated_comment,
+            "operations": [],
+        },
+    )
+    assert update_response.status_code == 200
+
+    get_response = client.get(f"/api/orders/{created_order['id']}")
+
+    assert get_response.status_code == 200
+    assert get_response.json()["product_comment"] == updated_comment
+
+
 def test_create_orders_assigns_sequential_numbers_when_number_omitted(
     client: TestClient,
 ) -> None:

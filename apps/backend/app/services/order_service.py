@@ -1093,6 +1093,7 @@ class OrderService:
             product_id=order.product_id,
             product_name=product.name,
             product_version=product.version,
+            product_comment=product.comment,
             leather_type_id=order.leather_type_id,
             leather_type_name=order.leather_type.name
             if order.leather_type is not None

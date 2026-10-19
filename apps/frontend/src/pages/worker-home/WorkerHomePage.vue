@@ -349,6 +349,7 @@ const userVisibility = ref<ProductVisibilityFilter>("all");
 const userSort = ref<UserSort>("name-asc");
 const productName = ref("");
 const productVersion = ref("");
+const productComment = ref("");
 const productMaterialCostCents = ref<number | null>(null);
 const operationTree = ref<OperationNode[]>([]);
 const operationStandardTimeInputs = ref<Record<number, string>>({});
@@ -564,6 +565,12 @@ const productVersionError = computed(() =>
   productVersion.value.trim() ? "" : "Укажите версию изделия.",
 );
 
+const productCommentError = computed(() =>
+  productComment.value.length <= 1000
+    ? ""
+    : "Комментарий не может быть длиннее 1000 символов.",
+);
+
 const productMaterialCostError = computed(() =>
   productMaterialCostCents.value === null || productMaterialCostCents.value >= 0
     ? ""
@@ -594,12 +601,17 @@ const operationTreeError = computed(() =>
 const canSaveProduct = computed(
   () => {
     if (isViewMode.value) {
-      return modalProductId.value !== null && !productMaterialCostError.value;
+      return (
+        modalProductId.value !== null &&
+        !productCommentError.value &&
+        !productMaterialCostError.value
+      );
     }
 
     return (
       !productNameError.value &&
       !productVersionError.value &&
+      !productCommentError.value &&
       !productMaterialCostError.value &&
       !productIdentityError.value &&
       !operationTreeError.value &&
@@ -630,6 +642,13 @@ const saveBlockIssue = computed<{
     return {
       message: productVersionError.value,
       selector: '[data-field="product-version"]',
+    };
+  }
+
+  if (productCommentError.value) {
+    return {
+      message: productCommentError.value,
+      selector: '[data-field="product-comment"]',
     };
   }
 
@@ -675,7 +694,7 @@ const modalDescription = computed(() => {
   }
 
   if (modalMode.value === "view") {
-    return "Структура изделия, цены и нормы операций доступны для просмотра, стоимость материала можно изменить.";
+    return "Структура изделия, цены и нормы операций доступны для просмотра, стоимость материала и комментарий можно изменить.";
   }
 
   return "Заполните карточку изделия и задайте дерево производственных операций.";
@@ -2236,6 +2255,7 @@ function resetForm() {
   modalProductId.value = null;
   productName.value = "";
   productVersion.value = "";
+  productComment.value = "";
   productMaterialCostCents.value = null;
   operationTree.value = [];
   operationStandardTimeInputs.value = {};
@@ -2248,6 +2268,7 @@ function getProductFormSignature(): string {
   return JSON.stringify({
     name: productName.value,
     version: productVersion.value,
+    comment: productComment.value,
     materialCostCents: productMaterialCostCents.value,
     operations: operationTree.value,
     standardTimeInputs: operationStandardTimeInputs.value,
@@ -2612,6 +2633,7 @@ function fillFormFromProduct(product: ProductDetail) {
   modalProductId.value = product.id;
   productName.value = product.name;
   productVersion.value = product.version;
+  productComment.value = product.comment ?? "";
   productMaterialCostCents.value = product.materialCostCents;
   operationTree.value = cloneOperations(product.operations);
   nextOperationId = getMaxOperationId(operationTree.value) + 1;
@@ -3402,6 +3424,7 @@ async function saveProductToApi() {
 
       await updateProductCosts(modalProductId.value, {
         material_cost_cents: productMaterialCostCents.value,
+        comment: productComment.value.trim() || null,
         operations: [],
       });
       await loadProducts();
@@ -3412,6 +3435,7 @@ async function saveProductToApi() {
     const payload: ProductCreatePayload = {
       name: productName.value.trim(),
       version: productVersion.value.trim(),
+      comment: productComment.value.trim() || null,
       author_user_id: currentSession.value?.userId ?? null,
       material_cost_cents: productMaterialCostCents.value,
       operations: serializeOperations(operationTree.value),
@@ -8745,6 +8769,22 @@ async function handleResetUserPassword(user: UserRecord) {
                   {{ productMaterialCostError }}
                 </p>
               </label>
+
+              <label class="field">
+                <span class="field__label">Комментарий</span>
+                <textarea
+                  v-model="productComment"
+                  class="text-input product-comment-input"
+                  maxlength="1000"
+                  rows="4"
+                  data-field="product-comment"
+                  placeholder="Например, Блок операций 1: подготовка деталей"
+                />
+                <span class="field__hint">{{ productComment.length }}/1000</span>
+                <p v-if="productCommentError" class="field-error">
+                  {{ productCommentError }}
+                </p>
+              </label>
             </div>
 
             <p v-if="productIdentityError" class="field-error field-error--inline">
@@ -9397,22 +9437,32 @@ async function handleResetUserPassword(user: UserRecord) {
 
     <section v-if="printableWorkOrder" class="print-sheet" aria-label="Печатная форма заказа">
       <h1>Заказ {{ printableWorkOrder.orderNumber }}</h1>
+      <div class="print-order-summary">
+        <dl class="print-order-summary__meta">
+          <div>
+            <dt>Изделие</dt>
+            <dd>{{ printableWorkOrder.productName }}</dd>
+          </div>
+          <div>
+            <dt>Версия</dt>
+            <dd>{{ printableWorkOrder.productVersion }}</dd>
+          </div>
+          <div>
+            <dt>Тип кожи</dt>
+            <dd>{{ printableWorkOrder.leatherTypeName ?? "вид кожи не указан" }}</dd>
+          </div>
+          <div>
+            <dt>Количество</dt>
+            <dd>{{ printableWorkOrder.quantity }} шт.</dd>
+          </div>
+        </dl>
+        <section class="print-order-summary__comment">
+          <h2>Комментарий</h2>
+          <p>{{ printableWorkOrder.productComment || "—" }}</p>
+        </section>
+      </div>
       <table class="print-order-table">
         <tbody>
-          <tr>
-            <th>Изделие</th>
-            <td>
-              {{ printableWorkOrder.productName }} · {{ printableWorkOrder.productVersion }}
-            </td>
-          </tr>
-          <tr>
-            <th>Тип кожи</th>
-            <td>{{ printableWorkOrder.leatherTypeName ?? "вид кожи не указан" }}</td>
-          </tr>
-          <tr>
-            <th>Количество</th>
-            <td>{{ printableWorkOrder.quantity }} шт.</td>
-          </tr>
           <tr>
             <th colspan="2" class="print-order-table__section">
               Список операций с исполнителями
@@ -11329,6 +11379,60 @@ h2 {
   display: none;
 }
 
+.product-comment-input {
+  min-height: 112px;
+  resize: vertical;
+}
+
+.print-order-summary {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 3fr);
+  border: 1px solid #1f2a33;
+  border-bottom: 0;
+  color: #111;
+}
+
+.print-order-summary__meta {
+  margin: 0;
+  border-right: 1px solid #1f2a33;
+}
+
+.print-order-summary__meta div {
+  display: grid;
+  grid-template-columns: minmax(90px, 36%) minmax(0, 1fr);
+}
+
+.print-order-summary__meta div + div {
+  border-top: 1px solid #1f2a33;
+}
+
+.print-order-summary__meta dt,
+.print-order-summary__meta dd,
+.print-order-summary__comment {
+  margin: 0;
+  padding: 7px 9px;
+}
+
+.print-order-summary__meta dt {
+  background: #f1f3f5;
+  font-weight: 700;
+}
+
+.print-order-summary__meta dd {
+  overflow-wrap: anywhere;
+}
+
+.print-order-summary__comment h2 {
+  margin: 0 0 5px;
+  font-size: inherit;
+}
+
+.print-order-summary__comment p {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .print-order-table {
   width: 100%;
   border-collapse: collapse;
@@ -12665,6 +12769,16 @@ h2 {
 
   .print-order-table {
     font-size: 13px;
+  }
+
+  .print-order-summary {
+    font-size: 13px;
+  }
+
+  .print-order-summary__meta dt,
+  .print-order-summary__meta dd,
+  .print-order-summary__comment {
+    padding: 5px 7px;
   }
 
   .print-order-table th,

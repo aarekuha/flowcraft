@@ -56,6 +56,7 @@ class OperationCostUpdate(BaseModel):
 class ProductCreate(BaseModel):
     name: str = Field(min_length=1, max_length=255)
     version: str = Field(min_length=1, max_length=64)
+    comment: str | None = Field(default=None, max_length=1000)
     author_user_id: int | None = None
     material_cost_cents: int | None = Field(default=None, ge=0)
     operations: list[OperationCreate] = Field(default_factory=list)
@@ -68,6 +69,13 @@ class ProductCreate(BaseModel):
             raise ValueError("Field must not be empty.")
         return normalized
 
+    @field_validator("comment")
+    @classmethod
+    def validate_comment(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return value.strip() or None
+
 
 class ProductStatusUpdate(BaseModel):
     is_active: bool
@@ -75,7 +83,15 @@ class ProductStatusUpdate(BaseModel):
 
 class ProductCostsUpdate(BaseModel):
     material_cost_cents: int | None = Field(default=None, ge=0)
+    comment: str | None = Field(default=None, max_length=1000)
     operations: list[OperationCostUpdate] = Field(default_factory=list)
+
+    @field_validator("comment")
+    @classmethod
+    def validate_comment(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return value.strip() or None
 
 
 class ProductListItem(BaseModel):
@@ -98,6 +114,7 @@ class ProductDetail(BaseModel):
     id: int
     name: str
     version: str
+    comment: str | None = None
     author: str
     author_user_id: int | None = None
     material_cost_cents: int | None = None

@@ -150,6 +150,7 @@ class WorkOrderDetail(BaseModel):
     product_id: int
     product_name: str
     product_version: str
+    product_comment: str | None
     leather_type_id: int | None
     leather_type_name: str | None
     quantity: int

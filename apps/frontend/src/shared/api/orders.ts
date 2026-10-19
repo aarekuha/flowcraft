@@ -48,6 +48,7 @@ export type WorkOrderDetail = {
   productId: number;
   productName: string;
   productVersion: string;
+  productComment: string | null;
   leatherTypeId: number | null;
   leatherTypeName: string | null;
   quantity: number;
@@ -184,6 +185,7 @@ type WorkOrderDetailApi = {
   product_id: number;
   product_name: string;
   product_version: string;
+  product_comment: string | null;
   leather_type_id: number | null;
   leather_type_name: string | null;
   quantity: number;
@@ -521,6 +523,7 @@ function mapWorkOrderDetail(order: WorkOrderDetailApi): WorkOrderDetail {
     productId: order.product_id,
     productName: order.product_name,
     productVersion: order.product_version,
+    productComment: order.product_comment,
     leatherTypeId: order.leather_type_id,
     leatherTypeName: order.leather_type_name,
     quantity: order.quantity,
