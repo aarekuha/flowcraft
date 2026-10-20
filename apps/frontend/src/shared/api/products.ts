@@ -26,6 +26,7 @@ export type ProductDetail = {
   id: number;
   name: string;
   version: string;
+  comment: string | null;
   author: string;
   authorUserId: number | null;
   materialCostCents: number | null;
@@ -38,6 +39,7 @@ export type ProductDetail = {
 export type ProductCreatePayload = {
   name: string;
   version: string;
+  comment?: string | null;
   author_user_id?: number | null;
   material_cost_cents?: number | null;
   operations: Array<{
@@ -51,6 +53,7 @@ export type ProductCreatePayload = {
 
 export type ProductCostsUpdatePayload = {
   material_cost_cents?: number | null;
+  comment?: string | null;
   operations: Array<{
     id: number;
     price_cents?: number | null;
@@ -84,6 +87,7 @@ type ProductDetailApi = {
   id: number;
   name: string;
   version: string;
+  comment: string | null;
   author: string;
   author_user_id: number | null;
   material_cost_cents: number | null;
@@ -179,6 +183,7 @@ function mapProductDetail(product: ProductDetailApi): ProductDetail {
     id: product.id,
     name: product.name,
     version: product.version,
+    comment: product.comment,
     author: product.author,
     authorUserId: product.author_user_id,
     materialCostCents: product.material_cost_cents,

@@ -62,6 +62,7 @@ class ProductService:
             id=product.id,
             name=product.name,
             version=product.version,
+            comment=product.comment,
             author=product.author,
             author_user_id=product.author_user_id,
             material_cost_cents=product.material_cost_cents,
@@ -85,6 +86,7 @@ class ProductService:
         product = Product(
             name=payload.name,
             version=payload.version,
+            comment=payload.comment,
             author=author_user.name,
             author_user_id=author_user.id,
             material_cost_cents=payload.material_cost_cents,
@@ -148,6 +150,8 @@ class ProductService:
                 )
 
         product.material_cost_cents = payload.material_cost_cents
+        if "comment" in payload.model_fields_set:
+            product.comment = payload.comment
 
         self.session.commit()
         self.session.refresh(product)

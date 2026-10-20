@@ -3,7 +3,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import HTTPException, status
-from sqlalchemy import Select, and_, func, or_, select
+from sqlalchemy import Select, and_, func, or_, select, update
 from sqlalchemy.orm import Session, selectinload
 from sqlalchemy.sql.elements import ColumnElement
 
@@ -17,6 +17,7 @@ from app.models.work_order import (
     WorkOrder,
     WorkOrderAssignment,
     WorkOrderAssignmentWorkerState,
+    WorkOrderNumberCounter,
 )
 from app.schemas.order import (
     SortDirection,
@@ -499,7 +500,8 @@ class OrderService:
         )
 
     def create_order(self, payload: WorkOrderCreate) -> WorkOrderDetail:
-        self._validate_order_number(payload.order_number)
+        if payload.order_number is not None:
+            self._validate_order_number(payload.order_number)
         product = self._get_product_or_404(payload.product_id)
         self._validate_product_is_active(product)
         self._validate_leather_type_is_active(payload.leather_type_id)
@@ -507,7 +509,7 @@ class OrderService:
 
         timestamp = self._now_ts()
         order = WorkOrder(
-            order_number=payload.order_number,
+            order_number=payload.order_number or self._generate_next_order_number(),
             product_id=product.id,
             leather_type_id=payload.leather_type_id,
             quantity=payload.quantity,
@@ -935,6 +937,24 @@ class OrderService:
                 detail="Order with this number already exists.",
             )
 
+    def _generate_next_order_number(self) -> str:
+        while True:
+            next_value = self.session.execute(
+                update(WorkOrderNumberCounter)
+                .where(WorkOrderNumberCounter.id == 1)
+                .values(last_value=WorkOrderNumberCounter.last_value + 1)
+                .returning(WorkOrderNumberCounter.last_value)
+            ).scalar_one_or_none()
+            if next_value is None:
+                raise RuntimeError("Work order number counter is not initialized.")
+
+            order_number = str(next_value)
+            existing_order_id = self.session.execute(
+                select(WorkOrder.id).where(WorkOrder.order_number == order_number)
+            ).scalar_one_or_none()
+            if existing_order_id is None:
+                return order_number
+
     def _validate_assignments(
         self,
         product_id: int,
@@ -1073,6 +1093,7 @@ class OrderService:
             product_id=order.product_id,
             product_name=product.name,
             product_version=product.version,
+            product_comment=product.comment,
             leather_type_id=order.leather_type_id,
             leather_type_name=order.leather_type.name
             if order.leather_type is not None

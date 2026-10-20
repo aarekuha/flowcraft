@@ -58,7 +58,7 @@ class WorkOrderAssignmentWorkerStatusUpdate(BaseModel):
 
 
 class WorkOrderCreate(BaseModel):
-    order_number: str = Field(min_length=1, max_length=64)
+    order_number: str | None = Field(default=None, min_length=1, max_length=64)
     planned_completion_date: date | None = None
     product_id: int
     leather_type_id: int | None = None
@@ -68,7 +68,10 @@ class WorkOrderCreate(BaseModel):
 
     @field_validator("order_number")
     @classmethod
-    def validate_order_number(cls, value: str) -> str:
+    def validate_order_number(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+
         normalized = value.strip()
         if not normalized:
             raise ValueError("Order number must not be empty.")
@@ -147,6 +150,7 @@ class WorkOrderDetail(BaseModel):
     product_id: int
     product_name: str
     product_version: str
+    product_comment: str | None
     leather_type_id: int | None
     leather_type_name: str | None
     quantity: int

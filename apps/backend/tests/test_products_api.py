@@ -26,6 +26,11 @@ def ensure_operation_catalog_entries(
 
 
 def test_create_and_get_product(client: TestClient) -> None:
+    """
+    Проверяем создание и чтение изделия:
+    - сохранить многострочный комментарий
+    - вернуть комментарий в карточке изделия
+    """
     author_user = create_author_user(client)
     ensure_operation_catalog_entries(
         client,
@@ -34,6 +39,7 @@ def test_create_and_get_product(client: TestClient) -> None:
     payload = {
         "name": "Кошелек Daily Fold",
         "version": "1.0",
+        "comment": "Блок операций 1: подготовка\nБлок операций 2: пошив",
         "author_user_id": author_user["id"],
         "material_cost_cents": 125000,
         "operations": [
@@ -64,6 +70,7 @@ def test_create_and_get_product(client: TestClient) -> None:
     created_product = create_response.json()
     assert created_product["name"] == payload["name"]
     assert created_product["version"] == payload["version"]
+    assert created_product["comment"] == payload["comment"]
     assert created_product["author"] == author_user["name"]
     assert created_product["material_cost_cents"] == 125000
     assert len(created_product["operations"]) == 2
@@ -96,6 +103,11 @@ def test_create_and_get_product(client: TestClient) -> None:
 
 
 def test_update_product_costs(client: TestClient) -> None:
+    """
+    Проверяем редактирование стоимости и комментария изделия:
+    - обновить оба доступных поля карточки
+    - сохранить неизменными цены операций
+    """
     author_user = create_author_user(client)
     ensure_operation_catalog_entries(client, ["Фасад", "Пошив"])
     create_response = client.post(
@@ -122,6 +134,7 @@ def test_update_product_costs(client: TestClient) -> None:
         f"/api/products/{product['id']}/costs",
         json={
             "material_cost_cents": 99000,
+            "comment": "Блок операций 1: крой и подготовка",
             "operations": [],
         },
     )
@@ -129,6 +142,7 @@ def test_update_product_costs(client: TestClient) -> None:
     assert patch_response.status_code == 200
     updated_product = patch_response.json()
     assert updated_product["material_cost_cents"] == 99000
+    assert updated_product["comment"] == "Блок операций 1: крой и подготовка"
     assert updated_product["operations"][0]["price_cents"] is None
     assert updated_product["operations"][0]["children"][0]["price_cents"] == 7000
     assert updated_product["operations"][1]["price_cents"] == 25000
@@ -136,6 +150,30 @@ def test_update_product_costs(client: TestClient) -> None:
     get_response = client.get(f"/api/products/{product['id']}")
     assert get_response.status_code == 200
     assert get_response.json()["material_cost_cents"] == 99000
+    assert get_response.json()["comment"] == "Блок операций 1: крой и подготовка"
+
+
+def test_create_product_rejects_comment_over_limit(client: TestClient) -> None:
+    """
+    Проверяем ограничение длины комментария:
+    - передать 1001 символ
+    - получить ошибку валидации
+    """
+    author_user = create_author_user(client)
+    ensure_operation_catalog_entries(client, ["Крой"])
+
+    response = client.post(
+        "/api/products",
+        json={
+            "name": "Ремень Comment Guard",
+            "version": "1.0",
+            "comment": "А" * 1001,
+            "author_user_id": author_user["id"],
+            "operations": [{"name": "Крой", "children": []}],
+        },
+    )
+
+    assert response.status_code == 422
 
 
 def test_create_product_rejects_group_operation_price(client: TestClient) -> None:

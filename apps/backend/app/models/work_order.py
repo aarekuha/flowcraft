@@ -7,6 +7,13 @@ from app.core.database import Base
 from app.models.leather_type import LeatherType
 
 
+class WorkOrderNumberCounter(Base):
+    __tablename__ = "work_order_number_counters"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    last_value: Mapped[int] = mapped_column(Integer, nullable=False)
+
+
 class WorkOrder(Base):
     __tablename__ = "work_orders"
     __table_args__ = (
