@@ -6,7 +6,7 @@ PYTHON := python3
 .PHONY: frontend-install frontend-dev frontend-build frontend-preview backend-install backend-dev backend-run backend-migrate backend-seed-demo backend-seed-real-10 backend-create-admin backend-test backend-lint backend-typecheck
 
 frontend-install:
-	cd $(FRONTEND_DIR) && $(NPM) install
+	cd $(FRONTEND_DIR) && $(NPM) ci
 
 frontend-dev:
 	cd $(FRONTEND_DIR) && $(NPM) run dev

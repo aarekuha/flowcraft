@@ -16,6 +16,17 @@
 
 ## 1. Подготовить зависимости
 
+Проверить Node.js и npm:
+
+```bash
+node --version
+npm --version
+```
+
+Использовать Node.js 24 LTS и npm 11 или новее. Точная версия Node.js
+зафиксирована в `.nvmrc`, рекомендуемая версия npm — в
+`apps/frontend/package.json`.
+
 Из корня проекта:
 
 ```bash
