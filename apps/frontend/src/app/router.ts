@@ -17,6 +17,11 @@ export const router = createRouter({
       component: WorkerHomePage,
     },
     {
+      path: "/worker/timers",
+      name: "worker-family-timers",
+      component: WorkerHomePage,
+    },
+    {
       path: "/monitoring",
       name: "brigadier-monitoring",
       component: BrigadierMonitoringPage,

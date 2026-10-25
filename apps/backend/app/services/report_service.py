@@ -32,8 +32,7 @@ from app.schemas.report import (
     ProductTimeReport,
     ProductTimeReportSection,
 )
-from app.schemas.timer import TimerType
-from app.services.timer_service import TIMER_TYPE_TO_CODE
+from app.services.effective_order_time import build_effective_operation_time_subquery
 from app.services.xlsx_writer import XlsxDuration, XlsxTotal, build_xlsx
 
 MAX_REPORT_PERIOD_DAYS = 366
@@ -242,6 +241,7 @@ class ReportService:
         order_number: str | None = None,
     ) -> ProductTimeReport:
         self._validate_period(date_from, date_to)
+        effective_time = build_effective_operation_time_subquery()
         operation_name = func.coalesce(
             OperationCatalogEntry.name,
             Operation.name,
@@ -255,28 +255,22 @@ class ReportService:
                 WorkOrder.id.label("order_id"),
                 WorkOrder.quantity,
                 WorkShift.business_date,
-                TimerSession.operation_id,
+                effective_time.c.operation_id,
                 operation_name.label("operation_name"),
                 User.id.label("worker_user_id"),
                 User.name.label("worker_user_name"),
-                func.sum(TimerSession.ended_at - TimerSession.started_at).label(
-                    "elapsed_ms"
-                ),
+                func.sum(effective_time.c.elapsed_ms).label("elapsed_ms"),
             )
-            .select_from(TimerSession)
-            .join(WorkShift, WorkShift.id == TimerSession.shift_id)
-            .join(User, User.id == TimerSession.user_id)
-            .join(WorkOrder, WorkOrder.id == TimerSession.order_id)
+            .select_from(effective_time)
+            .join(WorkShift, WorkShift.id == effective_time.c.shift_id)
+            .join(User, User.id == effective_time.c.user_id)
+            .join(WorkOrder, WorkOrder.id == effective_time.c.order_id)
             .join(Product, Product.id == WorkOrder.product_id)
-            .outerjoin(Operation, Operation.id == TimerSession.operation_id)
+            .outerjoin(Operation, Operation.id == effective_time.c.operation_id)
             .outerjoin(
                 OperationCatalogEntry,
                 OperationCatalogEntry.id == Operation.operation_catalog_entry_id,
             )
-            .where(
-                TimerSession.timer_type_code == TIMER_TYPE_TO_CODE[TimerType.OPERATION]
-            )
-            .where(TimerSession.ended_at.is_not(None))
             .where(WorkOrder.deleted_at.is_(None))
             .where(WorkShift.business_date >= date_from.isoformat())
             .where(WorkShift.business_date <= date_to.isoformat())
@@ -287,7 +281,7 @@ class ReportService:
                 WorkOrder.id,
                 WorkOrder.quantity,
                 WorkShift.business_date,
-                TimerSession.operation_id,
+                effective_time.c.operation_id,
                 OperationCatalogEntry.name,
                 Operation.name,
                 User.id,
@@ -419,6 +413,7 @@ class ReportService:
         page_size: int | None = 20,
     ) -> OrderBatchReport:
         self._validate_period(date_from, date_to)
+        effective_time = build_effective_operation_time_subquery()
         start_ts = self._date_start_ts(date_from)
         end_ts = self._date_start_ts(date_to + timedelta(days=1))
         conditions = [
@@ -441,21 +436,19 @@ class ReportService:
                 .where(WorkOrderAssignment.work_order_id == WorkOrder.id)
             )
             timer_match = (
-                select(TimerSession.id)
-                .outerjoin(Operation, Operation.id == TimerSession.operation_id)
-                .where(TimerSession.order_id == WorkOrder.id)
-                .where(
-                    TimerSession.timer_type_code
-                    == TIMER_TYPE_TO_CODE[TimerType.OPERATION]
+                select(effective_time.c.timer_session_id)
+                .outerjoin(
+                    Operation,
+                    Operation.id == effective_time.c.operation_id,
                 )
-                .where(TimerSession.ended_at.is_not(None))
+                .where(effective_time.c.order_id == WorkOrder.id)
             )
             if worker_user_ids:
                 assignment_match = assignment_match.where(
                     WorkOrderAssignment.worker_user_id.in_(worker_user_ids)
                 )
                 timer_match = timer_match.where(
-                    TimerSession.user_id.in_(worker_user_ids)
+                    effective_time.c.user_id.in_(worker_user_ids)
                 )
             if operation_catalog_entry_ids:
                 assignment_match = assignment_match.where(
@@ -537,19 +530,15 @@ class ReportService:
             else 1
         )
         period_total_stmt = (
-            select(func.sum(TimerSession.ended_at - TimerSession.started_at))
-            .select_from(TimerSession)
-            .join(WorkOrder, WorkOrder.id == TimerSession.order_id)
-            .outerjoin(Operation, Operation.id == TimerSession.operation_id)
+            select(func.sum(effective_time.c.elapsed_ms))
+            .select_from(effective_time)
+            .join(WorkOrder, WorkOrder.id == effective_time.c.order_id)
+            .outerjoin(Operation, Operation.id == effective_time.c.operation_id)
             .where(*conditions)
-            .where(
-                TimerSession.timer_type_code == TIMER_TYPE_TO_CODE[TimerType.OPERATION]
-            )
-            .where(TimerSession.ended_at.is_not(None))
         )
         if worker_user_ids:
             period_total_stmt = period_total_stmt.where(
-                TimerSession.user_id.in_(worker_user_ids)
+                effective_time.c.user_id.in_(worker_user_ids)
             )
         if operation_catalog_entry_ids:
             period_total_stmt = period_total_stmt.where(
@@ -578,6 +567,7 @@ class ReportService:
         if not submitted_quantities:
             return {}
         order_ids = list(submitted_quantities)
+        effective_time = build_effective_operation_time_subquery()
         operation_name = func.coalesce(
             OperationCatalogEntry.name,
             Operation.name,
@@ -626,31 +616,25 @@ class ReportService:
 
         timer_stmt = (
             select(
-                TimerSession.order_id,
-                TimerSession.operation_id,
+                effective_time.c.order_id,
+                effective_time.c.operation_id,
                 operation_name.label("operation_name"),
                 Operation.sort_order.label("operation_sort_order"),
                 User.id.label("worker_user_id"),
                 User.name.label("worker_user_name"),
-                func.sum(TimerSession.ended_at - TimerSession.started_at).label(
-                    "elapsed_ms"
-                ),
+                func.sum(effective_time.c.elapsed_ms).label("elapsed_ms"),
             )
-            .select_from(TimerSession)
-            .outerjoin(Operation, Operation.id == TimerSession.operation_id)
+            .select_from(effective_time)
+            .outerjoin(Operation, Operation.id == effective_time.c.operation_id)
             .outerjoin(
                 OperationCatalogEntry,
                 OperationCatalogEntry.id == Operation.operation_catalog_entry_id,
             )
-            .join(User, User.id == TimerSession.user_id)
-            .where(TimerSession.order_id.in_(order_ids))
-            .where(
-                TimerSession.timer_type_code == TIMER_TYPE_TO_CODE[TimerType.OPERATION]
-            )
-            .where(TimerSession.ended_at.is_not(None))
+            .join(User, User.id == effective_time.c.user_id)
+            .where(effective_time.c.order_id.in_(order_ids))
             .group_by(
-                TimerSession.order_id,
-                TimerSession.operation_id,
+                effective_time.c.order_id,
+                effective_time.c.operation_id,
                 OperationCatalogEntry.name,
                 Operation.name,
                 Operation.sort_order,
@@ -659,7 +643,9 @@ class ReportService:
             )
         )
         if worker_user_ids:
-            timer_stmt = timer_stmt.where(TimerSession.user_id.in_(worker_user_ids))
+            timer_stmt = timer_stmt.where(
+                effective_time.c.user_id.in_(worker_user_ids)
+            )
         if operation_catalog_entry_ids:
             timer_stmt = timer_stmt.where(
                 Operation.operation_catalog_entry_id.in_(operation_catalog_entry_ids)

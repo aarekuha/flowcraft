@@ -8,8 +8,14 @@ class OperationCatalogSortDirection(StrEnum):
     DESC = "desc"
 
 
+class OperationCatalogEntryKind(StrEnum):
+    REGULAR = "regular"
+    CUTTING = "cutting"
+
+
 class OperationCatalogEntryCreate(BaseModel):
     name: str = Field(min_length=1, max_length=255)
+    operation_kind: OperationCatalogEntryKind = OperationCatalogEntryKind.REGULAR
 
     @field_validator("name")
     @classmethod
@@ -24,11 +30,16 @@ class OperationCatalogEntryStatusUpdate(BaseModel):
     is_active: bool
 
 
+class OperationCatalogEntryKindUpdate(BaseModel):
+    operation_kind: OperationCatalogEntryKind
+
+
 class OperationCatalogEntryRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: int
     name: str
+    operation_kind: OperationCatalogEntryKind
     is_active: bool
     created_at: int
     updated_at: int

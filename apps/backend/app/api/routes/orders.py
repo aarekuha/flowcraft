@@ -13,14 +13,20 @@ from app.schemas.order import (
     WorkOrderCreate,
     WorkOrderDeletedStatusUpdate,
     WorkOrderDetail,
+    WorkOrderMergeCandidate,
+    WorkOrderMergeRequest,
+    WorkOrderNumberSearchItem,
     WorkOrderPage,
     WorkOrderPlannedCompletionDateUpdate,
+    WorkOrderProductionStageUpdate,
+    WorkOrderQrTarget,
     WorkOrderQualityControlAccept,
     WorkOrderQualityControlStatusUpdate,
     WorkOrderSortField,
+    WorkOrderSplitRequest,
+    WorkOrderSplitResult,
     WorkOrderStatusFilter,
     WorkOrderStatusUpdate,
-    WorkOrderTakenStatusUpdate,
     WorkOrderTimeBreakdown,
     WorkOrderUpdateAssignments,
 )
@@ -52,6 +58,22 @@ def list_orders(
         sort_direction=sort_direction,
         page=page,
         page_size=page_size,
+    )
+
+
+@router.get(
+    "/order-number-search",
+    response_model=list[WorkOrderNumberSearchItem],
+    summary="Search work orders by number across all stages",
+)
+def search_orders_by_number(
+    search: str = Query(min_length=1, max_length=128),
+    limit: int = Query(default=50, ge=1, le=100),
+    session: Session = Depends(get_session),
+) -> list[WorkOrderNumberSearchItem]:
+    return OrderService(session).search_orders_by_number(
+        search=search,
+        limit=limit,
     )
 
 
@@ -92,6 +114,24 @@ def update_worker_assignment_status(
     )
 
 
+@router.get(
+    "/worker-assignments/qr-target",
+    response_model=WorkOrderQrTarget,
+    summary="Resolve worker orders from QR reference",
+)
+def get_worker_qr_target(
+    order_reference: str | None = Query(default=None, min_length=1, max_length=64),
+    legacy_order_id: int | None = Query(default=None, ge=1),
+    auth_session: AuthenticatedSession = Depends(get_authenticated_session),
+    session: Session = Depends(get_session),
+) -> WorkOrderQrTarget:
+    return OrderService(session).get_worker_orders_by_qr(
+        worker_user_id=auth_session.user_id,
+        order_reference=order_reference,
+        legacy_order_id=legacy_order_id,
+    )
+
+
 @router.get("/{order_id}", response_model=WorkOrderDetail, summary="Get work order")
 def get_order(
     order_id: int,
@@ -110,6 +150,49 @@ def get_order_time_breakdown(
     session: Session = Depends(get_session),
 ) -> WorkOrderTimeBreakdown:
     return OrderService(session).get_order_time_breakdown(order_id)
+
+
+@router.post(
+    "/{order_id}/split",
+    response_model=WorkOrderSplitResult,
+    status_code=status.HTTP_201_CREATED,
+    summary="Split work order",
+)
+def split_order(
+    order_id: int,
+    payload: WorkOrderSplitRequest,
+    _auth_session: AuthenticatedSession = Depends(require_any_role("brigadier")),
+    session: Session = Depends(get_session),
+) -> WorkOrderSplitResult:
+    return OrderService(session).split_order(order_id, payload)
+
+
+@router.get(
+    "/{order_id}/merge-candidates",
+    response_model=list[WorkOrderMergeCandidate],
+    summary="List compatible work orders for merging",
+)
+def list_merge_candidates(
+    order_id: int,
+    search: str | None = Query(default=None, max_length=64),
+    _auth_session: AuthenticatedSession = Depends(require_any_role("brigadier")),
+    session: Session = Depends(get_session),
+) -> list[WorkOrderMergeCandidate]:
+    return OrderService(session).list_merge_candidates(order_id, search)
+
+
+@router.post(
+    "/{order_id}/merge",
+    response_model=WorkOrderDetail,
+    summary="Merge work orders",
+)
+def merge_orders(
+    order_id: int,
+    payload: WorkOrderMergeRequest,
+    _auth_session: AuthenticatedSession = Depends(require_any_role("brigadier")),
+    session: Session = Depends(get_session),
+) -> WorkOrderDetail:
+    return OrderService(session).merge_orders(order_id, payload)
 
 
 @router.post(
@@ -201,16 +284,16 @@ def accept_order_quality_control(
 
 
 @router.patch(
-    "/{order_id}/taken-status",
+    "/{order_id}/production-stage",
     response_model=WorkOrderDetail,
-    summary="Update work order taken status",
+    summary="Update work order production stage",
 )
-def update_order_taken_status(
+def update_order_production_stage(
     order_id: int,
-    payload: WorkOrderTakenStatusUpdate,
+    payload: WorkOrderProductionStageUpdate,
     session: Session = Depends(get_session),
 ) -> WorkOrderDetail:
-    return OrderService(session).update_order_taken_status(order_id, payload)
+    return OrderService(session).update_order_production_stage(order_id, payload)
 
 
 @router.patch(

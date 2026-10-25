@@ -9,7 +9,10 @@ from app.models.work_order import (
     WorkOrder,
     WorkOrderAssignment,
     WorkOrderAssignmentWorkerState,
+    WorkOrderFamily,
     WorkOrderNumberCounter,
+    WorkOrderQrReference,
+    WorkOrderTimeAllocation,
 )
 from app.models.work_shift import WorkShift
 
@@ -24,6 +27,9 @@ __all__ = [
     "WorkOrder",
     "WorkOrderAssignment",
     "WorkOrderAssignmentWorkerState",
+    "WorkOrderFamily",
     "WorkOrderNumberCounter",
+    "WorkOrderQrReference",
+    "WorkOrderTimeAllocation",
     "WorkShift",
 ]

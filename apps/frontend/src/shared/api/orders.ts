@@ -16,6 +16,9 @@ export type WorkOrderAssignment = {
 export type WorkOrderSummary = {
   id: number;
   orderNumber: string;
+  familyId: number | null;
+  partNumber: number | null;
+  familyBaseOrderNumber: string | null;
   productId: number;
   productName: string;
   productVersion: string;
@@ -24,13 +27,20 @@ export type WorkOrderSummary = {
   quantity: number;
   plannedCompletionDate: string | null;
   estimatedMinutes: number;
-  totalSpentMinutes: number;
+  totalSpentSeconds: number;
+  cuttingSpentSeconds: number;
   hasSpentTime: boolean;
+  canSplit: boolean;
+  splitBlockReason: string | null;
+  canMerge: boolean;
   assignmentsCount: number;
   createdAtTs: number;
   createdAt: string;
   updatedAtTs: number;
   updatedAt: string;
+  productionStage: WorkOrderProductionStage;
+  cuttingStartedAtTs: number | null;
+  cuttingStartedAt: string | null;
   takenAtTs: number | null;
   takenAt: string | null;
   qualityControlAtTs: number | null;
@@ -45,6 +55,9 @@ export type WorkOrderSummary = {
 export type WorkOrderDetail = {
   id: number;
   orderNumber: string;
+  familyId: number | null;
+  partNumber: number | null;
+  familyBaseOrderNumber: string | null;
   productId: number;
   productName: string;
   productVersion: string;
@@ -54,12 +67,16 @@ export type WorkOrderDetail = {
   quantity: number;
   plannedCompletionDate: string | null;
   estimatedMinutes: number;
-  totalSpentMinutes: number;
+  totalSpentSeconds: number;
+  cuttingSpentSeconds: number;
   hasSpentTime: boolean;
   createdAtTs: number;
   createdAt: string;
   updatedAtTs: number;
   updatedAt: string;
+  productionStage: WorkOrderProductionStage;
+  cuttingStartedAtTs: number | null;
+  cuttingStartedAt: string | null;
   takenAtTs: number | null;
   takenAt: string | null;
   qualityControlAtTs: number | null;
@@ -74,6 +91,7 @@ export type WorkOrderDetail = {
 
 export type WorkOrderSortBy =
   | "completed"
+  | "cutting_started"
   | "created"
   | "defect"
   | "name"
@@ -85,11 +103,19 @@ export type WorkOrderSortDirection = "asc" | "desc";
 export type WorkOrderStatusFilter =
   | "all"
   | "created"
+  | "cutting"
   | "in_work"
   | "quality_control"
   | "completed"
   | "deleted";
+export type WorkOrderProductionStage = "created" | "cutting" | "in_work";
 export type WorkerAssignmentStatus = "in_work" | "hidden" | "completed";
+
+export type WorkOrderNumberSearchItem = {
+  id: number;
+  orderNumber: string;
+  stage: Exclude<WorkOrderStatusFilter, "all">;
+};
 
 export type WorkOrderListParams = {
   search?: string;
@@ -126,6 +152,22 @@ export type WorkOrderTimeBreakdown = {
   totalElapsedMs: number;
 };
 
+export type WorkOrderMergeCandidate = {
+  id: number;
+  orderNumber: string;
+  quantity: number;
+};
+
+export type WorkOrderSplitResult = {
+  source: WorkOrderDetail;
+  created: WorkOrderDetail;
+};
+
+export type WorkOrderQrTarget = {
+  orderReference: string;
+  orders: WorkOrderDetail[];
+};
+
 export type WorkOrderCreatePayload = {
   planned_completion_date: string | null;
   product_id: number;
@@ -159,6 +201,9 @@ type WorkOrderAssignmentApi = {
 type WorkOrderSummaryApi = {
   id: number;
   order_number: string;
+  family_id: number | null;
+  part_number: number | null;
+  family_base_order_number: string | null;
   product_id: number;
   product_name: string;
   product_version: string;
@@ -167,11 +212,17 @@ type WorkOrderSummaryApi = {
   quantity: number;
   planned_completion_date: string | null;
   estimated_minutes: number;
-  total_spent_minutes: number;
+  total_spent_seconds: number;
+  cutting_spent_seconds: number;
   has_spent_time: boolean;
+  can_split: boolean;
+  split_block_reason: string | null;
+  can_merge: boolean;
   assignments_count: number;
   created_at: number;
   updated_at: number;
+  production_stage: WorkOrderProductionStage;
+  cutting_started_at: number | null;
   taken_at: number | null;
   quality_control_at: number | null;
   defect_quantity: number;
@@ -182,6 +233,9 @@ type WorkOrderSummaryApi = {
 type WorkOrderDetailApi = {
   id: number;
   order_number: string;
+  family_id: number | null;
+  part_number: number | null;
+  family_base_order_number: string | null;
   product_id: number;
   product_name: string;
   product_version: string;
@@ -191,10 +245,13 @@ type WorkOrderDetailApi = {
   quantity: number;
   planned_completion_date: string | null;
   estimated_minutes: number;
-  total_spent_minutes: number;
+  total_spent_seconds: number;
+  cutting_spent_seconds: number;
   has_spent_time: boolean;
   created_at: number;
   updated_at: number;
+  production_stage: WorkOrderProductionStage;
+  cutting_started_at: number | null;
   taken_at: number | null;
   quality_control_at: number | null;
   defect_quantity: number;
@@ -228,6 +285,28 @@ type WorkOrderTimeBreakdownApi = {
   total_elapsed_ms: number;
 };
 
+type WorkOrderMergeCandidateApi = {
+  id: number;
+  order_number: string;
+  quantity: number;
+};
+
+type WorkOrderSplitResultApi = {
+  source: WorkOrderDetailApi;
+  created: WorkOrderDetailApi;
+};
+
+type WorkOrderQrTargetApi = {
+  order_reference: string;
+  orders: WorkOrderDetailApi[];
+};
+
+type WorkOrderNumberSearchItemApi = {
+  id: number;
+  order_number: string;
+  stage: Exclude<WorkOrderStatusFilter, "all">;
+};
+
 export async function fetchWorkOrders(
   params: WorkOrderListParams = {},
 ): Promise<WorkOrderPage> {
@@ -236,6 +315,23 @@ export async function fetchWorkOrders(
   const response = await apiFetch(`/api/orders${queryString ? `?${queryString}` : ""}`);
 
   return handleJsonResponse<WorkOrderPageApi>(response).then(mapWorkOrderPage);
+}
+
+export async function searchWorkOrdersByNumber(
+  search: string,
+): Promise<WorkOrderNumberSearchItem[]> {
+  const searchParams = new URLSearchParams({ search });
+  const response = await apiFetch(
+    `/api/orders/order-number-search?${searchParams.toString()}`,
+  );
+  return handleJsonResponse<WorkOrderNumberSearchItemApi[]>(response).then(
+    (items) =>
+      items.map((item) => ({
+        id: item.id,
+        orderNumber: item.order_number,
+        stage: item.stage,
+      })),
+  );
 }
 
 export async function fetchAllWorkOrders(
@@ -289,6 +385,79 @@ export async function fetchWorkerAssignedWorkOrders(
   return handleJsonResponse<WorkOrderDetailApi[]>(response).then((orders) =>
     orders.map(mapWorkOrderDetail),
   );
+}
+
+export async function fetchWorkerOrdersByQr(params: {
+  orderReference?: string;
+  legacyOrderId?: number;
+}): Promise<WorkOrderQrTarget> {
+  const searchParams = new URLSearchParams();
+  if (params.orderReference) {
+    searchParams.set("order_reference", params.orderReference);
+  }
+  if (params.legacyOrderId !== undefined) {
+    searchParams.set("legacy_order_id", String(params.legacyOrderId));
+  }
+  const response = await apiFetch(
+    `/api/orders/worker-assignments/qr-target?${searchParams.toString()}`,
+  );
+  return handleJsonResponse<WorkOrderQrTargetApi>(response).then((target) => ({
+    orderReference: target.order_reference,
+    orders: target.orders.map(mapWorkOrderDetail),
+  }));
+}
+
+export async function splitWorkOrder(
+  orderId: number,
+  sourceQuantity: number,
+): Promise<WorkOrderSplitResult> {
+  const response = await apiFetch(`/api/orders/${orderId}/split`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ source_quantity: sourceQuantity }),
+  });
+  return handleJsonResponse<WorkOrderSplitResultApi>(response).then((result) => ({
+    source: mapWorkOrderDetail(result.source),
+    created: mapWorkOrderDetail(result.created),
+  }));
+}
+
+export async function fetchWorkOrderMergeCandidates(
+  orderId: number,
+  search = "",
+): Promise<WorkOrderMergeCandidate[]> {
+  const searchParams = new URLSearchParams();
+  if (search.trim()) {
+    searchParams.set("search", search.trim());
+  }
+  const query = searchParams.toString();
+  const response = await apiFetch(
+    `/api/orders/${orderId}/merge-candidates${query ? `?${query}` : ""}`,
+  );
+  return handleJsonResponse<WorkOrderMergeCandidateApi[]>(response).then(
+    (candidates) =>
+      candidates.map((candidate) => ({
+        id: candidate.id,
+        orderNumber: candidate.order_number,
+        quantity: candidate.quantity,
+      })),
+  );
+}
+
+export async function mergeWorkOrders(
+  orderId: number,
+  includedOrderIds: number[],
+): Promise<WorkOrderDetail> {
+  const response = await apiFetch(`/api/orders/${orderId}/merge`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ included_order_ids: includedOrderIds }),
+  });
+  return handleJsonResponse<WorkOrderDetailApi>(response).then(mapWorkOrderDetail);
 }
 
 export async function updateWorkerAssignmentStatus(
@@ -404,16 +573,16 @@ export async function acceptWorkOrderQualityControl(
   return handleJsonResponse<WorkOrderDetailApi>(response).then(mapWorkOrderDetail);
 }
 
-export async function updateWorkOrderTakenStatus(
+export async function updateWorkOrderProductionStage(
   orderId: number,
-  isTaken: boolean,
+  productionStage: WorkOrderProductionStage,
 ): Promise<WorkOrderDetail> {
-  const response = await apiFetch(`/api/orders/${orderId}/taken-status`, {
+  const response = await apiFetch(`/api/orders/${orderId}/production-stage`, {
     method: "PATCH",
     headers: {
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({ is_taken: isTaken }),
+    body: JSON.stringify({ production_stage: productionStage }),
   });
 
   return handleJsonResponse<WorkOrderDetailApi>(response).then(mapWorkOrderDetail);
@@ -478,6 +647,9 @@ function mapWorkOrderSummary(order: WorkOrderSummaryApi): WorkOrderSummary {
   return {
     id: order.id,
     orderNumber: order.order_number,
+    familyId: order.family_id,
+    partNumber: order.part_number,
+    familyBaseOrderNumber: order.family_base_order_number,
     productId: order.product_id,
     productName: order.product_name,
     productVersion: order.product_version,
@@ -486,13 +658,21 @@ function mapWorkOrderSummary(order: WorkOrderSummaryApi): WorkOrderSummary {
     quantity: order.quantity,
     plannedCompletionDate: order.planned_completion_date,
     estimatedMinutes: order.estimated_minutes,
-    totalSpentMinutes: order.total_spent_minutes,
+    totalSpentSeconds: order.total_spent_seconds,
+    cuttingSpentSeconds: order.cutting_spent_seconds,
     hasSpentTime: order.has_spent_time,
+    canSplit: order.can_split,
+    splitBlockReason: order.split_block_reason,
+    canMerge: order.can_merge,
     assignmentsCount: order.assignments_count,
     createdAtTs: order.created_at,
     createdAt: formatDate(order.created_at),
     updatedAtTs: order.updated_at,
     updatedAt: formatDate(order.updated_at),
+    productionStage: order.production_stage,
+    cuttingStartedAtTs: order.cutting_started_at,
+    cuttingStartedAt:
+      order.cutting_started_at === null ? null : formatDate(order.cutting_started_at),
     takenAtTs: order.taken_at,
     takenAt: order.taken_at === null ? null : formatDate(order.taken_at),
     qualityControlAtTs: order.quality_control_at,
@@ -520,6 +700,9 @@ function mapWorkOrderDetail(order: WorkOrderDetailApi): WorkOrderDetail {
   return {
     id: order.id,
     orderNumber: order.order_number,
+    familyId: order.family_id,
+    partNumber: order.part_number,
+    familyBaseOrderNumber: order.family_base_order_number,
     productId: order.product_id,
     productName: order.product_name,
     productVersion: order.product_version,
@@ -529,12 +712,17 @@ function mapWorkOrderDetail(order: WorkOrderDetailApi): WorkOrderDetail {
     quantity: order.quantity,
     plannedCompletionDate: order.planned_completion_date,
     estimatedMinutes: order.estimated_minutes,
-    totalSpentMinutes: order.total_spent_minutes,
+    totalSpentSeconds: order.total_spent_seconds,
+    cuttingSpentSeconds: order.cutting_spent_seconds,
     hasSpentTime: order.has_spent_time,
     createdAtTs: order.created_at,
     createdAt: formatDate(order.created_at),
     updatedAtTs: order.updated_at,
     updatedAt: formatDate(order.updated_at),
+    productionStage: order.production_stage,
+    cuttingStartedAtTs: order.cutting_started_at,
+    cuttingStartedAt:
+      order.cutting_started_at === null ? null : formatDate(order.cutting_started_at),
     takenAtTs: order.taken_at,
     takenAt: order.taken_at === null ? null : formatDate(order.taken_at),
     qualityControlAtTs: order.quality_control_at,

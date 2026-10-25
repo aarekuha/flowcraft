@@ -19,8 +19,10 @@ from app.models.work_order import (
     WorkOrderAssignmentWorkerState,
 )
 from app.models.work_shift import WorkShift
+from app.schemas.order import WorkOrderProductionStage, WorkOrderProductionStageUpdate
 from app.schemas.statistics import StatisticsOverviewRead
 from app.schemas.timer import TimerSwitchPayload, TimerType
+from app.services.order_service import OrderService
 from app.services.statistics_service import StatisticsService
 from app.services.timer_service import TIMER_TYPE_TO_CODE, TimerService
 
@@ -35,7 +37,12 @@ def _timestamp(
     return int(datetime(year, month, day, hour, minute, tzinfo=UTC).timestamp() * 1000)
 
 
-def _bootstrap_worker_graph(db_session: sessionmaker[Session]) -> tuple[int, int, int]:
+def _bootstrap_worker_graph(
+    db_session: sessionmaker[Session],
+    *,
+    operation_kind: str = "regular",
+    production_stage: str = "in_work",
+) -> tuple[int, int, int]:
     session = db_session()
     try:
         admin = User(
@@ -78,6 +85,7 @@ def _bootstrap_worker_graph(db_session: sessionmaker[Session]) -> tuple[int, int
 
         operation_catalog_entry = OperationCatalogEntry(
             name="Пошив",
+            operation_kind=operation_kind,
             is_active=True,
             created_at=1,
             updated_at=1,
@@ -98,10 +106,11 @@ def _bootstrap_worker_graph(db_session: sessionmaker[Session]) -> tuple[int, int
             order_number="FC-0001",
             product_id=product.id,
             quantity=10,
-            total_spent_minutes=0,
+            total_spent_seconds=0,
+            production_stage=production_stage,
             created_at=1,
             updated_at=1,
-            taken_at=1,
+            taken_at=1 if production_stage == "in_work" else None,
         )
         order.assignments = [
             WorkOrderAssignment(
@@ -224,9 +233,14 @@ def test_timer_service_rejects_hidden_and_completed_assignment_timers(
         session.close()
 
 
-def test_timer_service_refreshes_work_order_total_from_operation_sessions(
+def test_timer_service_refreshes_work_order_total_in_seconds(
     db_session: sessionmaker[Session],
 ) -> None:
+    """
+    Проверяем пересчет итогового времени заказа в секундах:
+    - добавить рабочую и подготовительную таймерные сессии
+    - учесть только рабочую сессию без преобразования в минуты
+    """
     worker_id, order_id, operation_id = _bootstrap_worker_graph(db_session)
     session = db_session()
     try:
@@ -269,7 +283,8 @@ def test_timer_service_refreshes_work_order_total_from_operation_sessions(
 
         order = session.get(WorkOrder, order_id)
         assert order is not None
-        assert order.total_spent_minutes == 2
+        assert order.total_spent_seconds == 120
+        assert OrderService(session).get_order(order_id).total_spent_seconds == 120
     finally:
         session.close()
 
@@ -278,6 +293,11 @@ def test_timer_service_flushes_closed_operation_before_refreshing_order_total(
     db_session: sessionmaker[Session],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """
+    Проверяем учет только что закрытой рабочей сессии:
+    - переключить активную операцию на перерыв
+    - сохранить точную длительность в целых секундах
+    """
     worker_id, order_id, operation_id = _bootstrap_worker_graph(db_session)
     timestamps = iter([1_000, 2_000, 3_000, 4_000, 64_000, 65_000, 66_000])
     session = db_session()
@@ -301,7 +321,127 @@ def test_timer_service_flushes_closed_operation_before_refreshing_order_total(
 
         order = session.get(WorkOrder, order_id)
         assert order is not None
-        assert order.total_spent_minutes == 1
+        assert order.total_spent_seconds == 61
+    finally:
+        session.close()
+
+
+def test_cutting_timer_sets_start_and_accounted_time_after_stop(
+    db_session: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    Проверяем учет времени на стадии кроя:
+    - зафиксировать начало кроя сразу при запуске первого таймера
+    - заполнить суммы и время взятия только после остановки таймера
+    - блокировать переходы при активном таймере и возврат после учета времени
+    """
+    worker_id, order_id, operation_id = _bootstrap_worker_graph(
+        db_session,
+        operation_kind="cutting",
+        production_stage="cutting",
+    )
+    timestamps = iter([1_000, 2_000, 3_000, 4_000, 63_000, 64_000, 65_000])
+    session = db_session()
+    try:
+        timer_service = TimerService(session)
+        monkeypatch.setattr(timer_service, "_now_ts", lambda: next(timestamps))
+
+        timer_service.start_day(worker_id)
+        timer_service.switch_timer(
+            worker_id,
+            TimerSwitchPayload(
+                timer_type=TimerType.OPERATION,
+                order_id=order_id,
+                operation_id=operation_id,
+            ),
+        )
+        session.expire_all()
+        active_order = session.get(WorkOrder, order_id)
+        assert active_order is not None
+        assert active_order.cutting_started_at == 3_000
+        assert active_order.cutting_spent_seconds == 0
+        assert active_order.total_spent_seconds == 0
+        assert active_order.taken_at is None
+
+        with pytest.raises(HTTPException) as active_exc_info:
+            OrderService(session).update_order_production_stage(
+                order_id,
+                WorkOrderProductionStageUpdate(
+                    production_stage=WorkOrderProductionStage.IN_WORK
+                ),
+            )
+        assert active_exc_info.value.detail == (
+            "Нельзя передать заказ в работу: сначала остановить запущенные таймеры."
+        )
+
+        timer_service.switch_timer(
+            worker_id,
+            TimerSwitchPayload(timer_type=TimerType.BREAK),
+        )
+        session.expire_all()
+        stopped_order = session.get(WorkOrder, order_id)
+        assert stopped_order is not None
+        assert stopped_order.cutting_started_at == 3_000
+        assert stopped_order.cutting_spent_seconds == 60
+        assert stopped_order.total_spent_seconds == 60
+        assert stopped_order.taken_at == 3_000
+
+        OrderService(session).update_order_production_stage(
+            order_id,
+            WorkOrderProductionStageUpdate(
+                production_stage=WorkOrderProductionStage.IN_WORK
+            ),
+        )
+        OrderService(session).update_order_production_stage(
+            order_id,
+            WorkOrderProductionStageUpdate(
+                production_stage=WorkOrderProductionStage.CUTTING
+            ),
+        )
+        with pytest.raises(HTTPException) as spent_exc_info:
+            OrderService(session).update_order_production_stage(
+                order_id,
+                WorkOrderProductionStageUpdate(
+                    production_stage=WorkOrderProductionStage.CREATED
+                ),
+            )
+        assert spent_exc_info.value.detail == (
+            "Нельзя вернуть заказ в созданные после учета времени кроя."
+        )
+    finally:
+        session.close()
+
+
+def test_timer_service_rejects_regular_operation_during_cutting(
+    db_session: sessionmaker[Session],
+) -> None:
+    """
+    Проверяем ограничение операций текущей стадией:
+    - назначить обычную операцию заказу на стадии кроя
+    - отклонить запуск таймера с понятной причиной
+    """
+    worker_id, order_id, operation_id = _bootstrap_worker_graph(
+        db_session,
+        production_stage="cutting",
+    )
+    session = db_session()
+    try:
+        service = TimerService(session)
+        service.start_day(worker_id)
+
+        with pytest.raises(HTTPException) as exc_info:
+            service.switch_timer(
+                worker_id,
+                TimerSwitchPayload(
+                    timer_type=TimerType.OPERATION,
+                    order_id=order_id,
+                    operation_id=operation_id,
+                ),
+            )
+
+        assert exc_info.value.status_code == 422
+        assert exc_info.value.detail == "Операция недоступна на текущей стадии заказа."
     finally:
         session.close()
 
@@ -449,6 +589,11 @@ def test_statistics_service_excludes_inactive_and_deleted_users(
 def test_statistics_service_exports_xlsx_with_minute_values(
     db_session: sessionmaker[Session],
 ) -> None:
+    """
+    Проверяем преобразование времени в минуты при экспорте статистики:
+    - хранить итог заказа в секундах
+    - выгрузить минутные значения в листы XLSX
+    """
     worker_id, order_id, operation_id = _bootstrap_worker_graph(db_session)
     session = db_session()
     try:
@@ -460,6 +605,9 @@ def test_statistics_service_exports_xlsx_with_minute_values(
             created_at=_timestamp(2026, 6, 1, 8),
         )
         session.add(shift)
+        order = session.get(WorkOrder, order_id)
+        assert order is not None
+        order.total_spent_seconds = 125
         session.flush()
         session.add_all(
             [
@@ -495,12 +643,16 @@ def test_statistics_service_exports_xlsx_with_minute_values(
         assert filename == "flowcraft-statistics-2026-06-01_2026-06-01.xlsx"
         with ZipFile(BytesIO(content)) as workbook:
             assert "xl/worksheets/sheet1.xml" in workbook.namelist()
+            assert "xl/worksheets/sheet3.xml" in workbook.namelist()
             assert "xl/worksheets/sheet6.xml" in workbook.namelist()
             summary = workbook.read("xl/worksheets/sheet1.xml").decode()
+            orders = workbook.read("xl/worksheets/sheet3.xml").decode()
             timers = workbook.read("xl/worksheets/sheet6.xml").decode()
 
         assert "Всего учтено, мин" in summary
         assert "<v>3.000000</v>" in summary
+        assert "Факт всего, мин" in orders
+        assert "<v>2.080000</v>" in orders
         assert "Длительность, мин" in timers
         assert "<v>2.000000</v>" in timers
     finally:
