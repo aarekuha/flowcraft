@@ -1,10 +1,12 @@
 import { apiFetch, handleJsonResponse } from "@/shared/api/http";
 
 export type OperationCatalogSortDirection = "asc" | "desc";
+export type OperationCatalogEntryKind = "regular" | "cutting";
 
 export type OperationCatalogEntry = {
   id: number;
   name: string;
+  operationKind: OperationCatalogEntryKind;
   isActive: boolean;
   createdAtTs: number;
   createdAt: string;
@@ -31,6 +33,7 @@ export type OperationCatalogPage = {
 type OperationCatalogEntryApi = {
   id: number;
   name: string;
+  operation_kind: OperationCatalogEntryKind;
   is_active: boolean;
   created_at: number;
   updated_at: number;
@@ -87,13 +90,31 @@ export async function fetchAllOperationCatalogEntries(
 
 export async function createOperationCatalogEntry(
   name: string,
+  operationKind: OperationCatalogEntryKind = "regular",
 ): Promise<OperationCatalogEntry> {
   const response = await apiFetch("/api/operation-catalog", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({ name }),
+    body: JSON.stringify({ name, operation_kind: operationKind }),
+  });
+
+  return handleJsonResponse<OperationCatalogEntryApi>(response).then(
+    mapOperationCatalogEntry,
+  );
+}
+
+export async function updateOperationCatalogEntryKind(
+  entryId: number,
+  operationKind: OperationCatalogEntryKind,
+): Promise<OperationCatalogEntry> {
+  const response = await apiFetch(`/api/operation-catalog/${entryId}/kind`, {
+    method: "PATCH",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ operation_kind: operationKind }),
   });
 
   return handleJsonResponse<OperationCatalogEntryApi>(response).then(
@@ -136,6 +157,7 @@ function mapOperationCatalogEntry(
   return {
     id: entry.id,
     name: entry.name,
+    operationKind: entry.operation_kind,
     isActive: entry.is_active,
     createdAtTs: entry.created_at,
     createdAt: formatDate(entry.created_at),

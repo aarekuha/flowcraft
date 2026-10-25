@@ -4,17 +4,21 @@ from collections import defaultdict
 from datetime import UTC, datetime
 
 from fastapi import HTTPException, status
-from sqlalchemy import Select, func, select
+from sqlalchemy import Select, exists, func, select
 from sqlalchemy.orm import Session
 
 from app.models.operation import Operation
+from app.models.operation_catalog import OperationCatalogEntry
 from app.models.timer_session import TimerSession
 from app.models.work_order import (
     WorkOrder,
     WorkOrderAssignment,
     WorkOrderAssignmentWorkerState,
+    WorkOrderTimeAllocation,
 )
 from app.models.work_shift import WorkShift
+from app.schemas.operation_catalog import OperationCatalogEntryKind
+from app.schemas.order import WorkOrderProductionStage
 from app.schemas.timer import (
     ActiveTimerRead,
     TimerSessionAggregateRead,
@@ -109,6 +113,17 @@ class TimerService:
                 and active_session.order_id is not None
             ):
                 affected_order_ids.add(active_session.order_id)
+
+        if (
+            payload.timer_type == TimerType.OPERATION
+            and payload.order_id is not None
+            and payload.operation_id is not None
+        ):
+            self._record_cutting_start(
+                order_id=payload.order_id,
+                operation_id=payload.operation_id,
+                started_at=now,
+            )
 
         self._open_timer_session(
             user_id=user_id,
@@ -288,11 +303,32 @@ class TimerService:
                 order.deleted_at is not None
                 or order.completed_at is not None
                 or order.quality_control_at is not None
-                or order.taken_at is None
+                or order.production_stage
+                not in {
+                    WorkOrderProductionStage.CUTTING.value,
+                    WorkOrderProductionStage.IN_WORK.value,
+                }
             ):
                 raise HTTPException(
                     status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                     detail="Операция недоступна для запуска таймера.",
+                )
+            catalog_entry = operation.catalog_entry
+            operation_kind = (
+                catalog_entry.operation_kind
+                if catalog_entry is not None
+                else OperationCatalogEntryKind.REGULAR.value
+            )
+            if (
+                order.production_stage == WorkOrderProductionStage.CUTTING.value
+                and operation_kind != OperationCatalogEntryKind.CUTTING.value
+            ) or (
+                order.production_stage == WorkOrderProductionStage.IN_WORK.value
+                and operation_kind == OperationCatalogEntryKind.CUTTING.value
+            ):
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                    detail="Операция недоступна на текущей стадии заказа.",
                 )
             return
 
@@ -323,7 +359,12 @@ class TimerService:
         self.session.flush()
 
         for order_id in order_ids:
-            stmt = select(
+            allocated_session_exists = exists(
+                select(WorkOrderTimeAllocation.id).where(
+                    WorkOrderTimeAllocation.timer_session_id == TimerSession.id
+                )
+            )
+            raw_stmt = select(
                 func.coalesce(
                     func.sum(TimerSession.ended_at - TimerSession.started_at),
                     0,
@@ -332,12 +373,139 @@ class TimerService:
                 TimerSession.order_id == order_id,
                 TimerSession.timer_type_code == TIMER_TYPE_TO_CODE[TimerType.OPERATION],
                 TimerSession.ended_at.is_not(None),
+                ~allocated_session_exists,
             )
-            total_ms = int(self.session.execute(stmt).scalar_one())
+            allocated_stmt = select(
+                func.coalesce(
+                    func.sum(WorkOrderTimeAllocation.allocated_seconds),
+                    0,
+                )
+            ).where(WorkOrderTimeAllocation.work_order_id == order_id)
+            raw_total_ms = int(self.session.execute(raw_stmt).scalar_one() or 0)
+            allocated_total_seconds = int(
+                self.session.execute(allocated_stmt).scalar_one() or 0
+            )
+            raw_cutting_stmt = (
+                select(
+                    func.coalesce(
+                        func.sum(TimerSession.ended_at - TimerSession.started_at),
+                        0,
+                    )
+                )
+                .select_from(TimerSession)
+                .join(Operation, Operation.id == TimerSession.operation_id)
+                .join(
+                    OperationCatalogEntry,
+                    OperationCatalogEntry.id
+                    == Operation.operation_catalog_entry_id,
+                )
+                .where(
+                    TimerSession.order_id == order_id,
+                    TimerSession.timer_type_code
+                    == TIMER_TYPE_TO_CODE[TimerType.OPERATION],
+                    TimerSession.ended_at.is_not(None),
+                    OperationCatalogEntry.operation_kind
+                    == OperationCatalogEntryKind.CUTTING.value,
+                    ~allocated_session_exists,
+                )
+            )
+            allocated_cutting_stmt = (
+                select(
+                    func.coalesce(
+                        func.sum(WorkOrderTimeAllocation.allocated_seconds),
+                        0,
+                    )
+                )
+                .select_from(WorkOrderTimeAllocation)
+                .join(
+                    TimerSession,
+                    TimerSession.id == WorkOrderTimeAllocation.timer_session_id,
+                )
+                .join(Operation, Operation.id == TimerSession.operation_id)
+                .join(
+                    OperationCatalogEntry,
+                    OperationCatalogEntry.id
+                    == Operation.operation_catalog_entry_id,
+                )
+                .where(
+                    WorkOrderTimeAllocation.work_order_id == order_id,
+                    OperationCatalogEntry.operation_kind
+                    == OperationCatalogEntryKind.CUTTING.value,
+                )
+            )
+            raw_cutting_ms = int(
+                self.session.execute(raw_cutting_stmt).scalar_one() or 0
+            )
+            allocated_cutting_seconds = int(
+                self.session.execute(allocated_cutting_stmt).scalar_one() or 0
+            )
             order = self.session.get(WorkOrder, order_id)
             if order is not None:
-                order.total_spent_minutes = total_ms // 60000
+                order.total_spent_seconds = (
+                    raw_total_ms // 1000 + allocated_total_seconds
+                )
+                order.cutting_spent_seconds = (
+                    raw_cutting_ms // 1000 + allocated_cutting_seconds
+                )
+                if order.taken_at is None and order.total_spent_seconds > 0:
+                    order.taken_at = self._get_first_accounted_timer_start(order_id)
                 order.updated_at = self._now_ts()
+
+    def _record_cutting_start(
+        self,
+        *,
+        order_id: int,
+        operation_id: int,
+        started_at: int,
+    ) -> None:
+        operation = self.session.get(Operation, operation_id)
+        order = self.session.get(WorkOrder, order_id)
+        if operation is None or order is None:
+            return
+        catalog_entry = operation.catalog_entry
+        if (
+            catalog_entry is None
+            or catalog_entry.operation_kind
+            != OperationCatalogEntryKind.CUTTING.value
+            or order.cutting_started_at is not None
+        ):
+            return
+        order.cutting_started_at = started_at
+        order.updated_at = started_at
+
+    def _get_first_accounted_timer_start(self, order_id: int) -> int | None:
+        allocated_session_exists = exists(
+            select(WorkOrderTimeAllocation.id).where(
+                WorkOrderTimeAllocation.timer_session_id == TimerSession.id
+            )
+        )
+        raw_started_at = self.session.scalar(
+            select(func.min(TimerSession.started_at)).where(
+                TimerSession.order_id == order_id,
+                TimerSession.timer_type_code == TIMER_TYPE_TO_CODE[TimerType.OPERATION],
+                TimerSession.ended_at.is_not(None),
+                TimerSession.ended_at > TimerSession.started_at,
+                ~allocated_session_exists,
+            )
+        )
+        allocated_started_at = self.session.scalar(
+            select(func.min(TimerSession.started_at))
+            .select_from(WorkOrderTimeAllocation)
+            .join(
+                TimerSession,
+                TimerSession.id == WorkOrderTimeAllocation.timer_session_id,
+            )
+            .where(
+                WorkOrderTimeAllocation.work_order_id == order_id,
+                WorkOrderTimeAllocation.allocated_seconds > 0,
+            )
+        )
+        values = [
+            int(value)
+            for value in (raw_started_at, allocated_started_at)
+            if value is not None
+        ]
+        return min(values) if values else None
 
     def _business_date(self, timestamp_ms: int) -> str:
         return datetime.fromtimestamp(timestamp_ms / 1000, UTC).date().isoformat()

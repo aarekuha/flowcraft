@@ -10,6 +10,7 @@ class SortDirection(StrEnum):
 
 
 class WorkOrderSortField(StrEnum):
+    CUTTING_STARTED = "cutting_started"
     CREATED = "created"
     COMPLETED = "completed"
     DEFECT = "defect"
@@ -23,6 +24,7 @@ class WorkOrderSortField(StrEnum):
 class WorkOrderStatusFilter(StrEnum):
     ALL = "all"
     CREATED = "created"
+    CUTTING = "cutting"
     IN_WORK = "in_work"
     QUALITY_CONTROL = "quality_control"
     COMPLETED = "completed"
@@ -33,6 +35,12 @@ class WorkerAssignmentStatusFilter(StrEnum):
     IN_WORK = "in_work"
     HIDDEN = "hidden"
     COMPLETED = "completed"
+
+
+class WorkOrderProductionStage(StrEnum):
+    CREATED = "created"
+    CUTTING = "cutting"
+    IN_WORK = "in_work"
 
 
 class WorkOrderAssignmentCreate(BaseModel):
@@ -101,12 +109,32 @@ class WorkOrderQualityControlAccept(BaseModel):
     defect_quantity: int = Field(default=0, ge=0)
 
 
-class WorkOrderTakenStatusUpdate(BaseModel):
-    is_taken: bool
+class WorkOrderProductionStageUpdate(BaseModel):
+    production_stage: WorkOrderProductionStage
 
 
 class WorkOrderDeletedStatusUpdate(BaseModel):
     is_deleted: bool
+
+
+class WorkOrderSplitRequest(BaseModel):
+    source_quantity: int = Field(gt=0)
+
+
+class WorkOrderMergeRequest(BaseModel):
+    included_order_ids: list[int] = Field(min_length=1)
+
+
+class WorkOrderMergeCandidate(BaseModel):
+    id: int
+    order_number: str
+    quantity: int
+
+
+class WorkOrderNumberSearchItem(BaseModel):
+    id: int
+    order_number: str
+    stage: WorkOrderStatusFilter
 
 
 class WorkOrderListItem(BaseModel):
@@ -114,6 +142,9 @@ class WorkOrderListItem(BaseModel):
 
     id: int
     order_number: str
+    family_id: int | None
+    part_number: int | None
+    family_base_order_number: str | None
     product_id: int
     product_name: str
     product_version: str
@@ -122,11 +153,17 @@ class WorkOrderListItem(BaseModel):
     quantity: int
     planned_completion_date: date | None
     estimated_minutes: int
-    total_spent_minutes: int
+    total_spent_seconds: int
+    cutting_spent_seconds: int
     has_spent_time: bool
+    can_split: bool
+    split_block_reason: str | None
+    can_merge: bool
     assignments_count: int
     created_at: int
     updated_at: int
+    production_stage: WorkOrderProductionStage
+    cutting_started_at: int | None
     taken_at: int | None
     quality_control_at: int | None
     defect_quantity: int
@@ -147,6 +184,9 @@ class WorkOrderDetail(BaseModel):
 
     id: int
     order_number: str
+    family_id: int | None
+    part_number: int | None
+    family_base_order_number: str | None
     product_id: int
     product_name: str
     product_version: str
@@ -156,16 +196,29 @@ class WorkOrderDetail(BaseModel):
     quantity: int
     planned_completion_date: date | None
     estimated_minutes: int
-    total_spent_minutes: int
+    total_spent_seconds: int
+    cutting_spent_seconds: int
     has_spent_time: bool
     created_at: int
     updated_at: int
+    production_stage: WorkOrderProductionStage
+    cutting_started_at: int | None
     taken_at: int | None
     quality_control_at: int | None
     defect_quantity: int
     completed_at: int | None
     deleted_at: int | None
     assignments: list[WorkOrderAssignmentRead] = Field(default_factory=list)
+
+
+class WorkOrderSplitResult(BaseModel):
+    source: WorkOrderDetail
+    created: WorkOrderDetail
+
+
+class WorkOrderQrTarget(BaseModel):
+    order_reference: str
+    orders: list[WorkOrderDetail] = Field(default_factory=list)
 
 
 class WorkOrderTimeBreakdownItem(BaseModel):

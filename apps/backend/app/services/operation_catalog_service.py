@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from app.models.operation_catalog import OperationCatalogEntry
 from app.schemas.operation_catalog import (
     OperationCatalogEntryCreate,
+    OperationCatalogEntryKindUpdate,
     OperationCatalogEntryPage,
     OperationCatalogEntryRead,
     OperationCatalogEntryStatusUpdate,
@@ -64,6 +65,7 @@ class OperationCatalogService:
         timestamp = self._now_ts()
         entry = OperationCatalogEntry(
             name=payload.name,
+            operation_kind=payload.operation_kind.value,
             is_active=True,
             created_at=timestamp,
             updated_at=timestamp,
@@ -81,6 +83,19 @@ class OperationCatalogService:
     ) -> OperationCatalogEntryRead:
         entry = self._get_entry_or_404(entry_id)
         entry.is_active = payload.is_active
+        entry.updated_at = self._now_ts()
+
+        self.session.commit()
+        self.session.refresh(entry)
+        return self._serialize_entry(entry)
+
+    def update_entry_kind(
+        self,
+        entry_id: int,
+        payload: OperationCatalogEntryKindUpdate,
+    ) -> OperationCatalogEntryRead:
+        entry = self._get_entry_or_404(entry_id)
+        entry.operation_kind = payload.operation_kind.value
         entry.updated_at = self._now_ts()
 
         self.session.commit()
@@ -123,6 +138,7 @@ class OperationCatalogService:
         return OperationCatalogEntryRead(
             id=entry.id,
             name=entry.name,
+            operation_kind=entry.operation_kind,
             is_active=entry.is_active,
             created_at=entry.created_at,
             updated_at=entry.updated_at,

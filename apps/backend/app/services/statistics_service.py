@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session, joinedload
 from app.models.operation import Operation
 from app.models.timer_session import TimerSession
 from app.models.user import User
-from app.models.work_order import WorkOrder
+from app.models.work_order import WorkOrder, WorkOrderTimeAllocation
 from app.schemas.statistics import (
     StatisticsDailyRead,
     StatisticsKpiRead,
@@ -50,7 +50,7 @@ class _WindowedSession:
     leather_type_name: str | None
     order_quantity: int | None
     order_estimated_minutes: int | None
-    order_total_spent_minutes: int | None
+    order_total_spent_seconds: int | None
     order_created_at: int | None
     order_taken_at: int | None
     order_quality_control_at: int | None
@@ -74,7 +74,7 @@ class _ExportOrder:
     leather_type_name: str
     quantity: int
     estimated_minutes: int
-    total_spent_minutes: int
+    total_spent_seconds: int
     created_at: int | None
     taken_at: int | None
     quality_control_at: int | None
@@ -387,7 +387,7 @@ class StatisticsService:
                     order.quantity,
                     order.estimated_minutes,
                     period_minutes,
-                    order.total_spent_minutes,
+                    self._minutes_from_seconds(order.total_spent_seconds),
                     round(period_minutes - order.estimated_minutes, 2),
                     round(period_minutes / order.quantity, 2)
                     if order.quantity > 0
@@ -534,6 +534,12 @@ class StatisticsService:
                 joinedload(TimerSession.order).joinedload(WorkOrder.product),
                 joinedload(TimerSession.order).joinedload(WorkOrder.leather_type),
                 joinedload(TimerSession.operation).joinedload(Operation.catalog_entry),
+                joinedload(TimerSession.order_allocations)
+                .joinedload(WorkOrderTimeAllocation.work_order)
+                .joinedload(WorkOrder.product),
+                joinedload(TimerSession.order_allocations)
+                .joinedload(WorkOrderTimeAllocation.work_order)
+                .joinedload(WorkOrder.leather_type),
             )
             .join(User, User.id == TimerSession.user_id)
             .where(TimerSession.started_at < period_end)
@@ -545,7 +551,7 @@ class StatisticsService:
             )
         )
 
-        sessions = self.session.scalars(stmt).all()
+        sessions = self.session.scalars(stmt).unique().all()
         windowed_sessions: list[_WindowedSession] = []
         for timer_session in sessions:
             clipped_start = max(timer_session.started_at, period_start)
@@ -553,59 +559,48 @@ class StatisticsService:
             if clipped_end <= clipped_start:
                 continue
 
-            order = timer_session.order
-            operation = timer_session.operation
-            user = timer_session.user
-            is_open = timer_session.ended_at is None
+            allocations = (
+                timer_session.order_allocations
+                if timer_session.timer_type_code
+                == TIMER_TYPE_TO_CODE[TimerType.OPERATION]
+                and timer_session.ended_at is not None
+                else []
+            )
+            if allocations:
+                assert timer_session.ended_at is not None
+                session_elapsed_ms = max(
+                    timer_session.ended_at - timer_session.started_at,
+                    1,
+                )
+                clipped_elapsed_ms = clipped_end - clipped_start
+                for allocation in allocations:
+                    allocated_elapsed_ms = (
+                        allocation.allocated_seconds
+                        * 1000
+                        * clipped_elapsed_ms
+                        // session_elapsed_ms
+                    )
+                    if allocated_elapsed_ms <= 0:
+                        continue
+                    windowed_sessions.append(
+                        self._build_windowed_session(
+                            timer_session=timer_session,
+                            order=allocation.work_order,
+                            started_at=clipped_start,
+                            ended_at=clipped_start + allocated_elapsed_ms,
+                            elapsed_ms=allocated_elapsed_ms,
+                            is_clipped=True,
+                        )
+                    )
+                continue
+
             windowed_sessions.append(
-                _WindowedSession(
-                    session_id=timer_session.id,
-                    timer_type=self._timer_type_from_code(
-                        timer_session.timer_type_code
-                    ),
-                    user_id=user.id,
-                    user_name=user.name,
-                    shift_business_date=timer_session.shift.business_date,
-                    order_id=timer_session.order_id,
-                    order_number=order.order_number if order is not None else None,
-                    product_name=order.product.name if order is not None else None,
-                    product_version=order.product.version
-                    if order is not None
-                    else None,
-                    leather_type_name=(
-                        order.leather_type.name
-                        if order is not None and order.leather_type is not None
-                        else None
-                    ),
-                    order_quantity=order.quantity if order is not None else None,
-                    order_estimated_minutes=(
-                        order.estimated_minutes if order is not None else None
-                    ),
-                    order_total_spent_minutes=(
-                        order.total_spent_minutes if order is not None else None
-                    ),
-                    order_created_at=order.created_at if order is not None else None,
-                    order_taken_at=order.taken_at if order is not None else None,
-                    order_quality_control_at=(
-                        order.quality_control_at if order is not None else None
-                    ),
-                    order_defect_quantity=(
-                        order.defect_quantity if order is not None else None
-                    ),
-                    order_completed_at=(
-                        order.completed_at if order is not None else None
-                    ),
-                    order_deleted_at=order.deleted_at if order is not None else None,
-                    operation_id=timer_session.operation_id,
-                    operation_name=(
-                        self._get_operation_name(operation)
-                        if operation is not None
-                        else None
-                    ),
+                self._build_windowed_session(
+                    timer_session=timer_session,
+                    order=timer_session.order,
                     started_at=clipped_start,
                     ended_at=clipped_end,
                     elapsed_ms=clipped_end - clipped_start,
-                    is_open=is_open,
                     is_clipped=(
                         clipped_start != timer_session.started_at
                         or clipped_end != (timer_session.ended_at or now)
@@ -613,6 +608,63 @@ class StatisticsService:
                 )
             )
         return windowed_sessions
+
+    def _build_windowed_session(
+        self,
+        *,
+        timer_session: TimerSession,
+        order: WorkOrder | None,
+        started_at: int,
+        ended_at: int,
+        elapsed_ms: int,
+        is_clipped: bool,
+    ) -> _WindowedSession:
+        operation = timer_session.operation
+        user = timer_session.user
+        return _WindowedSession(
+            session_id=timer_session.id,
+            timer_type=self._timer_type_from_code(timer_session.timer_type_code),
+            user_id=user.id,
+            user_name=user.name,
+            shift_business_date=timer_session.shift.business_date,
+            order_id=order.id if order is not None else None,
+            order_number=order.order_number if order is not None else None,
+            product_name=order.product.name if order is not None else None,
+            product_version=order.product.version if order is not None else None,
+            leather_type_name=(
+                order.leather_type.name
+                if order is not None and order.leather_type is not None
+                else None
+            ),
+            order_quantity=order.quantity if order is not None else None,
+            order_estimated_minutes=(
+                order.estimated_minutes if order is not None else None
+            ),
+            order_total_spent_seconds=(
+                order.total_spent_seconds if order is not None else None
+            ),
+            order_created_at=order.created_at if order is not None else None,
+            order_taken_at=order.taken_at if order is not None else None,
+            order_quality_control_at=(
+                order.quality_control_at if order is not None else None
+            ),
+            order_defect_quantity=(
+                order.defect_quantity if order is not None else None
+            ),
+            order_completed_at=order.completed_at if order is not None else None,
+            order_deleted_at=order.deleted_at if order is not None else None,
+            operation_id=timer_session.operation_id,
+            operation_name=(
+                self._get_operation_name(operation)
+                if operation is not None
+                else None
+            ),
+            started_at=started_at,
+            ended_at=ended_at,
+            elapsed_ms=elapsed_ms,
+            is_open=timer_session.ended_at is None,
+            is_clipped=is_clipped,
+        )
 
     def _accumulate_daily_breakdown(
         self,
@@ -710,7 +762,7 @@ class StatisticsService:
                 leather_type_name=timer_session.leather_type_name or "",
                 quantity=timer_session.order_quantity or 0,
                 estimated_minutes=timer_session.order_estimated_minutes or 0,
-                total_spent_minutes=timer_session.order_total_spent_minutes or 0,
+                total_spent_seconds=timer_session.order_total_spent_seconds or 0,
                 created_at=timer_session.order_created_at,
                 taken_at=timer_session.order_taken_at,
                 quality_control_at=timer_session.order_quality_control_at,
@@ -889,6 +941,9 @@ class StatisticsService:
 
     def _minutes(self, elapsed_ms: int) -> float:
         return round(elapsed_ms / 60_000, 2)
+
+    def _minutes_from_seconds(self, elapsed_seconds: int) -> float:
+        return round(elapsed_seconds / 60, 2)
 
     def _average_minutes(self, total_ms: int, count: int) -> float:
         if count <= 0:

@@ -27,8 +27,10 @@ import {
   createOperationCatalogEntry,
   fetchAllOperationCatalogEntries,
   fetchOperationCatalog,
+  updateOperationCatalogEntryKind,
   updateOperationCatalogEntryStatus,
   type OperationCatalogEntry,
+  type OperationCatalogEntryKind,
   type OperationCatalogListParams,
   type OperationCatalogSortDirection,
 } from "@/shared/api/operationCatalog";
@@ -36,17 +38,24 @@ import {
   acceptWorkOrderQualityControl,
   createWorkOrder,
   fetchWorkOrder,
+  fetchWorkOrderMergeCandidates,
   fetchWorkOrderTimeBreakdown,
   fetchWorkOrders,
   fetchWorkerAssignedWorkOrders,
+  fetchWorkerOrdersByQr,
+  mergeWorkOrders,
+  searchWorkOrdersByNumber,
+  splitWorkOrder,
   updateWorkOrderAssignments,
   updateWorkOrderDeletedStatus,
   updateWorkOrderPlannedCompletionDate,
+  updateWorkOrderProductionStage,
   updateWorkOrderQualityControlStatus,
   updateWorkOrderStatus,
-  updateWorkOrderTakenStatus,
   updateWorkerAssignmentStatus,
   type WorkOrderListParams,
+  type WorkOrderMergeCandidate,
+  type WorkOrderNumberSearchItem,
   type WorkOrderSortBy,
   type WorkOrderSortDirection,
   type WorkOrderStatusFilter,
@@ -98,11 +107,12 @@ import {
   formatStandardTimeInput,
   parseStandardTimeInput,
 } from "@/shared/lib/standardTime";
+import { formatOrderDuration } from "@/shared/lib/duration";
 
 type TabId = "worker" | "brigadier" | "constructor" | "stats" | "reports" | "users";
 type ModalMode = "create" | "copy" | "view" | null;
 type WorkOrderStatusTabId = Exclude<WorkOrderStatusFilter, "all">;
-type BrigadierTabId = "orders" | WorkOrderStatusTabId;
+type BrigadierTabId = "orders" | "order_search" | WorkOrderStatusTabId;
 type ConstructorTabId = "products" | "directories";
 type ConstructorDirectoryTabId = "operation-catalog" | "leather-types";
 type ProductVisibilityFilter = "all" | "active" | "inactive";
@@ -116,8 +126,11 @@ type ProductSort =
 type StatisticsPeriodMode = "preset" | "custom";
 type WorkOrderSort = `${WorkOrderSortBy}-${WorkOrderSortDirection}`;
 type WorkOrderActionConfirmKind =
+  | "transfer_to_cutting"
+  | "transfer_to_work"
   | "send_to_quality_control"
   | "return_to_created"
+  | "return_to_cutting"
   | "return_to_work"
   | "return_to_quality_control"
   | "delete"
@@ -139,6 +152,7 @@ type FlatOperationNodeRow = {
 };
 
 type BrigadierOrderAssignment = {
+  slotId: string;
   operationId: number;
   operationLabel: string;
   workerUserId: number | null;
@@ -177,6 +191,11 @@ type WorkerTimerGroup = {
 type WorkerAssignmentStatusConfirm = {
   timer: WorkerTimerDefinition;
   status: Exclude<WorkerAssignmentStatus, "in_work">;
+};
+
+type WorkerQrRouteTarget = {
+  orderReference?: string;
+  legacyOrderId?: number;
 };
 
 const tabs: Array<{ id: TabId; label: string; icon: string }> = [
@@ -254,6 +273,7 @@ const workOrderStatusTabs: Array<{
   icon: string;
 }> = [
   { id: "created", label: "Созданные", icon: "orders" },
+  { id: "cutting", label: "Крой", icon: "in-work" },
   { id: "in_work", label: "В работе", icon: "in-work" },
   { id: "quality_control", label: "ОТК", icon: "search" },
   { id: "completed", label: "Выполненные", icon: "check" },
@@ -271,6 +291,7 @@ const BREAK_TIMER_ID = "worker:break";
 const IDLE_TIMER_ID = "worker:idle";
 const PRINT_QR_CODE_COUNT = 5;
 const SMARTPHONE_MEDIA_QUERY = "(max-width: 760px)";
+const ORDER_NUMBER_SEARCH_DELAY_MS = 250;
 const PROJECT_PAGE_SIZE = 10;
 const WORK_ORDER_PAGE_SIZE = 50;
 const LEATHER_TYPE_PAGE_SIZE = PROJECT_PAGE_SIZE;
@@ -283,7 +304,7 @@ const activeTab = ref<TabId>(readStoredTab<TabId>(ACTIVE_TAB_STORAGE_KEY, tabs.m
 const brigadierTab = ref<BrigadierTabId>(
   readStoredTab<BrigadierTabId>(
     BRIGADIER_TAB_STORAGE_KEY,
-    ["orders", ...workOrderStatusTabs.map((tab) => tab.id)],
+    ["orders", ...workOrderStatusTabs.map((tab) => tab.id), "order_search"],
     "orders",
   ),
 );
@@ -313,6 +334,12 @@ const busyPrintWorkOrderIds = ref<number[]>([]);
 const workOrdersTotal = ref(0);
 const workOrdersPage = ref(1);
 const workOrdersPages = ref(1);
+const orderNumberSearchDraft = ref("");
+const orderNumberSearchResults = ref<WorkOrderNumberSearchItem[]>([]);
+const orderNumberSearchLoading = ref(false);
+const orderNumberSearchError = ref("");
+let orderNumberSearchRequestId = 0;
+let orderNumberSearchTimeoutId: number | null = null;
 const leatherTypes = ref<LeatherTypeRecord[]>([]);
 const activeLeatherTypes = ref<LeatherTypeRecord[]>([]);
 const busyLeatherTypeIds = ref<number[]>([]);
@@ -342,6 +369,7 @@ const operationCatalogSearchDraft = ref("");
 const showInactiveOperationCatalogEntries = ref(false);
 const operationCatalogSortDirection = ref<OperationCatalogSortDirection>("asc");
 const operationCatalogName = ref("");
+const operationCatalogKind = ref<OperationCatalogEntryKind>("regular");
 const brigadierProductFilter = ref("");
 const brigadierProductSort = ref<ProductSort>("name-asc");
 const userFilter = ref("");
@@ -374,7 +402,8 @@ const brigadierModalOrderNumber = ref("");
 const brigadierModalLeatherTypeId = ref("");
 const brigadierModalLeatherTypeNameDraft = ref("");
 const brigadierModalHasSpentTime = ref(false);
-const brigadierOpenAssignmentDropdownId = ref<number | null>(null);
+const brigadierOpenAssignmentDropdownId = ref<string | null>(null);
+let brigadierAssignmentSlotSequence = 0;
 let brigadierDropdownCloseTimeoutId: number | null = null;
 const isBrigadierLeatherTypeDropdownOpen = ref(false);
 let brigadierLeatherTypeDropdownCloseTimeoutId: number | null = null;
@@ -394,6 +423,17 @@ const workOrderTimeBreakdownModal = ref<{
 } | null>(null);
 const workOrderTimeBreakdownLoading = ref(false);
 const workOrderTimeBreakdownError = ref("");
+const splitOrderModal = ref<WorkOrderSummary | null>(null);
+const splitSourceQuantity = ref(1);
+const splitOrderSubmitting = ref(false);
+const splitOrderError = ref("");
+const mergeOrderModal = ref<WorkOrderSummary | null>(null);
+const mergeOrderCandidates = ref<WorkOrderMergeCandidate[]>([]);
+const mergeOrderSearch = ref("");
+const mergeSelectedOrderIds = ref<number[]>([]);
+const mergeOrderLoading = ref(false);
+const mergeOrderSubmitting = ref(false);
+const mergeOrderError = ref("");
 const workOrderDetails = ref<WorkOrderDetail[]>([]);
 const workerAssignmentsLoading = ref(false);
 const workerAssignmentsError = ref("");
@@ -469,7 +509,7 @@ const isBrigadierLeatherTypeEditable = computed(
   () => isBrigadierOrderAttributesEditable.value,
 );
 const isBrigadierQuantityEditable = computed(
-  () => isBrigadierOrderAttributesEditable.value,
+  () => brigadierModalMode.value === "create",
 );
 const isQualityControlOrderModal = computed(
   () => brigadierModalMode.value === "quality_control",
@@ -480,6 +520,7 @@ const isViewMode = computed(() => modalMode.value === "view");
 const printableWorkOrder = ref<WorkOrderDetail | null>(null);
 const printableWorkOrderQrCode = ref("");
 const workerOrderFocusMessage = ref("");
+const focusedWorkerOrderId = ref<number | null>(null);
 const workerQrScannerVideo = ref<HTMLVideoElement | null>(null);
 const isWorkerQrScannerOpen = ref(false);
 const workerQrScannerStarting = ref(false);
@@ -487,7 +528,9 @@ const workerQrScannerError = ref("");
 let workerQrScannerControls: IScannerControls | null = null;
 let workerQrScannerRunId = 0;
 const workOrderStatusTab = computed<WorkOrderStatusTabId>(() =>
-  brigadierTab.value === "orders" ? "created" : brigadierTab.value,
+  brigadierTab.value === "orders" || brigadierTab.value === "order_search"
+    ? "created"
+    : brigadierTab.value,
 );
 const availableTabs = computed(() => {
   if (!currentSession.value) {
@@ -515,6 +558,9 @@ const canManageWorkOrders = computed(
 const canAcceptQualityControl = computed(
   () => currentSession.value?.userRoles.includes("quality_control") ?? false,
 );
+const canSplitAndMergeWorkOrders = computed(
+  () => currentSession.value?.userRoles.includes("brigadier") ?? false,
+);
 const workerOrderRouteId = computed(() => {
   const routeOrderId = route.params.orderId;
   const value = Array.isArray(routeOrderId) ? routeOrderId[0] : routeOrderId;
@@ -525,6 +571,20 @@ const workerOrderRouteId = computed(() => {
 
   const orderId = Number.parseInt(value, 10);
   return orderId > 0 ? orderId : null;
+});
+const workerOrderRouteReference = computed(() => {
+  const routeReference = route.query.order;
+  const value = Array.isArray(routeReference) ? routeReference[0] : routeReference;
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+});
+const workerQrRouteTarget = computed<WorkerQrRouteTarget | null>(() => {
+  if (workerOrderRouteReference.value !== null) {
+    return { orderReference: workerOrderRouteReference.value };
+  }
+  if (workerOrderRouteId.value !== null) {
+    return { legacyOrderId: workerOrderRouteId.value };
+  }
+  return null;
 });
 
 const shouldShowValidation = computed(
@@ -765,6 +825,27 @@ const brigadierCurrentOrder = computed(() =>
   workOrders.value.find((order) => order.id === brigadierModalOrderId.value) ?? null,
 );
 
+const splitCreatedQuantity = computed(() =>
+  splitOrderModal.value
+    ? splitOrderModal.value.quantity - splitSourceQuantity.value
+    : 0,
+);
+
+const filteredMergeOrderCandidates = computed(() => {
+  const normalizedSearch = mergeOrderSearch.value.trim().toLocaleLowerCase("ru");
+  if (!normalizedSearch) {
+    return mergeOrderCandidates.value;
+  }
+  return mergeOrderCandidates.value.filter((candidate) =>
+    candidate.orderNumber.toLocaleLowerCase("ru").includes(normalizedSearch),
+  );
+});
+
+const selectedMergeOrderCandidates = computed(() => {
+  const selectedIds = new Set(mergeSelectedOrderIds.value);
+  return mergeOrderCandidates.value.filter((candidate) => selectedIds.has(candidate.id));
+});
+
 const isCompletedBrigadierOrderModal = computed(
   () =>
     brigadierModalMode.value === "manage" &&
@@ -805,6 +886,23 @@ const isBrigadierAssignmentsEditable = computed(
         !isCompletedBrigadierOrderModal.value &&
         !isQualityControlStageBrigadierOrderModal.value)),
 );
+
+const displayedBrigadierModalAssignments = computed(() => {
+  if (isBrigadierAssignmentsEditable.value) {
+    return brigadierModalAssignments.value;
+  }
+
+  const assignedOperationIds = new Set(
+    brigadierModalAssignments.value
+      .filter((assignment) => assignment.workerUserId !== null)
+      .map((assignment) => assignment.operationId),
+  );
+  return brigadierModalAssignments.value.filter(
+    (assignment) =>
+      assignment.workerUserId !== null ||
+      !assignedOperationIds.has(assignment.operationId),
+  );
+});
 
 const isBrigadierPlannedCompletionDateChanged = computed(
   () =>
@@ -915,10 +1013,16 @@ const brigadierSaveConfirmDescription = computed(() =>
 
 const workOrderActionConfirmTitle = computed(() => {
   switch (workOrderActionConfirm.value?.kind) {
+    case "transfer_to_cutting":
+      return "Передать заказ в крой?";
+    case "transfer_to_work":
+      return "Передать заказ в работу?";
     case "send_to_quality_control":
       return "Передать заказ в ОТК?";
     case "return_to_created":
       return "Вернуть заказ в созданные?";
+    case "return_to_cutting":
+      return "Вернуть заказ в крой?";
     case "return_to_work":
       return "Вернуть заказ в работу?";
     case "return_to_quality_control":
@@ -934,10 +1038,16 @@ const workOrderActionConfirmTitle = computed(() => {
 
 const workOrderActionConfirmDescription = computed(() => {
   switch (workOrderActionConfirm.value?.kind) {
+    case "transfer_to_cutting":
+      return "Заказ появится во вкладке «Крой», исполнителям станут доступны операции кроя.";
+    case "transfer_to_work":
+      return "Заказ появится во вкладке «В работе». Переход доступен только после остановки всех таймеров заказа.";
     case "send_to_quality_control":
       return "Будет установлена дата передачи в ОТК. Заказ исчезнет из таймеров исполнителей.";
     case "return_to_created":
-      return "Время взятия в работу, ОТК и время проведения ОТК будут очищены. Заказ исчезнет из таймеров исполнителей.";
+      return "Заказ вернется в созданные. Возврат недоступен после учета времени кроя.";
+    case "return_to_cutting":
+      return "Заказ вернется в крой. Исполнителям станут доступны только операции кроя.";
     case "return_to_work":
       return "Дата передачи в ОТК и количество брака будут очищены, заказ снова появится в работе.";
     case "return_to_quality_control":
@@ -953,10 +1063,16 @@ const workOrderActionConfirmDescription = computed(() => {
 
 const workOrderActionConfirmLabel = computed(() => {
   switch (workOrderActionConfirm.value?.kind) {
+    case "transfer_to_cutting":
+      return "Передать в крой";
+    case "transfer_to_work":
+      return "Передать в работу";
     case "send_to_quality_control":
       return "Передать в ОТК";
     case "return_to_created":
       return "Вернуть в созданные";
+    case "return_to_cutting":
+      return "Вернуть в крой";
     case "return_to_work":
       return "Вернуть в работу";
     case "return_to_quality_control":
@@ -972,9 +1088,12 @@ const workOrderActionConfirmLabel = computed(() => {
 
 const workOrderActionConfirmIcon = computed(() => {
   switch (workOrderActionConfirm.value?.kind) {
+    case "transfer_to_cutting":
+    case "transfer_to_work":
     case "send_to_quality_control":
       return "button-icon--check";
     case "return_to_created":
+    case "return_to_cutting":
     case "restore":
       return "button-icon--refresh";
     case "return_to_work":
@@ -1134,7 +1253,7 @@ const brigadierSaveIssue = computed<{
   if (firstBrigadierAssignmentError.value) {
     return {
       message: getBrigadierAssignmentError(firstBrigadierAssignmentError.value),
-      selector: `[data-brigadier-operation-id="${firstBrigadierAssignmentError.value.operationId}"]`,
+      selector: `[data-brigadier-assignment-slot-id="${firstBrigadierAssignmentError.value.slotId}"]`,
     };
   }
 
@@ -1327,9 +1446,14 @@ watch(activeTab, (value) => {
   }
 });
 
-watch(workerOrderRouteId, (orderId) => {
+watch([workerOrderRouteId, workerOrderRouteReference], ([orderId, orderReference]) => {
   workerOrderFocusMessage.value = "";
-  if (orderId === null || authInitializing.value || !currentSession.value) {
+  focusedWorkerOrderId.value = null;
+  if (
+    (orderId === null && orderReference === null) ||
+    authInitializing.value ||
+    !currentSession.value
+  ) {
     return;
   }
 
@@ -1368,11 +1492,18 @@ watch(constructorDirectoryTab, (value) => {
 });
 
 watch(
-  [workOrderFilter, workOrderStatusTab, workOrderSort],
+  [workOrderFilter, workOrderStatusTab, workOrderSort, brigadierTab],
   () => {
+    if (!isWorkOrderStatusTabId(brigadierTab.value)) {
+      return;
+    }
     reloadWorkOrdersFromFirstPage();
   },
 );
+
+watch(orderNumberSearchDraft, () => {
+  scheduleOrderNumberSearch();
+});
 
 watch(workOrdersPage, () => {
   void loadWorkOrders();
@@ -1439,6 +1570,7 @@ onBeforeUnmount(() => {
   window.removeEventListener("resize", updateSmartphoneViewport);
   clearWorkerAssignmentStatusDropdownCloseTimeout();
   clearOperationNameDropdownCloseTimeout();
+  clearOrderNumberSearchTimeout();
   if (workerClockIntervalId !== null) {
     window.clearInterval(workerClockIntervalId);
   }
@@ -1526,6 +1658,80 @@ function clearWorkOrderSearch() {
   }
 
   workOrderFilter.value = "";
+}
+
+function isWorkOrderStatusTabId(
+  tabId: BrigadierTabId,
+): tabId is WorkOrderStatusTabId {
+  return workOrderStatusTabs.some((tab) => tab.id === tabId);
+}
+
+function clearOrderNumberSearchTimeout() {
+  if (orderNumberSearchTimeoutId !== null) {
+    window.clearTimeout(orderNumberSearchTimeoutId);
+    orderNumberSearchTimeoutId = null;
+  }
+}
+
+function scheduleOrderNumberSearch() {
+  clearOrderNumberSearchTimeout();
+  const search = orderNumberSearchDraft.value.trim();
+  const requestId = ++orderNumberSearchRequestId;
+  orderNumberSearchError.value = "";
+
+  if (!search) {
+    orderNumberSearchResults.value = [];
+    orderNumberSearchLoading.value = false;
+    return;
+  }
+
+  orderNumberSearchLoading.value = true;
+  orderNumberSearchTimeoutId = window.setTimeout(() => {
+    orderNumberSearchTimeoutId = null;
+    void loadOrderNumberSearchResults(search, requestId);
+  }, ORDER_NUMBER_SEARCH_DELAY_MS);
+}
+
+async function loadOrderNumberSearchResults(search: string, requestId: number) {
+  try {
+    const results = await searchWorkOrdersByNumber(search);
+    if (requestId !== orderNumberSearchRequestId) {
+      return;
+    }
+    orderNumberSearchResults.value = results;
+  } catch (error) {
+    if (requestId !== orderNumberSearchRequestId) {
+      return;
+    }
+    if (isUnauthorizedError(error)) {
+      redirectToAuth(getErrorMessage(error, "Требуется аутентификация."));
+      return;
+    }
+    orderNumberSearchResults.value = [];
+    orderNumberSearchError.value = getErrorMessage(
+      error,
+      "Не удалось выполнить поиск заказа.",
+    );
+  } finally {
+    if (requestId === orderNumberSearchRequestId) {
+      orderNumberSearchLoading.value = false;
+    }
+  }
+}
+
+function clearOrderNumberSearch() {
+  orderNumberSearchDraft.value = "";
+}
+
+function getWorkOrderStageLabel(stage: WorkOrderStatusTabId): string {
+  return workOrderStatusTabs.find((tab) => tab.id === stage)?.label ?? stage;
+}
+
+function openOrderNumberSearchResult(result: WorkOrderNumberSearchItem) {
+  workOrderSearchDraft.value = result.orderNumber;
+  workOrderFilter.value = result.orderNumber;
+  workOrderSort.value = "order_number-asc";
+  brigadierTab.value = result.stage;
 }
 
 function getWorkOrderListParams(): WorkOrderListParams {
@@ -1728,7 +1934,7 @@ async function initializePage() {
 }
 
 async function loadProtectedData() {
-  if (workerOrderRouteId.value !== null && canLoadWorkerWorkspace()) {
+  if (workerQrRouteTarget.value !== null && canLoadWorkerWorkspace()) {
     activeTab.value = "worker";
   }
 
@@ -1799,6 +2005,8 @@ function redirectToAuth(message = "Требуется аутентификаци
   closeChangePasswordModal();
   closeBrigadierOrderModal();
   closeWorkOrderActionConfirm();
+  closeSplitOrderModal();
+  closeMergeOrderModal();
   closeProductModal();
   closeDeleteConfirmation();
   closeUserDeleteConfirmation();
@@ -2151,9 +2359,10 @@ async function loadWorkerAssignments(): Promise<boolean> {
   workerAssignmentsError.value = "";
 
   try {
-    const assignedOrders = await fetchWorkerAssignedWorkOrders(
-      workerAssignmentStatusFilter.value,
-    );
+    const qrTarget = workerQrRouteTarget.value;
+    const assignedOrders = qrTarget
+      ? (await fetchWorkerOrdersByQr(qrTarget)).orders
+      : await fetchWorkerAssignedWorkOrders(workerAssignmentStatusFilter.value);
 
     if (requestId !== workerAssignmentsRequestId) {
       return false;
@@ -2434,6 +2643,122 @@ function closeWorkOrderTimeBreakdown() {
   workOrderTimeBreakdownError.value = "";
 }
 
+function openSplitOrderModal(order: WorkOrderSummary) {
+  splitOrderModal.value = order;
+  splitSourceQuantity.value = Math.ceil(order.quantity / 2);
+  splitOrderError.value = "";
+}
+
+function closeSplitOrderModal() {
+  if (splitOrderSubmitting.value) {
+    return;
+  }
+  splitOrderModal.value = null;
+  splitOrderError.value = "";
+}
+
+function setSplitSourceQuantity(value: number) {
+  const order = splitOrderModal.value;
+  if (!order) {
+    return;
+  }
+  splitSourceQuantity.value = Math.min(
+    order.quantity - 1,
+    Math.max(1, Math.round(value)),
+  );
+}
+
+async function submitSplitOrder() {
+  const order = splitOrderModal.value;
+  if (!order || splitOrderSubmitting.value) {
+    return;
+  }
+  splitOrderSubmitting.value = true;
+  splitOrderError.value = "";
+  setWorkOrderBusy(order.id, true);
+  try {
+    await splitWorkOrder(order.id, splitSourceQuantity.value);
+    splitOrderModal.value = null;
+    await loadWorkOrders();
+  } catch (error) {
+    if (isUnauthorizedError(error)) {
+      redirectToAuth(getErrorMessage(error, "Требуется аутентификация."));
+      return;
+    }
+    splitOrderError.value = getErrorMessage(
+      error,
+      "Не удалось разделить заказ.",
+    );
+  } finally {
+    setWorkOrderBusy(order.id, false);
+    splitOrderSubmitting.value = false;
+  }
+}
+
+async function openMergeOrderModal(order: WorkOrderSummary) {
+  mergeOrderModal.value = order;
+  mergeOrderCandidates.value = [];
+  mergeOrderSearch.value = "";
+  mergeSelectedOrderIds.value = [];
+  mergeOrderError.value = "";
+  mergeOrderLoading.value = true;
+  try {
+    mergeOrderCandidates.value = await fetchWorkOrderMergeCandidates(order.id);
+  } catch (error) {
+    if (isUnauthorizedError(error)) {
+      redirectToAuth(getErrorMessage(error, "Требуется аутентификация."));
+      return;
+    }
+    mergeOrderError.value = getErrorMessage(
+      error,
+      "Не удалось загрузить подходящие заказы.",
+    );
+  } finally {
+    mergeOrderLoading.value = false;
+  }
+}
+
+function closeMergeOrderModal() {
+  if (mergeOrderSubmitting.value) {
+    return;
+  }
+  mergeOrderModal.value = null;
+  mergeOrderCandidates.value = [];
+  mergeSelectedOrderIds.value = [];
+  mergeOrderError.value = "";
+}
+
+async function submitMergeOrders() {
+  const order = mergeOrderModal.value;
+  if (
+    !order ||
+    mergeOrderSubmitting.value ||
+    mergeSelectedOrderIds.value.length === 0
+  ) {
+    return;
+  }
+  mergeOrderSubmitting.value = true;
+  mergeOrderError.value = "";
+  setWorkOrderBusy(order.id, true);
+  try {
+    await mergeWorkOrders(order.id, mergeSelectedOrderIds.value);
+    mergeOrderModal.value = null;
+    await loadWorkOrders();
+  } catch (error) {
+    if (isUnauthorizedError(error)) {
+      redirectToAuth(getErrorMessage(error, "Требуется аутентификация."));
+      return;
+    }
+    mergeOrderError.value = getErrorMessage(
+      error,
+      "Не удалось выполнить слияние заказов.",
+    );
+  } finally {
+    setWorkOrderBusy(order.id, false);
+    mergeOrderSubmitting.value = false;
+  }
+}
+
 function setBrigadierTab(tabId: BrigadierTabId) {
   brigadierTab.value = tabId;
 }
@@ -2601,6 +2926,16 @@ function handleWindowKeydown(event: KeyboardEvent) {
 
   if (workOrderTimeBreakdownModal.value) {
     closeWorkOrderTimeBreakdown();
+    return;
+  }
+
+  if (splitOrderModal.value) {
+    closeSplitOrderModal();
+    return;
+  }
+
+  if (mergeOrderModal.value) {
+    closeMergeOrderModal();
     return;
   }
 
@@ -2823,34 +3158,38 @@ function toggleWorkerGroup(groupKey: string) {
 }
 
 async function focusWorkerOrderFromRoute() {
-  const orderId = workerOrderRouteId.value;
-  if (orderId === null) {
+  const qrTarget = workerQrRouteTarget.value;
+  if (qrTarget === null) {
     workerOrderFocusMessage.value = "";
+    focusedWorkerOrderId.value = null;
     return;
   }
 
-  const focusedGroupKey = String(orderId);
-  const focusedGroupExists = workerTimerGroups.value.some(
-    (group) => group.groupKey === focusedGroupKey,
-  );
+  const focusedGroup = workerTimerGroups.value[0];
   const nextExpanded: Record<string, boolean> = {};
 
   for (const group of workerTimerGroups.value) {
-    nextExpanded[group.groupKey] = group.groupKey === focusedGroupKey;
+    nextExpanded[group.groupKey] = true;
   }
 
   workerGroupExpanded.value = nextExpanded;
 
-  if (!focusedGroupExists) {
+  if (!focusedGroup) {
+    focusedWorkerOrderId.value = null;
     workerOrderFocusMessage.value =
       "Для вас нет активных операций по этому заказу.";
     return;
   }
 
-  workerOrderFocusMessage.value = "";
+  focusedWorkerOrderId.value = Number(focusedGroup.groupKey);
+  workerOrderFocusMessage.value = workerTimerGroups.value.length > 1
+    ? "Внимание! По текущему QR-коду доступно несколько дочерних заказов. Фокус перемещается на верхний заказ."
+    : "";
   await nextTick();
   document
-    .querySelector<HTMLElement>(`[data-worker-order-id="${orderId}"]`)
+    .querySelector<HTMLElement>(
+      `[data-worker-order-id="${focusedGroup.groupKey}"]`,
+    )
     ?.scrollIntoView({ behavior: "smooth", block: "center" });
 }
 
@@ -2906,8 +3245,8 @@ async function openWorkerQrScanner() {
           return;
         }
 
-        const orderId = parseWorkerOrderQrCode(result.getText());
-        if (orderId === null) {
+        const qrTarget = parseWorkerOrderQrCode(result.getText());
+        if (qrTarget === null) {
           workerQrScannerError.value =
             "Этот QR-код не является ссылкой на таймеры заказа FlowCraft.";
           return;
@@ -2915,7 +3254,7 @@ async function openWorkerQrScanner() {
 
         workerQrScannerControls = scannerControls;
         closeWorkerQrScanner();
-        void navigateToScannedWorkerOrder(orderId);
+        void navigateToScannedWorkerOrder(qrTarget);
       },
     );
 
@@ -2959,7 +3298,7 @@ function closeWorkerQrScanner() {
   workerQrScannerError.value = "";
 }
 
-function parseWorkerOrderQrCode(value: string): number | null {
+function parseWorkerOrderQrCode(value: string): WorkerQrRouteTarget | null {
   let scannedUrl: URL;
 
   try {
@@ -2971,16 +3310,29 @@ function parseWorkerOrderQrCode(value: string): number | null {
   if (
     !["http:", "https:"].includes(scannedUrl.protocol) ||
     !getWorkerQrAllowedOrigins().has(scannedUrl.origin) ||
-    scannedUrl.search ||
     scannedUrl.hash
   ) {
     return null;
   }
 
+  if (scannedUrl.pathname.replace(/\/$/, "") === "/worker/timers") {
+    const orderReference = scannedUrl.searchParams.get("order")?.trim();
+    if (
+      !orderReference ||
+      [...scannedUrl.searchParams.keys()].some((key) => key !== "order")
+    ) {
+      return null;
+    }
+    return { orderReference };
+  }
+
+  if (scannedUrl.search) {
+    return null;
+  }
   const match = /^\/worker\/orders\/([1-9]\d*)\/timers\/?$/.exec(
     scannedUrl.pathname,
   );
-  return match ? Number.parseInt(match[1], 10) : null;
+  return match ? { legacyOrderId: Number.parseInt(match[1], 10) } : null;
 }
 
 function getWorkerQrAllowedOrigins(): Set<string> {
@@ -3015,12 +3367,21 @@ function getWorkerQrScannerError(error: unknown): string {
   return "Не удалось запустить камеру. Проверьте разрешение и повторите попытку.";
 }
 
-async function navigateToScannedWorkerOrder(orderId: number) {
-  const isCurrentOrder = workerOrderRouteId.value === orderId;
-  await router.push({
-    name: "worker-order-timers",
-    params: { orderId: String(orderId) },
-  });
+async function navigateToScannedWorkerOrder(qrTarget: WorkerQrRouteTarget) {
+  const isCurrentOrder = qrTarget.orderReference !== undefined
+    ? workerOrderRouteReference.value === qrTarget.orderReference
+    : workerOrderRouteId.value === qrTarget.legacyOrderId;
+  if (qrTarget.orderReference !== undefined) {
+    await router.push({
+      name: "worker-family-timers",
+      query: { order: qrTarget.orderReference },
+    });
+  } else {
+    await router.push({
+      name: "worker-order-timers",
+      params: { orderId: String(qrTarget.legacyOrderId) },
+    });
+  }
 
   if (isCurrentOrder) {
     await focusWorkerOrderFromRoute();
@@ -3139,8 +3500,12 @@ async function submitOperationCatalogEntry() {
   operationCatalogSaveError.value = "";
 
   try {
-    await createOperationCatalogEntry(operationCatalogName.value.trim());
+    await createOperationCatalogEntry(
+      operationCatalogName.value.trim(),
+      operationCatalogKind.value,
+    );
     operationCatalogName.value = "";
+    operationCatalogKind.value = "regular";
     await Promise.all([
       loadOperationCatalog(),
       loadActiveOperationCatalogEntries(),
@@ -3156,6 +3521,33 @@ async function submitOperationCatalogEntry() {
     );
   } finally {
     operationCatalogSaveLoading.value = false;
+  }
+}
+
+async function toggleOperationCatalogEntryKind(entry: OperationCatalogEntry) {
+  setOperationCatalogEntryBusy(entry.id, true);
+  operationCatalogSaveError.value = "";
+
+  try {
+    await updateOperationCatalogEntryKind(
+      entry.id,
+      entry.operationKind === "cutting" ? "regular" : "cutting",
+    );
+    await Promise.all([
+      loadOperationCatalog(),
+      loadActiveOperationCatalogEntries(),
+    ]);
+  } catch (error) {
+    if (isUnauthorizedError(error)) {
+      redirectToAuth(getErrorMessage(error, "Требуется аутентификация."));
+      return;
+    }
+    operationCatalogSaveError.value = getErrorMessage(
+      error,
+      "Не удалось обновить тип операции.",
+    );
+  } finally {
+    setOperationCatalogEntryBusy(entry.id, false);
   }
 }
 
@@ -4697,27 +5089,6 @@ async function focusBrigadierDefectQuantityInput() {
   input?.select();
 }
 
-async function toggleWorkOrderTakenStatus(order: WorkOrderSummary, isTaken: boolean) {
-  setWorkOrderBusy(order.id, true);
-  brigadierOrdersError.value = "";
-
-  try {
-    await updateWorkOrderTakenStatus(order.id, isTaken);
-    await loadWorkOrders();
-  } catch (error) {
-    if (isUnauthorizedError(error)) {
-      redirectToAuth(getErrorMessage(error, "Требуется аутентификация."));
-      return;
-    }
-    brigadierOrdersError.value = getErrorMessage(
-      error,
-      "Не удалось обновить состояние заказа.",
-    );
-  } finally {
-    setWorkOrderBusy(order.id, false);
-  }
-}
-
 async function confirmWorkOrderAction() {
   const pendingAction = workOrderActionConfirm.value;
   if (!pendingAction) {
@@ -4729,14 +5100,18 @@ async function confirmWorkOrderAction() {
   brigadierOrdersError.value = "";
 
   try {
-    if (kind === "send_to_quality_control") {
+    if (kind === "transfer_to_cutting" || kind === "return_to_cutting") {
+      await updateWorkOrderProductionStage(order.id, "cutting");
+    } else if (kind === "transfer_to_work") {
+      await updateWorkOrderProductionStage(order.id, "in_work");
+    } else if (kind === "send_to_quality_control") {
       await updateWorkOrderQualityControlStatus(order.id, true);
     } else if (kind === "return_to_work") {
       await updateWorkOrderQualityControlStatus(order.id, false);
     } else if (kind === "return_to_quality_control") {
       await updateWorkOrderStatus(order.id, false);
     } else if (kind === "return_to_created") {
-      await updateWorkOrderTakenStatus(order.id, false);
+      await updateWorkOrderProductionStage(order.id, "created");
     } else if (kind === "delete") {
       await updateWorkOrderDeletedStatus(order.id, true);
     } else {
@@ -4767,7 +5142,9 @@ async function printWorkOrder(order: WorkOrderSummary) {
 
   try {
     const orderDetails = await fetchWorkOrder(order.id);
-    const orderTimersUrl = getWorkerOrderTimersUrl(orderDetails.id);
+    const orderTimersUrl = getWorkerOrderTimersUrl(
+      orderDetails.familyBaseOrderNumber ?? orderDetails.orderNumber,
+    );
     printableWorkOrderQrCode.value = await QRCode.toDataURL(orderTimersUrl, {
       errorCorrectionLevel: "M",
       margin: 4,
@@ -4797,10 +5174,12 @@ async function printWorkOrder(order: WorkOrderSummary) {
   }
 }
 
-function getWorkerOrderTimersUrl(orderId: number): string {
+function getWorkerOrderTimersUrl(orderReference: string): string {
   const configuredAppUrl = import.meta.env.VITE_PUBLIC_APP_URL?.trim();
   const publicAppUrl = configuredAppUrl || window.location.origin;
-  return new URL(`/worker/orders/${orderId}/timers`, publicAppUrl).toString();
+  const url = new URL("/worker/timers", publicAppUrl);
+  url.searchParams.set("order", orderReference);
+  return url.toString();
 }
 
 async function waitForPrintableQrImages() {
@@ -4841,12 +5220,10 @@ function buildBrigadierAssignments(
 
     if (operation.children.length === 0) {
       return [
-        {
+        createBrigadierAssignmentSlot({
           operationId: operation.id,
           operationLabel: nextParents.join(" / "),
-          workerUserId: null,
-          workerName: "",
-        },
+        }),
       ];
     }
 
@@ -4858,22 +5235,91 @@ function mergeBrigadierAssignments(
   baseAssignments: BrigadierOrderAssignment[],
   orderDetail: WorkOrderDetail,
 ): BrigadierOrderAssignment[] {
-  const savedByOperation = new Map(
-    orderDetail.assignments.map((assignment) => [assignment.operationId, assignment]),
+  const savedByOperation = new Map<number, WorkOrderDetail["assignments"]>();
+  for (const savedAssignment of orderDetail.assignments) {
+    const operationAssignments = savedByOperation.get(savedAssignment.operationId) ?? [];
+    operationAssignments.push(savedAssignment);
+    savedByOperation.set(savedAssignment.operationId, operationAssignments);
+  }
+
+  return baseAssignments.flatMap((baseAssignment) => {
+    const savedAssignments = savedByOperation.get(baseAssignment.operationId) ?? [];
+    const selectedAssignments = savedAssignments
+      .filter((assignment) => assignment.workerUserId !== null)
+      .map((assignment) =>
+        createBrigadierAssignmentSlot({
+          operationId: baseAssignment.operationId,
+          operationLabel: baseAssignment.operationLabel,
+          workerUserId: assignment.workerUserId,
+          workerName: assignment.workerUserName ?? "",
+          slotId: `saved-assignment-${assignment.id}`,
+        }),
+      );
+
+    return [
+      ...selectedAssignments,
+      createBrigadierAssignmentSlot({
+        operationId: baseAssignment.operationId,
+        operationLabel: baseAssignment.operationLabel,
+      }),
+    ];
+  });
+}
+
+function createBrigadierAssignmentSlot(params: {
+  operationId: number;
+  operationLabel: string;
+  workerUserId?: number | null;
+  workerName?: string;
+  slotId?: string;
+}): BrigadierOrderAssignment {
+  brigadierAssignmentSlotSequence += 1;
+  return {
+    slotId: params.slotId ?? `assignment-slot-${brigadierAssignmentSlotSequence}`,
+    operationId: params.operationId,
+    operationLabel: params.operationLabel,
+    workerUserId: params.workerUserId ?? null,
+    workerName: params.workerName ?? "",
+  };
+}
+
+function normalizeBrigadierOperationAssignments(
+  assignments: BrigadierOrderAssignment[],
+  operationId: number,
+): BrigadierOrderAssignment[] {
+  const operationAssignments = assignments.filter(
+    (assignment) => assignment.operationId === operationId,
+  );
+  if (operationAssignments.length === 0) {
+    return assignments;
+  }
+
+  const occupiedAssignments = operationAssignments.filter(
+    (assignment) =>
+      assignment.workerUserId !== null || assignment.workerName.trim() !== "",
+  );
+  const emptyAssignment =
+    operationAssignments.find(
+      (assignment) =>
+        assignment.workerUserId === null && assignment.workerName.trim() === "",
+    ) ??
+    createBrigadierAssignmentSlot({
+      operationId,
+      operationLabel: operationAssignments[0].operationLabel,
+    });
+  const normalizedOperationAssignments = [
+    ...occupiedAssignments,
+    emptyAssignment,
+  ];
+  const firstOperationIndex = assignments.findIndex(
+    (assignment) => assignment.operationId === operationId,
   );
 
-  return baseAssignments.map((assignment) => {
-    const savedAssignment = savedByOperation.get(assignment.operationId);
-
-    if (!savedAssignment) {
-      return assignment;
+  return assignments.flatMap((assignment, index) => {
+    if (assignment.operationId !== operationId) {
+      return [assignment];
     }
-
-    return {
-      ...assignment,
-      workerUserId: savedAssignment.workerUserId,
-      workerName: savedAssignment.workerUserName ?? "",
-    };
+    return index === firstOperationIndex ? normalizedOperationAssignments : [];
   });
 }
 
@@ -4927,7 +5373,7 @@ function handleBrigadierLeatherTypeInput(event: Event) {
     matchedLeatherType === null ? "" : String(matchedLeatherType.id);
 }
 
-function handleBrigadierAssignmentInput(operationId: number, event: Event) {
+function handleBrigadierAssignmentInput(slotId: string, event: Event) {
   if (!isBrigadierAssignmentsEditable.value) {
     return;
   }
@@ -4940,21 +5386,42 @@ function handleBrigadierAssignmentInput(operationId: number, event: Event) {
 
   const nextName = target.value;
   const normalizedName = normalizeName(nextName);
+  const editedAssignment = brigadierModalAssignments.value.find(
+    (assignment) => assignment.slotId === slotId,
+  );
+  if (!editedAssignment) {
+    return;
+  }
+  const unavailableWorkerIds = new Set(
+    brigadierModalAssignments.value
+      .filter(
+        (assignment) =>
+          assignment.operationId === editedAssignment.operationId &&
+          assignment.slotId !== slotId &&
+          assignment.workerUserId !== null,
+      )
+      .map((assignment) => assignment.workerUserId),
+  );
   const matchedWorker =
     brigadierWorkerUsers.value.find(
-      (user) => normalizeName(user.name) === normalizedName,
+      (user) =>
+        normalizeName(user.name) === normalizedName &&
+        !unavailableWorkerIds.has(user.id),
     ) ?? null;
 
   clearBrigadierAssignmentDropdownCloseTimeout();
-  brigadierOpenAssignmentDropdownId.value = operationId;
-  brigadierModalAssignments.value = brigadierModalAssignments.value.map((assignment) =>
-    assignment.operationId === operationId
-      ? {
-          ...assignment,
-          workerName: nextName,
-          workerUserId: matchedWorker?.id ?? null,
-        }
-      : assignment,
+  brigadierOpenAssignmentDropdownId.value = slotId;
+  brigadierModalAssignments.value = normalizeBrigadierOperationAssignments(
+    brigadierModalAssignments.value.map((assignment) =>
+      assignment.slotId === slotId
+        ? {
+            ...assignment,
+            workerName: nextName,
+            workerUserId: matchedWorker?.id ?? null,
+          }
+        : assignment,
+    ),
+    editedAssignment.operationId,
   );
 }
 
@@ -4965,13 +5432,13 @@ function clearBrigadierAssignmentDropdownCloseTimeout() {
   }
 }
 
-function openBrigadierAssignmentDropdown(operationId: number) {
+function openBrigadierAssignmentDropdown(slotId: string) {
   if (!isBrigadierAssignmentsEditable.value) {
     return;
   }
 
   clearBrigadierAssignmentDropdownCloseTimeout();
-  brigadierOpenAssignmentDropdownId.value = operationId;
+  brigadierOpenAssignmentDropdownId.value = slotId;
 }
 
 function closeBrigadierAssignmentDropdown() {
@@ -4979,22 +5446,22 @@ function closeBrigadierAssignmentDropdown() {
   brigadierOpenAssignmentDropdownId.value = null;
 }
 
-function scheduleBrigadierAssignmentDropdownClose(operationId: number) {
+function scheduleBrigadierAssignmentDropdownClose(slotId: string) {
   if (!isBrigadierAssignmentsEditable.value) {
     return;
   }
 
   clearBrigadierAssignmentDropdownCloseTimeout();
   brigadierDropdownCloseTimeoutId = window.setTimeout(() => {
-    if (brigadierOpenAssignmentDropdownId.value === operationId) {
+    if (brigadierOpenAssignmentDropdownId.value === slotId) {
       brigadierOpenAssignmentDropdownId.value = null;
     }
     brigadierDropdownCloseTimeoutId = null;
   }, 120);
 }
 
-function isBrigadierAssignmentDropdownOpen(operationId: number): boolean {
-  return brigadierOpenAssignmentDropdownId.value === operationId;
+function isBrigadierAssignmentDropdownOpen(slotId: string): boolean {
+  return brigadierOpenAssignmentDropdownId.value === slotId;
 }
 
 function getBrigadierAssignmentOptions(assignment: BrigadierOrderAssignment): UserRecord[] {
@@ -5005,13 +5472,24 @@ function getBrigadierAssignmentOptions(assignment: BrigadierOrderAssignment): Us
   const selectedWorkerName = normalizeName(selectedWorker?.name ?? "");
   const shouldFilterByQuery =
     normalizedQuery !== "" && normalizedQuery !== selectedWorkerName;
+  const unavailableWorkerIds = new Set(
+    brigadierModalAssignments.value
+      .filter(
+        (item) =>
+          item.operationId === assignment.operationId &&
+          item.slotId !== assignment.slotId &&
+          item.workerUserId !== null,
+      )
+      .map((item) => item.workerUserId),
+  );
 
   return [...brigadierWorkerUsers.value]
     .filter(
       (user) =>
-        user.id === assignment.workerUserId ||
-        !shouldFilterByQuery ||
-        normalizeName(user.name).includes(normalizedQuery),
+        !unavailableWorkerIds.has(user.id) &&
+        (user.id === assignment.workerUserId ||
+          !shouldFilterByQuery ||
+          normalizeName(user.name).includes(normalizedQuery)),
     )
     .sort((left, right) => {
       const leftPriority = left.id === assignment.workerUserId ? 0 : 1;
@@ -5025,38 +5503,50 @@ function getBrigadierAssignmentOptions(assignment: BrigadierOrderAssignment): Us
     });
 }
 
-function selectBrigadierAssignmentWorker(operationId: number, user: UserRecord) {
+function selectBrigadierAssignmentWorker(slotId: string, user: UserRecord) {
   if (!isBrigadierAssignmentsEditable.value) {
     return;
   }
 
-  brigadierModalAssignments.value = brigadierModalAssignments.value.map((assignment) =>
-    assignment.operationId === operationId
-      ? {
-          ...assignment,
-          workerName: user.name,
-          workerUserId: user.id,
-        }
-      : assignment,
+  const selectedAssignment = brigadierModalAssignments.value.find(
+    (assignment) => assignment.slotId === slotId,
+  );
+  if (!selectedAssignment) {
+    return;
+  }
+  brigadierModalAssignments.value = normalizeBrigadierOperationAssignments(
+    brigadierModalAssignments.value.map((assignment) =>
+      assignment.slotId === slotId
+        ? {
+            ...assignment,
+            workerName: user.name,
+            workerUserId: user.id,
+          }
+        : assignment,
+    ),
+    selectedAssignment.operationId,
   );
   closeBrigadierAssignmentDropdown();
 }
 
-function clearBrigadierAssignment(operationId: number) {
+function clearBrigadierAssignment(slotId: string) {
   if (!isBrigadierAssignmentsEditable.value) {
     return;
   }
 
-  brigadierModalAssignments.value = brigadierModalAssignments.value.map((assignment) =>
-    assignment.operationId === operationId
-      ? {
-          ...assignment,
-          workerName: "",
-          workerUserId: null,
-        }
-      : assignment,
+  const clearedAssignment = brigadierModalAssignments.value.find(
+    (assignment) => assignment.slotId === slotId,
   );
-  openBrigadierAssignmentDropdown(operationId);
+  if (!clearedAssignment) {
+    return;
+  }
+  brigadierModalAssignments.value = normalizeBrigadierOperationAssignments(
+    brigadierModalAssignments.value.filter(
+      (assignment) => assignment.slotId !== slotId,
+    ),
+    clearedAssignment.operationId,
+  );
+  closeBrigadierAssignmentDropdown();
 }
 
 function clearBrigadierLeatherTypeDropdownCloseTimeout() {
@@ -5176,21 +5666,6 @@ function scrollToBrigadierSaveIssue() {
   if (target instanceof HTMLInputElement || target instanceof HTMLButtonElement) {
     target.focus({ preventScroll: true });
   }
-}
-
-function formatDuration(totalMinutes: number): string {
-  const hours = Math.floor(totalMinutes / 60);
-  const minutes = totalMinutes % 60;
-
-  if (hours === 0) {
-    return `${minutes} мин`;
-  }
-
-  if (minutes === 0) {
-    return `${hours} ч`;
-  }
-
-  return `${hours} ч ${minutes} мин`;
 }
 
 function formatPlannedCompletionDate(value: string | null): string {
@@ -5318,13 +5793,45 @@ function estimateWorkOrderMinutes(
   quantity: number,
   assignments: BrigadierOrderAssignment[],
 ): number {
-  const baseMinutes = assignments.reduce(
+  const uniqueOperationAssignments = [
+    ...new Map(
+      assignments.map((assignment) => [assignment.operationId, assignment]),
+    ).values(),
+  ];
+  const baseMinutes = uniqueOperationAssignments.reduce(
     (total, assignment, index) =>
       total + 18 + Math.min(10, assignment.operationLabel.length % 11) + index,
     0,
   );
 
   return baseMinutes * quantity;
+}
+
+function buildBrigadierAssignmentPayload(
+  assignments: BrigadierOrderAssignment[],
+): Array<{ operation_id: number; worker_user_id: number | null }> {
+  const assignmentsByOperation = new Map<number, BrigadierOrderAssignment[]>();
+  for (const assignment of assignments) {
+    const operationAssignments =
+      assignmentsByOperation.get(assignment.operationId) ?? [];
+    operationAssignments.push(assignment);
+    assignmentsByOperation.set(assignment.operationId, operationAssignments);
+  }
+
+  return [...assignmentsByOperation.entries()].flatMap(
+    ([operationId, operationAssignments]) => {
+      const selectedAssignments = operationAssignments.filter(
+        (assignment) => assignment.workerUserId !== null,
+      );
+      if (selectedAssignments.length === 0) {
+        return [{ operation_id: operationId, worker_user_id: null }];
+      }
+      return selectedAssignments.map((assignment) => ({
+        operation_id: operationId,
+        worker_user_id: assignment.workerUserId,
+      }));
+    },
+  );
 }
 
 function requestBrigadierOrderSave() {
@@ -5369,6 +5876,7 @@ async function saveBrigadierOrder() {
     : null;
   const assignments = brigadierModalAssignments.value.map((assignment) => ({ ...assignment }));
   const estimatedMinutes = estimateWorkOrderMinutes(quantity, assignments);
+  const assignmentPayload = buildBrigadierAssignmentPayload(assignments);
   const isCreateMode = brigadierModalMode.value === "create";
   const shouldUpdatePlannedCompletionDate =
     !isCreateMode &&
@@ -5399,10 +5907,7 @@ async function saveBrigadierOrder() {
         leather_type_id: leatherTypeId,
         quantity,
         estimated_minutes: estimatedMinutes,
-        assignments: assignments.map((assignment) => ({
-          operation_id: assignment.operationId,
-          worker_user_id: assignment.workerUserId,
-        })),
+        assignments: assignmentPayload,
       });
     } else if (isCreateMode) {
       await createWorkOrder({
@@ -5411,10 +5916,7 @@ async function saveBrigadierOrder() {
         leather_type_id: leatherTypeId,
         quantity,
         estimated_minutes: estimatedMinutes,
-        assignments: assignments.map((assignment) => ({
-          operation_id: assignment.operationId,
-          worker_user_id: assignment.workerUserId,
-        })),
+        assignments: assignmentPayload,
       });
     }
 
@@ -5868,7 +6370,7 @@ async function handleResetUserPassword(user: UserRecord) {
                 :key="group.groupKey"
                 class="worker-group"
                 :class="{
-                  'worker-group--focused': workerOrderRouteId === Number(group.groupKey),
+                  'worker-group--focused': focusedWorkerOrderId === Number(group.groupKey),
                 }"
                 :data-worker-order-id="group.groupKey"
               >
@@ -6011,10 +6513,92 @@ async function handleResetUserPassword(user: UserRecord) {
                   <span>{{ statusTab.label }}</span>
                 </span>
               </button>
+              <button
+                type="button"
+                class="subtab-button"
+                :class="{ 'subtab-button--active': brigadierTab === 'order_search' }"
+                @click="setBrigadierTab('order_search')"
+              >
+                <span class="button-content">
+                  <span class="button-icon button-icon--search" aria-hidden="true" />
+                  <span>Поиск заказа</span>
+                </span>
+              </button>
             </div>
           </div>
 
-          <template v-if="brigadierTab !== 'orders'">
+          <template v-if="brigadierTab === 'order_search'">
+            <div class="toolbar work-orders-toolbar">
+              <label class="field field--inline">
+                <span class="field__label">Поиск по номеру заказа</span>
+                <div class="filter-input-wrap">
+                  <input
+                    v-model="orderNumberSearchDraft"
+                    type="search"
+                    class="text-input text-input--with-action"
+                    placeholder="Введите часть номера заказа"
+                    autocomplete="off"
+                  />
+                  <button
+                    v-if="orderNumberSearchDraft"
+                    type="button"
+                    class="field-action"
+                    aria-label="Очистить поиск"
+                    title="Очистить поиск"
+                    @click="clearOrderNumberSearch"
+                  >
+                    <span class="field-action__icon" aria-hidden="true" />
+                  </button>
+                </div>
+              </label>
+            </div>
+
+            <div v-if="orderNumberSearchError" class="banner banner--error">
+              <p>{{ orderNumberSearchError }}</p>
+            </div>
+            <div v-else-if="orderNumberSearchLoading" class="banner">
+              <p>Поиск заказов...</p>
+            </div>
+            <div
+              v-else-if="!orderNumberSearchDraft.trim()"
+              class="empty-table-state"
+            >
+              <p>Ввести часть номера заказа для поиска по всем стадиям.</p>
+            </div>
+            <div
+              v-else-if="orderNumberSearchResults.length === 0"
+              class="empty-table-state"
+            >
+              <p>Заказы с таким номером не найдены.</p>
+            </div>
+            <div v-else class="table-wrap">
+              <table class="products-table order-search-table">
+                <thead>
+                  <tr>
+                    <th>Номер заказа</th>
+                    <th>Стадия</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr
+                    v-for="result in orderNumberSearchResults"
+                    :key="result.id"
+                    class="order-search-row"
+                    role="button"
+                    tabindex="0"
+                    @click="openOrderNumberSearchResult(result)"
+                    @keydown.enter.prevent="openOrderNumberSearchResult(result)"
+                    @keydown.space.prevent="openOrderNumberSearchResult(result)"
+                  >
+                    <td>{{ result.orderNumber }}</td>
+                    <td>{{ getWorkOrderStageLabel(result.stage) }}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </template>
+
+          <template v-else-if="brigadierTab !== 'orders'">
             <div v-if="brigadierOrdersError" class="banner banner--error">
               <p>{{ brigadierOrdersError }}</p>
               <button type="button" class="ghost-button" @click="loadWorkOrders">
@@ -6156,6 +6740,24 @@ async function handleResetUserPassword(user: UserRecord) {
                             />
                           </button>
                         </th>
+                        <th v-if="workOrderStatusTab === 'cutting'">
+                          <button
+                            type="button"
+                            class="sort-header-button"
+                            :class="{
+                              'sort-header-button--active':
+                                isWorkOrderSortFieldActive('cutting_started'),
+                            }"
+                            @click="toggleWorkOrderSort('cutting_started')"
+                          >
+                            <span>Время начала кроя</span>
+                            <span
+                              class="sort-header-button__icon"
+                              :class="`sort-header-button__icon--${getWorkOrderSortDirection('cutting_started')}`"
+                              aria-hidden="true"
+                            />
+                          </button>
+                        </th>
                         <th v-if="workOrderStatusTab !== 'created'">
                           <button
                             type="button"
@@ -6252,6 +6854,9 @@ async function handleResetUserPassword(user: UserRecord) {
                       </td>
                       <template v-else>
                         <td>{{ order.createdAt }}</td>
+                        <td v-if="workOrderStatusTab === 'cutting'">
+                          {{ order.cuttingStartedAt ?? "—" }}
+                        </td>
                         <td v-if="workOrderStatusTab !== 'created'">
                           {{ order.takenAt ?? "—" }}
                         </td>
@@ -6277,13 +6882,20 @@ async function handleResetUserPassword(user: UserRecord) {
                           </button>
                         </td>
                         <td>
+                          <span
+                            v-if="workOrderStatusTab === 'cutting'"
+                            class="duration-badge"
+                          >
+                            {{ formatOrderDuration(order.cuttingSpentSeconds) }}
+                          </span>
                           <button
+                            v-else
                             type="button"
                             class="duration-badge duration-badge--button"
                             :aria-label="`Показать детализацию времени заказа ${order.orderNumber}`"
                             @click="void openWorkOrderTimeBreakdown(order)"
                           >
-                            {{ formatDuration(order.totalSpentMinutes) }}
+                            {{ formatOrderDuration(order.totalSpentSeconds) }}
                           </button>
                         </td>
                       </template>
@@ -6317,12 +6929,55 @@ async function handleResetUserPassword(user: UserRecord) {
                             type="button"
                             class="action-link"
                             :disabled="isWorkOrderBusy(order.id)"
-                            @click="void toggleWorkOrderTakenStatus(order, true)"
+                            @click="openWorkOrderActionConfirm(order, 'transfer_to_cutting')"
                           >
                             <span class="button-content">
                               <span class="button-icon button-icon--play" aria-hidden="true" />
-                              <span>Взять в работу</span>
+                              <span>Передать в крой</span>
                             </span>
+                          </button>
+                          <button
+                            v-if="workOrderStatusTab === 'cutting'"
+                            type="button"
+                            class="action-link"
+                            :disabled="isWorkOrderBusy(order.id)"
+                            @click="openWorkOrderActionConfirm(order, 'transfer_to_work')"
+                          >
+                            <span class="button-content">
+                              <span class="button-icon button-icon--play" aria-hidden="true" />
+                              <span>Передать в работу</span>
+                            </span>
+                          </button>
+                          <button
+                            v-if="workOrderStatusTab === 'cutting'"
+                            type="button"
+                            class="action-link"
+                            :disabled="isWorkOrderBusy(order.id)"
+                            @click="openWorkOrderActionConfirm(order, 'return_to_created')"
+                          >
+                            <span class="button-content">
+                              <span class="button-icon button-icon--refresh" aria-hidden="true" />
+                              <span>Вернуть в созданные</span>
+                            </span>
+                          </button>
+                          <button
+                            v-if="canSplitAndMergeWorkOrders && workOrderStatusTab === 'in_work'"
+                            type="button"
+                            class="action-link"
+                            :disabled="!order.canSplit || isWorkOrderBusy(order.id)"
+                            :title="order.canSplit ? 'Разделить заказ' : (order.splitBlockReason ?? '')"
+                            @click="openSplitOrderModal(order)"
+                          >
+                            <span>Разделить заказ</span>
+                          </button>
+                          <button
+                            v-if="canSplitAndMergeWorkOrders && workOrderStatusTab === 'in_work' && order.canMerge"
+                            type="button"
+                            class="action-link"
+                            :disabled="isWorkOrderBusy(order.id)"
+                            @click="void openMergeOrderModal(order)"
+                          >
+                            <span>Слияние</span>
                           </button>
                           <button
                             v-if="workOrderStatusTab === 'in_work'"
@@ -6365,11 +7020,11 @@ async function handleResetUserPassword(user: UserRecord) {
                             type="button"
                             class="action-link"
                             :disabled="isWorkOrderBusy(order.id)"
-                            @click="openWorkOrderActionConfirm(order, 'return_to_created')"
+                            @click="openWorkOrderActionConfirm(order, 'return_to_cutting')"
                           >
                             <span class="button-content">
                               <span class="button-icon button-icon--refresh" aria-hidden="true" />
-                              <span>Вернуть в созданные</span>
+                              <span>Вернуть в крой</span>
                             </span>
                           </button>
                           <button
@@ -6426,13 +7081,20 @@ async function handleResetUserPassword(user: UserRecord) {
                 >
                   <div class="mobile-card__head">
                     <strong>{{ order.orderNumber }}</strong>
+                    <span
+                      v-if="workOrderStatusTab === 'cutting'"
+                      class="duration-badge"
+                    >
+                      {{ formatOrderDuration(order.cuttingSpentSeconds) }}
+                    </span>
                     <button
+                      v-else
                       type="button"
                       class="duration-badge duration-badge--button"
                       :aria-label="`Показать детализацию времени заказа ${order.orderNumber}`"
                       @click="void openWorkOrderTimeBreakdown(order)"
                     >
-                      {{ formatDuration(order.totalSpentMinutes) }}
+                      {{ formatOrderDuration(order.totalSpentSeconds) }}
                     </button>
                   </div>
                   <div class="mobile-card__meta">
@@ -6448,6 +7110,9 @@ async function handleResetUserPassword(user: UserRecord) {
                       {{ formatPlannedCompletionDate(order.plannedCompletionDate) }}
                     </span>
                     <span>Создан: {{ order.createdAt }}</span>
+                    <span v-if="workOrderStatusTab === 'cutting'">
+                      Крой начат: {{ order.cuttingStartedAt ?? "—" }}
+                    </span>
                     <span v-if="workOrderStatusTab !== 'created'">
                       В работе с {{ order.takenAt ?? "—" }}
                     </span>
@@ -6494,12 +7159,55 @@ async function handleResetUserPassword(user: UserRecord) {
                     type="button"
                     class="action-link"
                     :disabled="isWorkOrderBusy(order.id)"
-                    @click="void toggleWorkOrderTakenStatus(order, true)"
+                    @click="openWorkOrderActionConfirm(order, 'transfer_to_cutting')"
                   >
                     <span class="button-content">
                       <span class="button-icon button-icon--play" aria-hidden="true" />
-                      <span>Взять в работу</span>
+                      <span>Передать в крой</span>
                     </span>
+                  </button>
+                  <button
+                    v-if="workOrderStatusTab === 'cutting'"
+                    type="button"
+                    class="action-link"
+                    :disabled="isWorkOrderBusy(order.id)"
+                    @click="openWorkOrderActionConfirm(order, 'transfer_to_work')"
+                  >
+                    <span class="button-content">
+                      <span class="button-icon button-icon--play" aria-hidden="true" />
+                      <span>Передать в работу</span>
+                    </span>
+                  </button>
+                  <button
+                    v-if="workOrderStatusTab === 'cutting'"
+                    type="button"
+                    class="action-link"
+                    :disabled="isWorkOrderBusy(order.id)"
+                    @click="openWorkOrderActionConfirm(order, 'return_to_created')"
+                  >
+                    <span class="button-content">
+                      <span class="button-icon button-icon--refresh" aria-hidden="true" />
+                      <span>Вернуть в созданные</span>
+                    </span>
+                  </button>
+                  <button
+                    v-if="canSplitAndMergeWorkOrders && workOrderStatusTab === 'in_work'"
+                    type="button"
+                    class="action-link"
+                    :disabled="!order.canSplit || isWorkOrderBusy(order.id)"
+                    :title="order.canSplit ? 'Разделить заказ' : (order.splitBlockReason ?? '')"
+                    @click="openSplitOrderModal(order)"
+                  >
+                    <span>Разделить заказ</span>
+                  </button>
+                  <button
+                    v-if="canSplitAndMergeWorkOrders && workOrderStatusTab === 'in_work' && order.canMerge"
+                    type="button"
+                    class="action-link"
+                    :disabled="isWorkOrderBusy(order.id)"
+                    @click="void openMergeOrderModal(order)"
+                  >
+                    <span>Слияние</span>
                   </button>
                   <button
                     v-if="workOrderStatusTab === 'in_work'"
@@ -6542,11 +7250,11 @@ async function handleResetUserPassword(user: UserRecord) {
                     type="button"
                     class="action-link"
                     :disabled="isWorkOrderBusy(order.id)"
-                    @click="openWorkOrderActionConfirm(order, 'return_to_created')"
+                    @click="openWorkOrderActionConfirm(order, 'return_to_cutting')"
                   >
                     <span class="button-content">
                       <span class="button-icon button-icon--refresh" aria-hidden="true" />
-                      <span>Вернуть в созданные</span>
+                      <span>Вернуть в крой</span>
                     </span>
                   </button>
                   <button
@@ -7366,6 +8074,13 @@ async function handleResetUserPassword(user: UserRecord) {
                     {{ operationCatalogNameError }}
                   </p>
                 </label>
+                <label class="field">
+                  <span class="field__label">Тип операции</span>
+                  <select v-model="operationCatalogKind" class="text-input">
+                    <option value="regular">Обычная</option>
+                    <option value="cutting">Крой</option>
+                  </select>
+                </label>
                 <button
                   type="submit"
                   class="primary-button"
@@ -7472,6 +8187,7 @@ async function handleResetUserPassword(user: UserRecord) {
                     <thead>
                       <tr>
                         <th>Наименование</th>
+                        <th>Тип</th>
                         <th>Действия</th>
                       </tr>
                     </thead>
@@ -7481,8 +8197,19 @@ async function handleResetUserPassword(user: UserRecord) {
                         :key="entry.id"
                       >
                         <td>{{ entry.name }}</td>
+                        <td>{{ entry.operationKind === "cutting" ? "Крой" : "Обычная" }}</td>
                         <td>
                           <div class="table-actions">
+                            <button
+                              type="button"
+                              class="action-link"
+                              :disabled="isOperationCatalogEntryBusy(entry.id)"
+                              @click="void toggleOperationCatalogEntryKind(entry)"
+                            >
+                              <span>
+                                {{ entry.operationKind === "cutting" ? "Сделать обычной" : "Отметить как крой" }}
+                              </span>
+                            </button>
                             <button
                               type="button"
                               class="action-link"
@@ -8296,7 +9023,7 @@ async function handleResetUserPassword(user: UserRecord) {
                 <p class="field__hint">
                   {{
                     isBrigadierAssignmentsEditable
-                      ? "Для каждой операции выберите исполнителя с ролью `исполнитель`."
+                      ? "Для каждой операции выберите одного или нескольких исполнителей с ролью `исполнитель`."
                       : "Назначения исполнителей доступны только для просмотра."
                   }}
                 </p>
@@ -8313,8 +9040,8 @@ async function handleResetUserPassword(user: UserRecord) {
 
             <div v-else class="assignment-list">
               <div
-                v-for="assignment in brigadierModalAssignments"
-                :key="assignment.operationId"
+                v-for="assignment in displayedBrigadierModalAssignments"
+                :key="assignment.slotId"
                 class="assignment-row"
               >
                 <div class="assignment-row__label">
@@ -8328,12 +9055,12 @@ async function handleResetUserPassword(user: UserRecord) {
                       class="text-input text-input--with-clear"
                       autocomplete="off"
                       :readonly="!isBrigadierAssignmentsEditable"
-                      :data-brigadier-operation-id="assignment.operationId"
+                      :data-brigadier-assignment-slot-id="assignment.slotId"
                       placeholder="Выберите исполнителя"
-                      @input="handleBrigadierAssignmentInput(assignment.operationId, $event)"
-                      @focus="openBrigadierAssignmentDropdown(assignment.operationId)"
-                      @click="openBrigadierAssignmentDropdown(assignment.operationId)"
-                      @blur="scheduleBrigadierAssignmentDropdownClose(assignment.operationId)"
+                      @input="handleBrigadierAssignmentInput(assignment.slotId, $event)"
+                      @focus="openBrigadierAssignmentDropdown(assignment.slotId)"
+                      @click="openBrigadierAssignmentDropdown(assignment.slotId)"
+                      @blur="scheduleBrigadierAssignmentDropdownClose(assignment.slotId)"
                     />
                     <button
                       v-if="assignment.workerName && isBrigadierAssignmentsEditable"
@@ -8342,13 +9069,13 @@ async function handleResetUserPassword(user: UserRecord) {
                       aria-label="Очистить исполнителя"
                       title="Очистить исполнителя"
                       @mousedown.prevent
-                      @click="clearBrigadierAssignment(assignment.operationId)"
+                      @click="clearBrigadierAssignment(assignment.slotId)"
                     >
                       <span class="field-action__icon" aria-hidden="true" />
                     </button>
                     <div
                       v-if="
-                        isBrigadierAssignmentDropdownOpen(assignment.operationId) &&
+                        isBrigadierAssignmentDropdownOpen(assignment.slotId) &&
                         isBrigadierAssignmentsEditable
                       "
                       class="assignment-dropdown"
@@ -8363,7 +9090,7 @@ async function handleResetUserPassword(user: UserRecord) {
                             assignment.workerUserId === worker.id,
                         }"
                         @mousedown.prevent
-                        @click="selectBrigadierAssignmentWorker(assignment.operationId, worker)"
+                        @click="selectBrigadierAssignmentWorker(assignment.slotId, worker)"
                       >
                         <span>{{ worker.name }}</span>
                       </button>
@@ -8495,6 +9222,157 @@ async function handleResetUserPassword(user: UserRecord) {
               <span class="button-icon button-icon--save" aria-hidden="true" />
               <span>{{ brigadierSaveLoading ? "Сохранение..." : "Подтвердить" }}</span>
             </span>
+          </button>
+        </div>
+      </section>
+    </div>
+
+    <div
+      v-if="splitOrderModal"
+      class="modal-backdrop"
+      @click.self="closeSplitOrderModal"
+    >
+      <section class="confirm-modal order-family-modal" role="dialog" aria-modal="true">
+        <div class="confirm-modal__content">
+          <p class="confirm-modal__eyebrow">Разделение заказа</p>
+          <h2>Заказ {{ splitOrderModal.orderNumber }}</h2>
+          <p class="confirm-modal__description">
+            Указать количество изделий в каждой части. Общее количество остается
+            неизменным, учтенное время распределяется пропорционально.
+          </p>
+          <div class="split-order-fields">
+            <label class="field">
+              <span class="field__label">Текущий заказ</span>
+              <input
+                :value="splitSourceQuantity"
+                type="number"
+                class="text-input"
+                min="1"
+                :max="splitOrderModal.quantity - 1"
+                @input="setSplitSourceQuantity(Number(($event.target as HTMLInputElement).value))"
+              />
+            </label>
+            <label class="field">
+              <span class="field__label">Новая часть</span>
+              <input
+                :value="splitCreatedQuantity"
+                type="number"
+                class="text-input"
+                min="1"
+                :max="splitOrderModal.quantity - 1"
+                @input="setSplitSourceQuantity(splitOrderModal.quantity - Number(($event.target as HTMLInputElement).value))"
+              />
+            </label>
+          </div>
+          <input
+            :value="splitSourceQuantity"
+            type="range"
+            class="split-order-range"
+            min="1"
+            :max="splitOrderModal.quantity - 1"
+            @input="setSplitSourceQuantity(Number(($event.target as HTMLInputElement).value))"
+          />
+          <p class="split-order-total">
+            {{ splitSourceQuantity }} + {{ splitCreatedQuantity }} =
+            {{ splitOrderModal.quantity }} шт.
+          </p>
+          <div v-if="splitOrderError" class="banner banner--error">
+            <p>{{ splitOrderError }}</p>
+          </div>
+        </div>
+        <div class="confirm-modal__actions">
+          <button
+            type="button"
+            class="ghost-button"
+            :disabled="splitOrderSubmitting"
+            @click="closeSplitOrderModal"
+          >
+            Отменить
+          </button>
+          <button
+            type="button"
+            class="primary-button"
+            :disabled="splitOrderSubmitting"
+            @click="void submitSplitOrder()"
+          >
+            {{ splitOrderSubmitting ? "Сохранение..." : "Разделить" }}
+          </button>
+        </div>
+      </section>
+    </div>
+
+    <div
+      v-if="mergeOrderModal"
+      class="modal-backdrop"
+      @click.self="closeMergeOrderModal"
+    >
+      <section class="confirm-modal order-family-modal" role="dialog" aria-modal="true">
+        <div class="confirm-modal__content">
+          <p class="confirm-modal__eyebrow">Слияние заказов</p>
+          <h2>Включить части в {{ mergeOrderModal.orderNumber }}</h2>
+          <p class="confirm-modal__description">
+            Выбранные части будут удалены, их количество и плановое время будут
+            добавлены в текущий заказ.
+          </p>
+          <label class="field">
+            <span class="field__label">Поиск по номеру части</span>
+            <input
+              v-model="mergeOrderSearch"
+              type="search"
+              class="text-input"
+              placeholder="Часть номера заказа"
+            />
+          </label>
+          <details class="merge-order-select" open>
+            <summary>
+              {{ selectedMergeOrderCandidates.length > 0
+                ? `Выбрано: ${selectedMergeOrderCandidates.length}`
+                : "Выбрать заказы" }}
+            </summary>
+            <div v-if="mergeOrderLoading" class="merge-order-options">
+              Загрузка подходящих заказов...
+            </div>
+            <div
+              v-else-if="filteredMergeOrderCandidates.length === 0"
+              class="merge-order-options"
+            >
+              Подходящие заказы не найдены.
+            </div>
+            <div v-else class="merge-order-options">
+              <label
+                v-for="candidate in filteredMergeOrderCandidates"
+                :key="candidate.id"
+                class="checkbox-field merge-order-option"
+              >
+                <input
+                  v-model="mergeSelectedOrderIds"
+                  type="checkbox"
+                  :value="candidate.id"
+                />
+                <span>{{ candidate.orderNumber }} · {{ candidate.quantity }} шт.</span>
+              </label>
+            </div>
+          </details>
+          <div v-if="mergeOrderError" class="banner banner--error">
+            <p>{{ mergeOrderError }}</p>
+          </div>
+        </div>
+        <div class="confirm-modal__actions">
+          <button
+            type="button"
+            class="ghost-button"
+            :disabled="mergeOrderSubmitting"
+            @click="closeMergeOrderModal"
+          >
+            Отменить
+          </button>
+          <button
+            type="button"
+            class="primary-button"
+            :disabled="mergeOrderSubmitting || mergeSelectedOrderIds.length === 0"
+            @click="void submitMergeOrders()"
+          >
+            {{ mergeOrderSubmitting ? "Слияние..." : "Выполнить слияние" }}
           </button>
         </div>
       </section>
@@ -10568,7 +11446,7 @@ h2 {
 
 .dictionary-form {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) minmax(160px, 220px) auto;
   gap: 16px;
   align-items: start;
   margin-bottom: 18px;
@@ -10936,6 +11814,15 @@ h2 {
   background: var(--color-surface-soft);
 }
 
+.order-search-row {
+  cursor: pointer;
+}
+
+.order-search-row:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: -2px;
+}
+
 .table-row--locked {
   opacity: 0.42;
 }
@@ -11114,6 +12001,55 @@ h2 {
 
 .confirm-modal__delete {
   min-width: 132px;
+}
+
+.order-family-modal {
+  width: min(620px, calc(100vw - 48px));
+}
+
+.split-order-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.split-order-range {
+  width: 100%;
+  accent-color: var(--color-primary);
+}
+
+.split-order-total {
+  margin: 0;
+  text-align: center;
+  color: var(--color-text-secondary);
+  font-weight: 700;
+}
+
+.merge-order-select {
+  overflow: hidden;
+  border: 1px solid var(--color-border);
+  border-radius: 14px;
+  background: var(--color-surface);
+}
+
+.merge-order-select summary {
+  padding: 14px 16px;
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.merge-order-options {
+  display: grid;
+  gap: 8px;
+  max-height: 240px;
+  overflow-y: auto;
+  padding: 0 12px 12px;
+  color: var(--color-text-secondary);
+}
+
+.merge-order-option {
+  min-height: auto;
+  align-self: stretch;
 }
 
 .worker-qr-scanner-modal {

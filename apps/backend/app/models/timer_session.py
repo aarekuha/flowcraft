@@ -37,3 +37,8 @@ class TimerSession(Base):
     user = relationship("User", lazy="joined")
     order = relationship("WorkOrder", lazy="joined")
     operation = relationship("Operation", lazy="joined")
+    order_allocations = relationship(
+        "WorkOrderTimeAllocation",
+        back_populates="timer_session",
+        cascade="all, delete-orphan",
+    )

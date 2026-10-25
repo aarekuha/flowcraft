@@ -4,6 +4,7 @@ from sqlalchemy.orm import Session
 from app.api.dependencies import get_session, require_any_role
 from app.schemas.operation_catalog import (
     OperationCatalogEntryCreate,
+    OperationCatalogEntryKindUpdate,
     OperationCatalogEntryPage,
     OperationCatalogEntryRead,
     OperationCatalogEntryStatusUpdate,
@@ -60,6 +61,23 @@ def update_operation_catalog_entry_status(
     session: Session = Depends(get_session),
 ) -> OperationCatalogEntryRead:
     return OperationCatalogService(session).update_entry_status(
+        entry_id=entry_id,
+        payload=payload,
+    )
+
+
+@router.patch(
+    "/{entry_id}/kind",
+    response_model=OperationCatalogEntryRead,
+    summary="Update operation kind",
+)
+def update_operation_catalog_entry_kind(
+    entry_id: int,
+    payload: OperationCatalogEntryKindUpdate,
+    _: object = Depends(require_any_role("constructor", "admin")),
+    session: Session = Depends(get_session),
+) -> OperationCatalogEntryRead:
+    return OperationCatalogService(session).update_entry_kind(
         entry_id=entry_id,
         payload=payload,
     )
