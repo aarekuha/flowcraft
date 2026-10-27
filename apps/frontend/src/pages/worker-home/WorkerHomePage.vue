@@ -3193,6 +3193,11 @@ async function focusWorkerOrderFromRoute() {
     ?.scrollIntoView({ behavior: "smooth", block: "center" });
 }
 
+async function clearWorkerQrFilter() {
+  await router.replace({ name: "worker-home" });
+  await loadWorkerWorkspace();
+}
+
 async function openWorkerQrScanner() {
   if (isWorkerQrScannerOpen.value) {
     return;
@@ -6336,6 +6341,18 @@ async function handleResetUserPassword(user: UserRecord) {
                   </div>
                 </div>
               </label>
+            </div>
+
+            <div v-if="workerQrRouteTarget" class="banner banner--qr-filter">
+              <p>Установлен фильтр по QR-коду. Отображаются только операции выбранного заказа.</p>
+              <button
+                type="button"
+                class="ghost-button"
+                :disabled="workerAssignmentsLoading"
+                @click="void clearWorkerQrFilter()"
+              >
+                Убрать фильтр
+              </button>
             </div>
 
             <div v-if="workerAssignmentsError" class="banner banner--error">
@@ -11903,6 +11920,10 @@ h2 {
 .banner--error {
   background: rgba(197, 107, 107, 0.12);
   color: var(--color-text);
+}
+
+.banner--qr-filter {
+  background: rgba(195, 154, 82, 0.14);
 }
 
 .modal-backdrop {
