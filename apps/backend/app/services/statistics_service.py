@@ -321,7 +321,7 @@ class StatisticsService:
             ["Операции, мин", self._minutes(operation_ms)],
             ["Подготовка, мин", self._minutes(preparation_ms)],
             ["Перерыв, мин", self._minutes(break_ms)],
-            ["Простой, мин", self._minutes(idle_ms)],
+            ["Брак/Ремонт, мин", self._minutes(idle_ms)],
             ["Полезное время, %", self._percentage(operation_ms, total_ms)],
             ["Заказов с трудозатратами", len(orders)],
             ["Сессий таймеров", len(sessions)],
@@ -333,7 +333,7 @@ class StatisticsService:
                 "Операции, мин",
                 "Подготовка, мин",
                 "Перерыв, мин",
-                "Простой, мин",
+                "Брак/Ремонт, мин",
                 "Всего, мин",
                 "Полезное время, %",
             ]
@@ -409,7 +409,7 @@ class StatisticsService:
                 "Операции, мин",
                 "Подготовка, мин",
                 "Перерыв, мин",
-                "Простой, мин",
+                "Брак/Ремонт, мин",
                 "Полезное время, %",
                 "Заказов, шт",
                 "Запусков операций, шт",
@@ -543,6 +543,7 @@ class StatisticsService:
             )
             .join(User, User.id == TimerSession.user_id)
             .where(TimerSession.started_at < period_end)
+            .where(TimerSession.deleted_at.is_(None))
             .where(User.is_active.is_(True))
             .where(User.deleted_at.is_(None))
             .where(
@@ -935,7 +936,7 @@ class StatisticsService:
             TimerType.PREPARATION: "Подготовка",
             TimerType.OPERATION: "Операция",
             TimerType.BREAK: "Перерыв",
-            TimerType.IDLE: "Простой",
+            TimerType.IDLE: "Брак/Ремонт",
         }
         return labels[timer_type]
 

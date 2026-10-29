@@ -108,6 +108,7 @@ class WorkOrder(Base):
     created_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
     updated_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
     cutting_started_at: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    sewing_started_at: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     taken_at: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     quality_control_at: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     defect_quantity: Mapped[int] = mapped_column(Integer, nullable=False, default=0)

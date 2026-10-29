@@ -1,9 +1,11 @@
 import { apiFetch, handleJsonResponse } from "@/shared/api/http";
+import type { OperationCatalogEntryKind } from "@/shared/api/operationCatalog";
 
 export type WorkOrderAssignment = {
   id: number;
   operationId: number;
   operationName: string;
+  operationKind: OperationCatalogEntryKind;
   workerUserId: number | null;
   workerUserName: string | null;
   workerStatus: WorkerAssignmentStatus;
@@ -70,6 +72,7 @@ export type WorkOrderDetail = {
   totalSpentSeconds: number;
   cuttingSpentSeconds: number;
   hasSpentTime: boolean;
+  quantityChangeAllowed: boolean;
   createdAtTs: number;
   createdAt: string;
   updatedAtTs: number;
@@ -191,6 +194,7 @@ type WorkOrderAssignmentApi = {
   id: number;
   operation_id: number;
   operation_name: string;
+  operation_kind: OperationCatalogEntryKind;
   worker_user_id: number | null;
   worker_user_name: string | null;
   worker_status: WorkerAssignmentStatus;
@@ -248,6 +252,7 @@ type WorkOrderDetailApi = {
   total_spent_seconds: number;
   cutting_spent_seconds: number;
   has_spent_time: boolean;
+  quantity_change_allowed: boolean;
   created_at: number;
   updated_at: number;
   production_stage: WorkOrderProductionStage;
@@ -608,6 +613,7 @@ function mapWorkOrderAssignment(assignment: WorkOrderAssignmentApi): WorkOrderAs
     id: assignment.id,
     operationId: assignment.operation_id,
     operationName: assignment.operation_name,
+    operationKind: assignment.operation_kind,
     workerUserId: assignment.worker_user_id,
     workerUserName: assignment.worker_user_name,
     workerStatus: assignment.worker_status,
@@ -715,6 +721,7 @@ function mapWorkOrderDetail(order: WorkOrderDetailApi): WorkOrderDetail {
     totalSpentSeconds: order.total_spent_seconds,
     cuttingSpentSeconds: order.cutting_spent_seconds,
     hasSpentTime: order.has_spent_time,
+    quantityChangeAllowed: order.quantity_change_allowed,
     createdAtTs: order.created_at,
     createdAt: formatDate(order.created_at),
     updatedAtTs: order.updated_at,

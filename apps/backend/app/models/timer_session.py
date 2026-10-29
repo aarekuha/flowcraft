@@ -1,4 +1,4 @@
-from sqlalchemy import BigInteger, ForeignKey, Integer
+from sqlalchemy import BigInteger, ForeignKey, Index, Integer
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
@@ -6,6 +6,15 @@ from app.core.database import Base
 
 class TimerSession(Base):
     __tablename__ = "timer_sessions"
+    __table_args__ = (
+        Index(
+            "ix_timer_sessions_user_time_window",
+            "user_id",
+            "deleted_at",
+            "started_at",
+            "ended_at",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     shift_id: Mapped[int] = mapped_column(
@@ -32,9 +41,20 @@ class TimerSession(Base):
     started_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
     ended_at: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     created_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    updated_at: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    deleted_at: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    deleted_by_user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
 
     shift = relationship("WorkShift", back_populates="timer_sessions")
-    user = relationship("User", lazy="joined")
+    user = relationship("User", foreign_keys=[user_id], lazy="joined")
+    deleted_by_user = relationship(
+        "User",
+        foreign_keys=[deleted_by_user_id],
+        lazy="joined",
+    )
     order = relationship("WorkOrder", lazy="joined")
     operation = relationship("Operation", lazy="joined")
     order_allocations = relationship(

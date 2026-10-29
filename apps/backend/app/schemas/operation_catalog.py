@@ -11,6 +11,7 @@ class OperationCatalogSortDirection(StrEnum):
 class OperationCatalogEntryKind(StrEnum):
     REGULAR = "regular"
     CUTTING = "cutting"
+    ADJACENT = "adjacent"
 
 
 class OperationCatalogEntryCreate(BaseModel):

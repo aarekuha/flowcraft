@@ -9,7 +9,7 @@ class OperationCatalogEntry(Base):
     __table_args__ = (
         UniqueConstraint("name", name="uq_operation_catalog_entries_name"),
         CheckConstraint(
-            "operation_kind IN ('regular', 'cutting')",
+            "operation_kind IN ('regular', 'cutting', 'adjacent')",
             name="ck_operation_catalog_entries_kind",
         ),
     )

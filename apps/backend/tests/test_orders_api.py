@@ -1,12 +1,14 @@
+import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.models.timer_session import TimerSession
 from app.models.user import User
 from app.models.work_order import WorkOrder
 from app.models.work_shift import WorkShift
-from app.schemas.timer import TimerType
-from app.services.timer_service import TIMER_TYPE_TO_CODE
+from app.schemas.timer import TimerSwitchPayload, TimerType
+from app.services.timer_service import TIMER_TYPE_TO_CODE, TimerService
 
 
 def create_author_user(client: TestClient, name: str = "Марина Волкова") -> dict:
@@ -164,6 +166,7 @@ def test_create_order_and_get_it(client: TestClient) -> None:
     Проверяем создание заказа с итоговым временем в секундах:
     - создать заказ с изделием, материалом и назначениями
     - вернуть нулевое итоговое время через секундный контракт API
+    - изменить плановую дату администратором и бригадиром
     """
     author = create_author_user(client)
     worker = create_worker_user(client)
@@ -200,6 +203,7 @@ def test_create_order_and_get_it(client: TestClient) -> None:
     assert created_order["estimated_minutes"] == 210
     assert created_order["total_spent_seconds"] == 0
     assert created_order["cutting_spent_seconds"] == 0
+    assert created_order["quantity_change_allowed"] is False
     assert "total_spent_minutes" not in created_order
     assert created_order["production_stage"] == "created"
     assert created_order["cutting_started_at"] is None
@@ -209,6 +213,9 @@ def test_create_order_and_get_it(client: TestClient) -> None:
     assert created_order["completed_at"] is None
     assert created_order["deleted_at"] is None
     assert len(created_order["assignments"]) == 3
+    assert {
+        assignment["operation_kind"] for assignment in created_order["assignments"]
+    } == {"regular"}
 
     get_response = client.get(f"/api/orders/{created_order['id']}")
     assert get_response.status_code == 200
@@ -221,11 +228,15 @@ def test_create_order_and_get_it(client: TestClient) -> None:
     )
     assert delete_response.status_code == 200
 
-    forbidden_planned_date_response = client.patch(
+    admin_planned_date_response = client.patch(
         f"/api/orders/{created_order['id']}/planned-completion-date",
         json={"planned_completion_date": "2026-10-05"},
     )
-    assert forbidden_planned_date_response.status_code == 403
+    assert admin_planned_date_response.status_code == 200
+    assert (
+        admin_planned_date_response.json()["planned_completion_date"]
+        == "2026-10-05"
+    )
 
     setup_response = client.post(
         "/api/auth/setup-password",
@@ -238,10 +249,10 @@ def test_create_order_and_get_it(client: TestClient) -> None:
 
     planned_date_response = client.patch(
         f"/api/orders/{created_order['id']}/planned-completion-date",
-        json={"planned_completion_date": "2026-10-05"},
+        json={"planned_completion_date": "2026-10-06"},
     )
     assert planned_date_response.status_code == 200
-    assert planned_date_response.json()["planned_completion_date"] == "2026-10-05"
+    assert planned_date_response.json()["planned_completion_date"] == "2026-10-06"
     assert planned_date_response.json()["deleted_at"] is not None
 
 
@@ -319,6 +330,125 @@ def test_cutting_stage_filter_keeps_all_planned_assignments(
     )
     assert worker_in_work_response.status_code == 200
     assert len(worker_in_work_response.json()[0]["assignments"]) == len(leaf_ids)
+
+
+def test_adjacent_assignment_is_visible_during_cutting_and_in_work(
+    client: TestClient,
+) -> None:
+    """
+    Проверяем видимость смежной операции исполнителю:
+    - скрыть назначение в созданных и ОТК
+    - показать назначение в крое и в работе, включая переход по QR
+    - вернуть тип операции в детальном контракте заказа
+    """
+    author = create_author_user(client, name="Автор смежной операции")
+    worker = create_worker_user(client, name="Исполнитель смежной операции")
+    product = create_product_with_leaf_operations(
+        client,
+        author["id"],
+        name="Изделие со смежной операцией",
+    )
+    operation_ids = collect_leaf_operation_ids(product)
+    operation_id = operation_ids[0]
+    catalog_response = client.get("/api/operation-catalog?search=Фронт")
+    assert catalog_response.status_code == 200
+    catalog_entry_id = catalog_response.json()["items"][0]["id"]
+    kind_response = client.patch(
+        f"/api/operation-catalog/{catalog_entry_id}/kind",
+        json={"operation_kind": "adjacent"},
+    )
+    assert kind_response.status_code == 200
+
+    create_response = client.post(
+        "/api/orders",
+        json={
+            "order_number": "FC-ADJ-100",
+            "product_id": product["id"],
+            "quantity": 3,
+            "assignments": [
+                {
+                    "operation_id": current_operation_id,
+                    "worker_user_id": (
+                        worker["id"] if current_operation_id == operation_id else None
+                    ),
+                }
+                for current_operation_id in operation_ids
+            ],
+        },
+    )
+    assert create_response.status_code == 201
+    created_order = create_response.json()
+    order_id = created_order["id"]
+    adjacent_assignment = next(
+        assignment
+        for assignment in created_order["assignments"]
+        if assignment["operation_id"] == operation_id
+    )
+    assert adjacent_assignment["operation_kind"] == "adjacent"
+
+    setup_response = client.post(
+        "/api/auth/setup-password",
+        json={
+            "phone": worker["phone"],
+            "new_password": "password123",
+        },
+    )
+    assert setup_response.status_code == 200
+
+    created_response = client.get("/api/orders/worker-assignments")
+    assert created_response.status_code == 200
+    assert created_response.json() == []
+
+    cutting_response = client.patch(
+        f"/api/orders/{order_id}/production-stage",
+        json={"production_stage": "cutting"},
+    )
+    assert cutting_response.status_code == 200
+    cutting_assignments_response = client.get("/api/orders/worker-assignments")
+    assert cutting_assignments_response.status_code == 200
+    assert [
+        assignment["operation_name"]
+        for assignment in cutting_assignments_response.json()[0]["assignments"]
+    ] == ["Фронт"]
+    cutting_qr_response = client.get(
+        f"/api/orders/worker-assignments/qr-target?legacy_order_id={order_id}"
+    )
+    assert cutting_qr_response.status_code == 200
+    assert cutting_qr_response.json()["orders"][0]["assignments"][0][
+        "operation_name"
+    ] == "Фронт"
+
+    in_work_response = client.patch(
+        f"/api/orders/{order_id}/production-stage",
+        json={"production_stage": "in_work"},
+    )
+    assert in_work_response.status_code == 200
+    in_work_assignments_response = client.get("/api/orders/worker-assignments")
+    assert in_work_assignments_response.status_code == 200
+    assert in_work_assignments_response.json()[0]["assignments"][0][
+        "operation_name"
+    ] == "Фронт"
+    in_work_qr_response = client.get(
+        f"/api/orders/worker-assignments/qr-target?legacy_order_id={order_id}"
+    )
+    assert in_work_qr_response.status_code == 200
+    assert in_work_qr_response.json()["orders"][0]["assignments"][0][
+        "operation_name"
+    ] == "Фронт"
+
+    quality_response = client.patch(
+        f"/api/orders/{order_id}/quality-control-status",
+        json={"is_in_quality_control": True},
+    )
+    assert quality_response.status_code == 200
+    quality_assignments_response = client.get("/api/orders/worker-assignments")
+    assert quality_assignments_response.status_code == 200
+    assert quality_assignments_response.json() == []
+    quality_qr_response = client.get(
+        f"/api/orders/worker-assignments/qr-target?legacy_order_id={order_id}"
+    )
+    assert quality_qr_response.status_code == 200
+    assert quality_qr_response.json()["orders"] == []
 
 
 def test_order_number_search_returns_all_current_stages(
@@ -842,6 +972,7 @@ def test_worker_assignments_returns_current_worker_in_work_orders(
             "id": payload[0]["assignments"][0]["id"],
             "operation_id": leaf_ids[0],
             "operation_name": "Фронт",
+                "operation_kind": "regular",
             "worker_user_id": worker["id"],
             "worker_user_name": worker["name"],
             "worker_status": "in_work",
@@ -1525,13 +1656,13 @@ def test_update_order_allows_empty_operation_workers(client: TestClient) -> None
     )
 
 
-def test_update_order_rejects_quantity_change_outside_split_or_merge(
+def test_update_order_rejects_quantity_change_outside_cutting(
     client: TestClient,
 ) -> None:
     """
-    Проверяем неизменяемость количества через редактирование назначений:
-    - попытаться изменить количество заказа без учтенного времени
-    - потребовать использовать разделение или слияние
+    Проверяем неизменяемость количества до стадии кроя:
+    - попытаться изменить количество созданного заказа
+    - потребовать сначала перевести заказ в крой
     """
     author = create_author_user(client)
     first_worker = create_worker_user(client, name="Полина Кузнецова")
@@ -1571,7 +1702,7 @@ def test_update_order_rejects_quantity_change_outside_split_or_merge(
 
     assert update_response.status_code == 422
     assert update_response.json()["detail"] == (
-        "Order quantity can only be changed by splitting or merging."
+        "Order quantity can only be changed during cutting stage."
     )
 
 
@@ -1783,7 +1914,357 @@ def test_update_order_rejects_quantity_change_after_taken_without_spent_time(
 
     assert update_response.status_code == 422
     assert update_response.json()["detail"] == (
-        "Order quantity can only be changed by splitting or merging."
+        "Order quantity can only be changed during cutting stage."
+    )
+
+
+def test_update_order_quantity_during_cutting_with_active_timer(
+    client: TestClient,
+    db_session: sessionmaker[Session],
+) -> None:
+    """
+    Проверяем изменение количества во время кроя:
+    - сохранить запрет до и после стадии кроя
+    - запустить таймер операции кроя
+    - изменить количество от имени администратора и бригадира
+    """
+    author = create_author_user(client, name="Автор изменения количества")
+    worker = create_worker_user(client, name="Закройщик количества")
+    brigadier = create_brigadier_user(client, name="Бригадир количества")
+    product = create_product_with_leaf_operations(
+        client,
+        author["id"],
+        name="Изделие с изменяемым количеством",
+    )
+    leaf_ids = collect_leaf_operation_ids(product)
+    catalog_response = client.get("/api/operation-catalog?search=Фронт")
+    assert catalog_response.status_code == 200
+    catalog_entry_id = catalog_response.json()["items"][0]["id"]
+    kind_response = client.patch(
+        f"/api/operation-catalog/{catalog_entry_id}/kind",
+        json={"operation_kind": "cutting"},
+    )
+    assert kind_response.status_code == 200
+
+    assignments = [
+        {
+            "operation_id": operation_id,
+            "worker_user_id": worker["id"] if operation_id == leaf_ids[0] else None,
+        }
+        for operation_id in leaf_ids
+    ]
+    create_response = client.post(
+        "/api/orders",
+        json={
+            "order_number": "FC-CUT-QTY",
+            "product_id": product["id"],
+            "quantity": 3,
+            "assignments": assignments,
+        },
+    )
+    assert create_response.status_code == 201
+    order_id = create_response.json()["id"]
+
+    created_update_response = client.put(
+        f"/api/orders/{order_id}/assignments",
+        json={
+            "quantity": 4,
+            "estimated_minutes": 240,
+            "assignments": assignments,
+        },
+    )
+    assert created_update_response.status_code == 422
+    assert created_update_response.json()["detail"] == (
+        "Order quantity can only be changed during cutting stage."
+    )
+
+    cutting_response = client.patch(
+        f"/api/orders/{order_id}/production-stage",
+        json={"production_stage": "cutting"},
+    )
+    assert cutting_response.status_code == 200
+    assert cutting_response.json()["quantity_change_allowed"] is True
+
+    timer_session_id: int
+    session = db_session()
+    try:
+        shift = WorkShift(
+            user_id=worker["id"],
+            started_at=1_000,
+            ended_at=None,
+            business_date="2026-10-28",
+            created_at=1_000,
+        )
+        session.add(shift)
+        session.flush()
+        timer_session = TimerSession(
+            shift_id=shift.id,
+            user_id=worker["id"],
+            timer_type_code=TIMER_TYPE_TO_CODE[TimerType.OPERATION],
+            order_id=order_id,
+            operation_id=leaf_ids[0],
+            started_at=1_000,
+            ended_at=None,
+            created_at=1_000,
+        )
+        session.add(timer_session)
+        session.flush()
+        timer_session_id = timer_session.id
+        session.commit()
+    finally:
+        session.close()
+
+    update_response = client.put(
+        f"/api/orders/{order_id}/assignments",
+        json={
+            "quantity": 4,
+            "estimated_minutes": 240,
+            "assignments": assignments,
+        },
+    )
+    assert update_response.status_code == 200
+    assert update_response.json()["quantity"] == 4
+
+    setup_response = client.post(
+        "/api/auth/setup-password",
+        json={
+            "phone": brigadier["phone"],
+            "new_password": "password123",
+        },
+    )
+    assert setup_response.status_code == 200
+
+    brigadier_update_response = client.put(
+        f"/api/orders/{order_id}/assignments",
+        json={
+            "quantity": 5,
+            "estimated_minutes": 300,
+            "assignments": assignments,
+        },
+    )
+    assert brigadier_update_response.status_code == 200
+    assert brigadier_update_response.json()["quantity"] == 5
+
+    session = db_session()
+    try:
+        stored_timer_session = session.scalars(
+            select(TimerSession).where(TimerSession.id == timer_session_id)
+        ).one()
+        stored_timer_session.ended_at = 2_000
+        session.commit()
+    finally:
+        session.close()
+
+    in_work_response = client.patch(
+        f"/api/orders/{order_id}/production-stage",
+        json={"production_stage": "in_work"},
+    )
+    assert in_work_response.status_code == 200
+
+    forbidden_update_response = client.put(
+        f"/api/orders/{order_id}/assignments",
+        json={
+            "quantity": 6,
+            "estimated_minutes": 360,
+            "assignments": assignments,
+        },
+    )
+    assert forbidden_update_response.status_code == 422
+    assert forbidden_update_response.json()["detail"] == (
+        "Order quantity can only be changed during cutting stage."
+    )
+
+
+@pytest.mark.parametrize("worker_state", ["inactive", "deleted"])
+def test_update_order_quantity_preserves_existing_unavailable_worker(
+    client: TestClient,
+    worker_state: str,
+) -> None:
+    """
+    Проверяем изменение количества с недоступным назначенным исполнителем:
+    - деактивировать или удалить исполнителя после создания заказа
+    - сохранить количество без изменения существующего назначения
+    - отклонить новое назначение того же пользователя на другую операцию
+    """
+    author = create_author_user(
+        client,
+        name=f"Автор назначения {worker_state}",
+    )
+    worker = create_worker_user(
+        client,
+        name=f"Исполнитель назначения {worker_state}",
+    )
+    product = create_product_with_leaf_operations(
+        client,
+        author["id"],
+        name=f"Изделие назначения {worker_state}",
+    )
+    leaf_ids = collect_leaf_operation_ids(product)
+    assignments = [
+        {
+            "operation_id": operation_id,
+            "worker_user_id": worker["id"] if operation_id == leaf_ids[0] else None,
+        }
+        for operation_id in leaf_ids
+    ]
+    create_response = client.post(
+        "/api/orders",
+        json={
+            "order_number": f"FC-QTY-{worker_state.upper()}",
+            "product_id": product["id"],
+            "quantity": 3,
+            "assignments": assignments,
+        },
+    )
+    if create_response.status_code != 201:
+        pytest.fail(f"Не удалось создать заказ: {create_response.text}")
+    order_id = create_response.json()["id"]
+    cutting_response = client.patch(
+        f"/api/orders/{order_id}/production-stage",
+        json={"production_stage": "cutting"},
+    )
+    if cutting_response.status_code != 200:
+        pytest.fail(f"Не удалось перевести заказ в крой: {cutting_response.text}")
+
+    if worker_state == "inactive":
+        state_response = client.patch(
+            f"/api/users/{worker['id']}/status",
+            json={"is_active": False},
+        )
+        expected_state_status = 200
+    else:
+        state_response = client.delete(f"/api/users/{worker['id']}")
+        expected_state_status = 204
+    if state_response.status_code != expected_state_status:
+        pytest.fail(f"Не удалось изменить состояние исполнителя: {state_response.text}")
+
+    quantity_response = client.put(
+        f"/api/orders/{order_id}/assignments",
+        json={
+            "quantity": 4,
+            "estimated_minutes": 240,
+            "assignments": assignments,
+        },
+    )
+    if quantity_response.status_code != 200:
+        pytest.fail(f"Не удалось изменить количество: {quantity_response.text}")
+    updated_order = quantity_response.json()
+    if updated_order["quantity"] != 4:
+        pytest.fail("Backend не сохранил новое количество изделий")
+    if not any(
+        assignment["operation_id"] == leaf_ids[0]
+        and assignment["worker_user_id"] == worker["id"]
+        for assignment in updated_order["assignments"]
+    ):
+        pytest.fail("Существующее назначение недоступного исполнителя было удалено")
+
+    new_assignment_response = client.put(
+        f"/api/orders/{order_id}/assignments",
+        json={
+            "quantity": 4,
+            "estimated_minutes": 240,
+            "assignments": [
+                *assignments[:2],
+                {
+                    "operation_id": leaf_ids[2],
+                    "worker_user_id": worker["id"],
+                },
+            ],
+        },
+    )
+    if new_assignment_response.status_code != 422:
+        pytest.fail("Backend разрешил новое назначение недоступного исполнителя")
+
+
+def test_update_order_rejects_quantity_change_after_sewing_and_return_to_cutting(
+    client: TestClient,
+    db_session: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    Проверяем запрет изменения количества после начала пошива:
+    - учесть завершенную обычную операцию на стадии пошива
+    - вернуть заказ в крой
+    - отклонить изменение количества
+    """
+    author = create_author_user(client, name="Автор запрета после пошива")
+    worker = create_worker_user(client, name="Швея запрета количества")
+    product = create_product_with_leaf_operations(
+        client,
+        author["id"],
+        name="Изделие после начала пошива",
+    )
+    leaf_ids = collect_leaf_operation_ids(product)
+    assignments = [
+        {
+            "operation_id": operation_id,
+            "worker_user_id": worker["id"] if operation_id == leaf_ids[0] else None,
+        }
+        for operation_id in leaf_ids
+    ]
+    create_response = client.post(
+        "/api/orders",
+        json={
+            "order_number": "FC-SEWING-QTY",
+            "product_id": product["id"],
+            "quantity": 3,
+            "assignments": assignments,
+        },
+    )
+    assert create_response.status_code == 201
+    order_id = create_response.json()["id"]
+    move_order_to_in_work(client, order_id)
+
+    session = db_session()
+    try:
+        timer_service = TimerService(session)
+        timestamps = iter(
+            [
+                1_000,
+                1_000,
+                2_000,
+                2_000,
+                62_000,
+                62_000,
+                62_000,
+            ]
+        )
+        monkeypatch.setattr(timer_service, "_now_ts", lambda: next(timestamps))
+        timer_service.start_day(worker["id"])
+        timer_service.switch_timer(
+            worker["id"],
+            TimerSwitchPayload(
+                timer_type=TimerType.OPERATION,
+                order_id=order_id,
+                operation_id=leaf_ids[0],
+            ),
+        )
+        timer_service.switch_timer(
+            worker["id"],
+            TimerSwitchPayload(timer_type=TimerType.BREAK),
+        )
+    finally:
+        session.close()
+
+    return_to_cutting_response = client.patch(
+        f"/api/orders/{order_id}/production-stage",
+        json={"production_stage": "cutting"},
+    )
+    assert return_to_cutting_response.status_code == 200
+    assert return_to_cutting_response.json()["quantity_change_allowed"] is False
+
+    update_response = client.put(
+        f"/api/orders/{order_id}/assignments",
+        json={
+            "quantity": 4,
+            "estimated_minutes": 240,
+            "assignments": assignments,
+        },
+    )
+
+    assert update_response.status_code == 422
+    assert update_response.json()["detail"] == (
+        "Order quantity cannot be changed after sewing has started."
     )
 
 

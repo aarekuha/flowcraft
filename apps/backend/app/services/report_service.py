@@ -113,7 +113,11 @@ class ReportService:
 
     def get_filter_options(self) -> ReportFilterOptions:
         historical_worker_ids = set(
-            self.session.scalars(select(TimerSession.user_id).distinct()).all()
+            self.session.scalars(
+                select(TimerSession.user_id)
+                .where(TimerSession.deleted_at.is_(None))
+                .distinct()
+            ).all()
         )
         historical_worker_ids.update(
             worker_id
