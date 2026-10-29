@@ -1,7 +1,7 @@
 import { apiFetch, handleJsonResponse } from "@/shared/api/http";
 
 export type OperationCatalogSortDirection = "asc" | "desc";
-export type OperationCatalogEntryKind = "regular" | "cutting";
+export type OperationCatalogEntryKind = "regular" | "cutting" | "adjacent";
 
 export type OperationCatalogEntry = {
   id: number;

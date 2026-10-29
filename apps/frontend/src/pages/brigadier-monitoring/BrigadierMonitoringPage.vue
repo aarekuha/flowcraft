@@ -15,7 +15,7 @@
         <strong>0</strong>
       </div>
       <div class="panel-item">
-        <span class="label">Простои</span>
+        <span class="label">Брак/Ремонт</span>
         <strong>0</strong>
       </div>
       <div class="panel-item">

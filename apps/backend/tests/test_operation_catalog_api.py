@@ -76,3 +76,38 @@ def test_create_operation_catalog_entry_rejects_duplicate_name(
         second_response.json()["detail"]
         == "Operation with this name already exists."
     )
+
+
+def test_operation_catalog_supports_adjacent_kind(client: TestClient) -> None:
+    """
+    Проверяем тип смежной операции в справочнике:
+    - создать обычную операцию
+    - изменить тип на смежный и вернуть его через API
+    """
+    create_response = client.post(
+        "/api/operation-catalog",
+        json={
+            "name": "Подготовка фурнитуры",
+            "operation_kind": "adjacent",
+        },
+    )
+    assert create_response.status_code == 201
+    assert create_response.json()["operation_kind"] == "adjacent"
+
+    regular_response = client.patch(
+        f"/api/operation-catalog/{create_response.json()['id']}/kind",
+        json={"operation_kind": "regular"},
+    )
+    assert regular_response.status_code == 200
+
+    adjacent_response = client.patch(
+        f"/api/operation-catalog/{create_response.json()['id']}/kind",
+        json={"operation_kind": "adjacent"},
+    )
+
+    assert adjacent_response.status_code == 200
+    assert adjacent_response.json()["operation_kind"] == "adjacent"
+
+    list_response = client.get("/api/operation-catalog?search=фурнитуры")
+    assert list_response.status_code == 200
+    assert list_response.json()["items"][0]["operation_kind"] == "adjacent"

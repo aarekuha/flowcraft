@@ -4,6 +4,7 @@ import QRCode from "qrcode";
 import type { IScannerControls } from "@zxing/browser";
 import { useRoute, useRouter } from "vue-router";
 import flowcraftLogoUrl from "@/shared/assets/flowcraft_logo.png";
+import AdminWorkTimePanel from "@/pages/worker-home/AdminWorkTimePanel.vue";
 import ReportsPanel from "@/pages/worker-home/ReportsPanel.vue";
 
 import {
@@ -108,8 +109,16 @@ import {
   parseStandardTimeInput,
 } from "@/shared/lib/standardTime";
 import { formatOrderDuration } from "@/shared/lib/duration";
+import { sortAssignmentsForPrint } from "@/shared/lib/workOrderPrint";
 
-type TabId = "worker" | "brigadier" | "constructor" | "stats" | "reports" | "users";
+type TabId =
+  | "worker"
+  | "brigadier"
+  | "constructor"
+  | "stats"
+  | "reports"
+  | "work_time"
+  | "users";
 type ModalMode = "create" | "copy" | "view" | null;
 type WorkOrderStatusTabId = Exclude<WorkOrderStatusFilter, "all">;
 type BrigadierTabId = "orders" | "order_search" | WorkOrderStatusTabId;
@@ -159,6 +168,17 @@ type BrigadierOrderAssignment = {
   workerName: string;
 };
 
+type BrigadierOrderOperation = {
+  operationId: number;
+  operationLabel: string;
+};
+
+type BrigadierOrderAssignmentGroup = {
+  operationId: number;
+  operationLabel: string;
+  assignments: BrigadierOrderAssignment[];
+};
+
 type WorkerTimerKind = "preparation" | "break" | "idle" | "operation";
 
 type WorkerTimerDefinition = {
@@ -204,15 +224,17 @@ const tabs: Array<{ id: TabId; label: string; icon: string }> = [
   { id: "constructor", label: "Конструктор", icon: "constructor" },
   { id: "stats", label: "Статистика", icon: "stats" },
   { id: "reports", label: "Отчеты", icon: "stats" },
+  { id: "work_time", label: "Рабочее время", icon: "admin" },
   { id: "users", label: "Пользователи", icon: "users" },
 ];
 
 const tabRoles: Record<TabId, UserRole[]> = {
   worker: ["worker"],
-  brigadier: ["brigadier", "quality_control"],
+  brigadier: ["brigadier", "quality_control", "admin"],
   constructor: ["constructor"],
   stats: ["brigadier", "admin"],
   reports: ["reports"],
+  work_time: ["admin"],
   users: ["admin"],
 };
 
@@ -402,6 +424,8 @@ const brigadierModalOrderNumber = ref("");
 const brigadierModalLeatherTypeId = ref("");
 const brigadierModalLeatherTypeNameDraft = ref("");
 const brigadierModalHasSpentTime = ref(false);
+const brigadierModalQuantityChangeAllowed = ref(false);
+const brigadierModalOrderUpdateBaseline = ref("");
 const brigadierOpenAssignmentDropdownId = ref<string | null>(null);
 let brigadierAssignmentSlotSequence = 0;
 let brigadierDropdownCloseTimeoutId: number | null = null;
@@ -505,11 +529,25 @@ const hasProductFormChanges = computed(
   () => isModalOpen.value && getProductFormSignature() !== productFormBaseline.value,
 );
 const isBrigadierOrderModalOpen = computed(() => brigadierModalMode.value !== null);
+const canEditBrigadierOrderDetails = computed(
+  () =>
+    currentSession.value?.userRoles.includes("brigadier") ||
+    currentSession.value?.userRoles.includes("admin") ||
+    false,
+);
 const isBrigadierLeatherTypeEditable = computed(
   () => isBrigadierOrderAttributesEditable.value,
 );
 const isBrigadierQuantityEditable = computed(
-  () => brigadierModalMode.value === "create",
+  () =>
+    canEditBrigadierOrderDetails.value &&
+    (brigadierModalMode.value === "create" ||
+      (brigadierModalMode.value === "manage" &&
+        brigadierModalQuantityChangeAllowed.value &&
+        brigadierCurrentOrder.value?.productionStage === "cutting" &&
+        brigadierCurrentOrder.value.deletedAtTs === null &&
+        brigadierCurrentOrder.value.completedAtTs === null &&
+        brigadierCurrentOrder.value.qualityControlAtTs === null)),
 );
 const isQualityControlOrderModal = computed(
   () => brigadierModalMode.value === "quality_control",
@@ -519,6 +557,9 @@ const isUserDeleteModalOpen = computed(() => userPendingDelete.value !== null);
 const isViewMode = computed(() => modalMode.value === "view");
 const printableWorkOrder = ref<WorkOrderDetail | null>(null);
 const printableWorkOrderQrCode = ref("");
+const printableWorkOrderAssignments = computed(() =>
+  sortAssignmentsForPrint(printableWorkOrder.value?.assignments ?? []),
+);
 const workerOrderFocusMessage = ref("");
 const focusedWorkerOrderId = ref<number | null>(null);
 const workerQrScannerVideo = ref<HTMLVideoElement | null>(null);
@@ -553,6 +594,7 @@ const canManageWorkOrders = computed(
   () =>
     currentSession.value?.userRoles.includes("brigadier") ||
     currentSession.value?.userRoles.includes("quality_control") ||
+    currentSession.value?.userRoles.includes("admin") ||
     false,
 );
 const canAcceptQualityControl = computed(
@@ -869,16 +911,18 @@ const isDeletedBrigadierOrderModal = computed(
 
 const isBrigadierOrderAttributesEditable = computed(
   () =>
-    brigadierModalMode.value === "create" ||
-    (brigadierModalMode.value === "manage" &&
-      !isDeletedBrigadierOrderModal.value &&
-      !isCompletedBrigadierOrderModal.value &&
-      !isQualityControlStageBrigadierOrderModal.value &&
-      !brigadierModalHasSpentTime.value),
+    canEditBrigadierOrderDetails.value &&
+    (brigadierModalMode.value === "create" ||
+      (brigadierModalMode.value === "manage" &&
+        !isDeletedBrigadierOrderModal.value &&
+        !isCompletedBrigadierOrderModal.value &&
+        !isQualityControlStageBrigadierOrderModal.value &&
+        !brigadierModalHasSpentTime.value)),
 );
 
 const isBrigadierAssignmentsEditable = computed(
   () =>
+    canEditBrigadierOrderDetails.value &&
     !isQualityControlOrderModal.value &&
     (brigadierModalMode.value === "create" ||
       (brigadierModalMode.value === "manage" &&
@@ -904,11 +948,37 @@ const displayedBrigadierModalAssignments = computed(() => {
   );
 });
 
+const displayedBrigadierModalAssignmentGroups = computed<
+  BrigadierOrderAssignmentGroup[]
+>(() => {
+  const assignmentsByOperation = new Map<number, BrigadierOrderAssignment[]>();
+
+  for (const assignment of displayedBrigadierModalAssignments.value) {
+    const operationAssignments = assignmentsByOperation.get(assignment.operationId) ?? [];
+    operationAssignments.push(assignment);
+    assignmentsByOperation.set(assignment.operationId, operationAssignments);
+  }
+
+  return buildBrigadierOperations(
+    brigadierModalProduct.value?.operations ?? [],
+  ).map((operation) => ({
+    ...operation,
+    assignments: assignmentsByOperation.get(operation.operationId) ?? [],
+  }));
+});
+
 const isBrigadierPlannedCompletionDateChanged = computed(
   () =>
     brigadierModalMode.value !== "create" &&
     brigadierModalPlannedCompletionDate.value !==
       (brigadierCurrentOrder.value?.plannedCompletionDate ?? ""),
+);
+
+const isBrigadierOrderUpdateChanged = computed(
+  () =>
+    brigadierModalMode.value === "manage" &&
+    Boolean(brigadierModalOrderUpdateBaseline.value) &&
+    getBrigadierOrderUpdateSignature() !== brigadierModalOrderUpdateBaseline.value,
 );
 
 const isBrigadierSaveAvailable = computed(
@@ -974,16 +1044,22 @@ const brigadierModalTitle = computed(() =>
 const brigadierModalDescription = computed(() =>
   brigadierModalMode.value === "quality_control"
     ? "Проверьте заказ, укажите количество брака и при необходимости скорректируйте плановую дату."
+    : brigadierModalMode.value === "manage" && !canEditBrigadierOrderDetails.value
+    ? "Можно изменить плановую дату, остальные данные заказа доступны только для просмотра."
     : isDeletedBrigadierOrderModal.value
     ? "В удаленном заказе можно изменить плановую дату сдачи."
     : isCompletedBrigadierOrderModal.value
     ? "В выполненном заказе можно изменить плановую дату сдачи."
     : isQualityControlStageBrigadierOrderModal.value
     ? "На стадии ОТК можно изменить плановую дату, назначения доступны для просмотра."
+    : brigadierModalHasSpentTime.value && isBrigadierQuantityEditable.value
+    ? "По заказу уже есть трудозатраты кроя: можно изменить плановую дату, количество и исполнителей, вид кожи заблокирован."
     : brigadierModalHasSpentTime.value
     ? "По заказу уже есть трудозатраты: можно изменить плановую дату и исполнителей до передачи в ОТК, вид кожи и количество заблокированы."
     : brigadierModalMode.value === "manage"
-    ? "Можно изменить плановую дату, вид кожи, количество изделий и назначенных исполнителей до передачи в ОТК."
+    ? isBrigadierQuantityEditable.value
+      ? "Можно изменить плановую дату, вид кожи, количество изделий и назначенных исполнителей до передачи в ОТК."
+      : "Можно изменить плановую дату, вид кожи и назначенных исполнителей; количество доступно только на стадии «Крой»."
     : "Укажите количество изделий, при необходимости плановую дату и распределите исполнителей по операциям.",
 );
 
@@ -1291,7 +1367,7 @@ const brigadierModalCanSave = computed(() => {
     !brigadierQuantityError.value &&
     !brigadierPlannedCompletionDateError.value &&
     !brigadierLeatherTypeError.value &&
-    brigadierModalAssignments.value.length > 0 &&
+    displayedBrigadierModalAssignmentGroups.value.length > 0 &&
     !firstBrigadierAssignmentError.value
   );
 });
@@ -1317,7 +1393,7 @@ const staticWorkerTimerDefinitions = computed<WorkerTimerDefinition[]>(() => [
   },
   {
     id: IDLE_TIMER_ID,
-    label: "Простой",
+    label: "Брак/Ремонт",
     kind: "idle",
   },
 ]);
@@ -1936,6 +2012,9 @@ async function initializePage() {
 async function loadProtectedData() {
   if (workerQrRouteTarget.value !== null && canLoadWorkerWorkspace()) {
     activeTab.value = "worker";
+  }
+  if (!canEditBrigadierOrderDetails.value && brigadierTab.value === "orders") {
+    brigadierTab.value = "quality_control";
   }
 
   const protectedDataLoaders = [
@@ -3529,15 +3608,25 @@ async function submitOperationCatalogEntry() {
   }
 }
 
-async function toggleOperationCatalogEntryKind(entry: OperationCatalogEntry) {
+async function changeOperationCatalogEntryKind(
+  entry: OperationCatalogEntry,
+  event: Event,
+) {
+  const select = event.currentTarget;
+  if (!(select instanceof HTMLSelectElement)) {
+    return;
+  }
+  const operationKind = select.value as OperationCatalogEntryKind;
+  if (operationKind === entry.operationKind) {
+    return;
+  }
+
   setOperationCatalogEntryBusy(entry.id, true);
   operationCatalogSaveError.value = "";
 
   try {
-    await updateOperationCatalogEntryKind(
-      entry.id,
-      entry.operationKind === "cutting" ? "regular" : "cutting",
-    );
+    const updatedEntry = await updateOperationCatalogEntryKind(entry.id, operationKind);
+    entry.operationKind = updatedEntry.operationKind;
     await Promise.all([
       loadOperationCatalog(),
       loadActiveOperationCatalogEntries(),
@@ -3551,6 +3640,7 @@ async function toggleOperationCatalogEntryKind(entry: OperationCatalogEntry) {
       error,
       "Не удалось обновить тип операции.",
     );
+    select.value = entry.operationKind;
   } finally {
     setOperationCatalogEntryBusy(entry.id, false);
   }
@@ -4928,6 +5018,9 @@ function getDefaultAuthorName(): string | null {
 }
 
 async function openBrigadierCreateOrder(productId: number) {
+  if (!canEditBrigadierOrderDetails.value) {
+    return;
+  }
   brigadierModalMode.value = "create";
   brigadierModalOrderId.value = null;
   brigadierModalLoading.value = true;
@@ -4940,6 +5033,8 @@ async function openBrigadierCreateOrder(productId: number) {
   brigadierModalLeatherTypeId.value = "";
   brigadierModalLeatherTypeNameDraft.value = "";
   brigadierModalHasSpentTime.value = false;
+  brigadierModalQuantityChangeAllowed.value = true;
+  brigadierModalOrderUpdateBaseline.value = "";
   brigadierModalAssignments.value = [];
 
   try {
@@ -4954,7 +5049,6 @@ async function openBrigadierCreateOrder(productId: number) {
     brigadierModalProduct.value = product;
     activeLeatherTypes.value = leatherTypesForSelect;
     brigadierModalLeatherTypeNameDraft.value = "";
-    brigadierModalAssignments.value = buildBrigadierAssignments(product.operations);
   } catch (error) {
     if (isUnauthorizedError(error)) {
       redirectToAuth(getErrorMessage(error, "Требуется аутентификация."));
@@ -4980,6 +5074,8 @@ async function openBrigadierManageOrder(order: WorkOrderSummary) {
     order.leatherTypeId === null ? "" : String(order.leatherTypeId);
   brigadierModalLeatherTypeNameDraft.value = order.leatherTypeName ?? "";
   brigadierModalHasSpentTime.value = order.hasSpentTime;
+  brigadierModalQuantityChangeAllowed.value = false;
+  brigadierModalOrderUpdateBaseline.value = "";
   brigadierModalAssignments.value = [];
 
   try {
@@ -5003,12 +5099,14 @@ async function openBrigadierManageOrder(order: WorkOrderSummary) {
       activeLeatherTypes.value.find((item) => item.id === orderDetail.leatherTypeId)
         ?.name ?? "";
     brigadierModalHasSpentTime.value = orderDetail.hasSpentTime;
+    brigadierModalQuantityChangeAllowed.value = orderDetail.quantityChangeAllowed;
     brigadierModalPlannedCompletionDate.value =
       orderDetail.plannedCompletionDate ?? "";
     brigadierModalAssignments.value = mergeBrigadierAssignments(
-      buildBrigadierAssignments(product.operations),
+      buildBrigadierOperations(product.operations),
       orderDetail,
     );
+    brigadierModalOrderUpdateBaseline.value = getBrigadierOrderUpdateSignature();
   } catch (error) {
     if (isUnauthorizedError(error)) {
       redirectToAuth(getErrorMessage(error, "Требуется аутентификация."));
@@ -5034,6 +5132,8 @@ async function openQualityControlOrder(order: WorkOrderSummary) {
     order.leatherTypeId === null ? "" : String(order.leatherTypeId);
   brigadierModalLeatherTypeNameDraft.value = order.leatherTypeName ?? "";
   brigadierModalHasSpentTime.value = order.hasSpentTime;
+  brigadierModalQuantityChangeAllowed.value = false;
+  brigadierModalOrderUpdateBaseline.value = "";
   brigadierModalAssignments.value = [];
 
   try {
@@ -5061,8 +5161,9 @@ async function openQualityControlOrder(order: WorkOrderSummary) {
       activeLeatherTypes.value.find((item) => item.id === orderDetail.leatherTypeId)
         ?.name ?? "";
     brigadierModalHasSpentTime.value = orderDetail.hasSpentTime;
+    brigadierModalQuantityChangeAllowed.value = false;
     brigadierModalAssignments.value = mergeBrigadierAssignments(
-      buildBrigadierAssignments(product.operations),
+      buildBrigadierOperations(product.operations),
       orderDetail,
     );
   } catch (error) {
@@ -5211,33 +5312,35 @@ function closeBrigadierOrderModal() {
   brigadierModalLeatherTypeId.value = "";
   brigadierModalLeatherTypeNameDraft.value = "";
   brigadierModalHasSpentTime.value = false;
+  brigadierModalQuantityChangeAllowed.value = false;
+  brigadierModalOrderUpdateBaseline.value = "";
   brigadierModalLoading.value = false;
   brigadierModalError.value = "";
   brigadierSaveLoading.value = false;
 }
 
-function buildBrigadierAssignments(
+function buildBrigadierOperations(
   operations: OperationNode[],
   parents: string[] = [],
-): BrigadierOrderAssignment[] {
+): BrigadierOrderOperation[] {
   return operations.flatMap((operation) => {
     const nextParents = [...parents, operation.name];
 
     if (operation.children.length === 0) {
       return [
-        createBrigadierAssignmentSlot({
+        {
           operationId: operation.id,
           operationLabel: nextParents.join(" / "),
-        }),
+        },
       ];
     }
 
-    return buildBrigadierAssignments(operation.children, nextParents);
+    return buildBrigadierOperations(operation.children, nextParents);
   });
 }
 
 function mergeBrigadierAssignments(
-  baseAssignments: BrigadierOrderAssignment[],
+  operations: BrigadierOrderOperation[],
   orderDetail: WorkOrderDetail,
 ): BrigadierOrderAssignment[] {
   const savedByOperation = new Map<number, WorkOrderDetail["assignments"]>();
@@ -5247,27 +5350,19 @@ function mergeBrigadierAssignments(
     savedByOperation.set(savedAssignment.operationId, operationAssignments);
   }
 
-  return baseAssignments.flatMap((baseAssignment) => {
-    const savedAssignments = savedByOperation.get(baseAssignment.operationId) ?? [];
-    const selectedAssignments = savedAssignments
+  return operations.flatMap((operation) => {
+    const savedAssignments = savedByOperation.get(operation.operationId) ?? [];
+    return savedAssignments
       .filter((assignment) => assignment.workerUserId !== null)
       .map((assignment) =>
         createBrigadierAssignmentSlot({
-          operationId: baseAssignment.operationId,
-          operationLabel: baseAssignment.operationLabel,
+          operationId: operation.operationId,
+          operationLabel: operation.operationLabel,
           workerUserId: assignment.workerUserId,
           workerName: assignment.workerUserName ?? "",
           slotId: `saved-assignment-${assignment.id}`,
         }),
       );
-
-    return [
-      ...selectedAssignments,
-      createBrigadierAssignmentSlot({
-        operationId: baseAssignment.operationId,
-        operationLabel: baseAssignment.operationLabel,
-      }),
-    ];
   });
 }
 
@@ -5288,44 +5383,46 @@ function createBrigadierAssignmentSlot(params: {
   };
 }
 
-function normalizeBrigadierOperationAssignments(
+function isEmptyBrigadierAssignment(assignment: BrigadierOrderAssignment): boolean {
+  return assignment.workerUserId === null && assignment.workerName.trim() === "";
+}
+
+function pruneEmptyBrigadierAssignments(
   assignments: BrigadierOrderAssignment[],
-  operationId: number,
 ): BrigadierOrderAssignment[] {
-  const operationAssignments = assignments.filter(
-    (assignment) => assignment.operationId === operationId,
-  );
-  if (operationAssignments.length === 0) {
-    return assignments;
+  return assignments.filter((assignment) => !isEmptyBrigadierAssignment(assignment));
+}
+
+function focusBrigadierAssignment(slotId: string) {
+  void nextTick(() => {
+    document
+      .querySelector<HTMLInputElement>(
+        `[data-brigadier-assignment-slot-id="${slotId}"]`,
+      )
+      ?.focus();
+  });
+}
+
+function addBrigadierAssignment(operationId: number, operationLabel: string) {
+  if (!isBrigadierAssignmentsEditable.value) {
+    return;
   }
 
-  const occupiedAssignments = operationAssignments.filter(
-    (assignment) =>
-      assignment.workerUserId !== null || assignment.workerName.trim() !== "",
-  );
-  const emptyAssignment =
-    operationAssignments.find(
-      (assignment) =>
-        assignment.workerUserId === null && assignment.workerName.trim() === "",
-    ) ??
-    createBrigadierAssignmentSlot({
-      operationId,
-      operationLabel: operationAssignments[0].operationLabel,
-    });
-  const normalizedOperationAssignments = [
-    ...occupiedAssignments,
-    emptyAssignment,
-  ];
-  const firstOperationIndex = assignments.findIndex(
+  const operationAssignments = brigadierModalAssignments.value.filter(
     (assignment) => assignment.operationId === operationId,
   );
+  const emptyAssignment = operationAssignments.find(isEmptyBrigadierAssignment);
+  if (emptyAssignment) {
+    focusBrigadierAssignment(emptyAssignment.slotId);
+    return;
+  }
 
-  return assignments.flatMap((assignment, index) => {
-    if (assignment.operationId !== operationId) {
-      return [assignment];
-    }
-    return index === firstOperationIndex ? normalizedOperationAssignments : [];
+  const assignment = createBrigadierAssignmentSlot({
+    operationId,
+    operationLabel,
   });
+  brigadierModalAssignments.value = [...brigadierModalAssignments.value, assignment];
+  focusBrigadierAssignment(assignment.slotId);
 }
 
 function handleBrigadierQuantityInput(event: Event) {
@@ -5416,17 +5513,14 @@ function handleBrigadierAssignmentInput(slotId: string, event: Event) {
 
   clearBrigadierAssignmentDropdownCloseTimeout();
   brigadierOpenAssignmentDropdownId.value = slotId;
-  brigadierModalAssignments.value = normalizeBrigadierOperationAssignments(
-    brigadierModalAssignments.value.map((assignment) =>
-      assignment.slotId === slotId
-        ? {
-            ...assignment,
-            workerName: nextName,
-            workerUserId: matchedWorker?.id ?? null,
-          }
-        : assignment,
-    ),
-    editedAssignment.operationId,
+  brigadierModalAssignments.value = brigadierModalAssignments.value.map((assignment) =>
+    assignment.slotId === slotId
+      ? {
+          ...assignment,
+          workerName: nextName,
+          workerUserId: matchedWorker?.id ?? null,
+        }
+      : assignment,
   );
 }
 
@@ -5519,17 +5613,14 @@ function selectBrigadierAssignmentWorker(slotId: string, user: UserRecord) {
   if (!selectedAssignment) {
     return;
   }
-  brigadierModalAssignments.value = normalizeBrigadierOperationAssignments(
-    brigadierModalAssignments.value.map((assignment) =>
-      assignment.slotId === slotId
-        ? {
-            ...assignment,
-            workerName: user.name,
-            workerUserId: user.id,
-          }
-        : assignment,
-    ),
-    selectedAssignment.operationId,
+  brigadierModalAssignments.value = brigadierModalAssignments.value.map((assignment) =>
+    assignment.slotId === slotId
+      ? {
+          ...assignment,
+          workerName: user.name,
+          workerUserId: user.id,
+        }
+      : assignment,
   );
   closeBrigadierAssignmentDropdown();
 }
@@ -5545,11 +5636,8 @@ function clearBrigadierAssignment(slotId: string) {
   if (!clearedAssignment) {
     return;
   }
-  brigadierModalAssignments.value = normalizeBrigadierOperationAssignments(
-    brigadierModalAssignments.value.filter(
-      (assignment) => assignment.slotId !== slotId,
-    ),
-    clearedAssignment.operationId,
+  brigadierModalAssignments.value = brigadierModalAssignments.value.filter(
+    (assignment) => assignment.slotId !== slotId,
   );
   closeBrigadierAssignmentDropdown();
 }
@@ -5796,16 +5884,11 @@ async function applyCustomStatisticsPeriod() {
 
 function estimateWorkOrderMinutes(
   quantity: number,
-  assignments: BrigadierOrderAssignment[],
+  operations: BrigadierOrderOperation[],
 ): number {
-  const uniqueOperationAssignments = [
-    ...new Map(
-      assignments.map((assignment) => [assignment.operationId, assignment]),
-    ).values(),
-  ];
-  const baseMinutes = uniqueOperationAssignments.reduce(
-    (total, assignment, index) =>
-      total + 18 + Math.min(10, assignment.operationLabel.length % 11) + index,
+  const baseMinutes = operations.reduce(
+    (total, operation, index) =>
+      total + 18 + Math.min(10, operation.operationLabel.length % 11) + index,
     0,
   );
 
@@ -5813,6 +5896,7 @@ function estimateWorkOrderMinutes(
 }
 
 function buildBrigadierAssignmentPayload(
+  operations: BrigadierOrderOperation[],
   assignments: BrigadierOrderAssignment[],
 ): Array<{ operation_id: number; worker_user_id: number | null }> {
   const assignmentsByOperation = new Map<number, BrigadierOrderAssignment[]>();
@@ -5823,26 +5907,59 @@ function buildBrigadierAssignmentPayload(
     assignmentsByOperation.set(assignment.operationId, operationAssignments);
   }
 
-  return [...assignmentsByOperation.entries()].flatMap(
-    ([operationId, operationAssignments]) => {
-      const selectedAssignments = operationAssignments.filter(
-        (assignment) => assignment.workerUserId !== null,
-      );
-      if (selectedAssignments.length === 0) {
-        return [{ operation_id: operationId, worker_user_id: null }];
-      }
-      return selectedAssignments.map((assignment) => ({
-        operation_id: operationId,
-        worker_user_id: assignment.workerUserId,
-      }));
-    },
+  return operations.flatMap((operation) => {
+    const operationAssignments =
+      assignmentsByOperation.get(operation.operationId) ?? [];
+    const selectedAssignments = operationAssignments.filter(
+      (assignment) => assignment.workerUserId !== null,
+    );
+    if (selectedAssignments.length === 0) {
+      return [{ operation_id: operation.operationId, worker_user_id: null }];
+    }
+    return selectedAssignments.map((assignment) => ({
+      operation_id: operation.operationId,
+      worker_user_id: assignment.workerUserId,
+    }));
+  });
+}
+
+function getBrigadierOrderUpdateSignature(): string {
+  if (!brigadierModalProduct.value) {
+    return "";
+  }
+
+  const quantity = Number.parseInt(brigadierModalQuantity.value, 10);
+  const leatherTypeId = brigadierModalLeatherTypeId.value
+    ? Number.parseInt(brigadierModalLeatherTypeId.value, 10)
+    : null;
+  const operations = buildBrigadierOperations(brigadierModalProduct.value.operations);
+  const assignments = buildBrigadierAssignmentPayload(
+    operations,
+    pruneEmptyBrigadierAssignments(brigadierModalAssignments.value),
+  ).sort(
+    (left, right) =>
+      left.operation_id - right.operation_id ||
+      (left.worker_user_id ?? -1) - (right.worker_user_id ?? -1),
   );
+
+  return JSON.stringify({
+    leatherTypeId:
+      leatherTypeId !== null && Number.isNaN(leatherTypeId)
+        ? null
+        : leatherTypeId,
+    quantity: Number.isNaN(quantity) ? null : quantity,
+    assignments,
+  });
 }
 
 function requestBrigadierOrderSave() {
   if (!isBrigadierSaveAvailable.value) {
     return;
   }
+
+  brigadierModalAssignments.value = pruneEmptyBrigadierAssignments(
+    brigadierModalAssignments.value,
+  );
 
   if (!brigadierModalCanSave.value || !brigadierModalProduct.value) {
     scrollToBrigadierSaveIssue();
@@ -5866,6 +5983,10 @@ async function saveBrigadierOrder() {
     return;
   }
 
+  brigadierModalAssignments.value = pruneEmptyBrigadierAssignments(
+    brigadierModalAssignments.value,
+  );
+
   if (!brigadierModalCanSave.value || !brigadierModalProduct.value) {
     closeBrigadierSaveConfirm();
     scrollToBrigadierSaveIssue();
@@ -5879,14 +6000,21 @@ async function saveBrigadierOrder() {
   const leatherTypeId = brigadierModalLeatherTypeId.value
     ? Number.parseInt(brigadierModalLeatherTypeId.value, 10)
     : null;
+  const operations = buildBrigadierOperations(brigadierModalProduct.value.operations);
   const assignments = brigadierModalAssignments.value.map((assignment) => ({ ...assignment }));
-  const estimatedMinutes = estimateWorkOrderMinutes(quantity, assignments);
-  const assignmentPayload = buildBrigadierAssignmentPayload(assignments);
+  const estimatedMinutes = estimateWorkOrderMinutes(quantity, operations);
+  const assignmentPayload = buildBrigadierAssignmentPayload(operations, assignments);
   const isCreateMode = brigadierModalMode.value === "create";
   const shouldUpdatePlannedCompletionDate =
     !isCreateMode &&
     Boolean(brigadierModalPlannedCompletionDate.value) &&
     isBrigadierPlannedCompletionDateChanged.value;
+  const shouldUpdateOrderDetails =
+    !isCreateMode &&
+    canEditBrigadierOrderDetails.value &&
+    isBrigadierOrderUpdateChanged.value &&
+    (isBrigadierOrderAttributesEditable.value ||
+      isBrigadierAssignmentsEditable.value);
 
   try {
     if (shouldUpdatePlannedCompletionDate && brigadierCurrentOrder.value) {
@@ -5903,10 +6031,9 @@ async function saveBrigadierOrder() {
       );
       brigadierTab.value = "completed";
     } else if (
-      !isCreateMode &&
+      shouldUpdateOrderDetails &&
       brigadierCurrentOrder.value &&
-      (isBrigadierOrderAttributesEditable.value ||
-        isBrigadierAssignmentsEditable.value)
+      canEditBrigadierOrderDetails.value
     ) {
       await updateWorkOrderAssignments(brigadierCurrentOrder.value.id, {
         leather_type_id: leatherTypeId,
@@ -6503,6 +6630,7 @@ async function handleResetUserPassword(user: UserRecord) {
               aria-label="Разделы бригадира"
             >
               <button
+                v-if="canEditBrigadierOrderDetails"
                 type="button"
                 class="subtab-button"
                 :class="{ 'subtab-button--active': brigadierTab === 'orders' }"
@@ -7606,7 +7734,7 @@ async function handleResetUserPassword(user: UserRecord) {
                 <strong>{{ formatDurationCompact(statisticsOverview.kpis.breakMs) }}</strong>
               </article>
               <article class="statistics-kpi-card">
-                <span class="section-label">Простой</span>
+                <span class="section-label">Брак/Ремонт</span>
                 <strong>{{ formatDurationCompact(statisticsOverview.kpis.idleMs) }}</strong>
               </article>
               <article class="statistics-kpi-card">
@@ -7640,7 +7768,7 @@ async function handleResetUserPassword(user: UserRecord) {
                   </span>
                   <span class="statistics-legend__item">
                     <span class="statistics-legend__swatch statistics-legend__swatch--idle" aria-hidden="true" />
-                    <span>Простой</span>
+                    <span>Брак/Ремонт</span>
                   </span>
                 </div>
 
@@ -7752,7 +7880,7 @@ async function handleResetUserPassword(user: UserRecord) {
                       <span>
                         {{ formatDurationCompact(item.totalMs) }}
                         · операции {{ formatDurationCompact(item.operationMs) }}
-                        · простой {{ formatDurationCompact(item.idleMs) }}
+                        · брак/ремонт {{ formatDurationCompact(item.idleMs) }}
                         · {{ formatPercentage(item.productiveRatio) }}
                       </span>
                     </div>
@@ -7768,7 +7896,7 @@ async function handleResetUserPassword(user: UserRecord) {
 
               <section class="statistics-card">
                 <div class="statistics-card__head">
-                  <h3>Простой по дням</h3>
+                  <h3>Брак/Ремонт по дням</h3>
                 </div>
 
                 <div class="mini-chart">
@@ -8096,6 +8224,7 @@ async function handleResetUserPassword(user: UserRecord) {
                   <select v-model="operationCatalogKind" class="text-input">
                     <option value="regular">Обычная</option>
                     <option value="cutting">Крой</option>
+                    <option value="adjacent">Смежная</option>
                   </select>
                 </label>
                 <button
@@ -8214,19 +8343,21 @@ async function handleResetUserPassword(user: UserRecord) {
                         :key="entry.id"
                       >
                         <td>{{ entry.name }}</td>
-                        <td>{{ entry.operationKind === "cutting" ? "Крой" : "Обычная" }}</td>
+                        <td>
+                          <select
+                            :value="entry.operationKind"
+                            class="text-input"
+                            :disabled="isOperationCatalogEntryBusy(entry.id)"
+                            aria-label="Тип операции"
+                            @change="void changeOperationCatalogEntryKind(entry, $event)"
+                          >
+                            <option value="regular">Обычная</option>
+                            <option value="cutting">Крой</option>
+                            <option value="adjacent">Смежная</option>
+                          </select>
+                        </td>
                         <td>
                           <div class="table-actions">
-                            <button
-                              type="button"
-                              class="action-link"
-                              :disabled="isOperationCatalogEntryBusy(entry.id)"
-                              @click="void toggleOperationCatalogEntryKind(entry)"
-                            >
-                              <span>
-                                {{ entry.operationKind === "cutting" ? "Сделать обычной" : "Отметить как крой" }}
-                              </span>
-                            </button>
                             <button
                               type="button"
                               class="action-link"
@@ -8457,6 +8588,10 @@ async function handleResetUserPassword(user: UserRecord) {
             </template>
           </template>
         </article>
+      </section>
+
+      <section v-else-if="activeTab === 'work_time'">
+        <AdminWorkTimePanel />
       </section>
 
       <section v-else>
@@ -9040,7 +9175,7 @@ async function handleResetUserPassword(user: UserRecord) {
                 <p class="field__hint">
                   {{
                     isBrigadierAssignmentsEditable
-                      ? "Для каждой операции выберите одного или нескольких исполнителей с ролью `исполнитель`."
+                      ? "Добавляйте исполнителей для операции кнопкой `+` слева от её названия."
                       : "Назначения исполнителей доступны только для просмотра."
                   }}
                 </p>
@@ -9051,83 +9186,102 @@ async function handleResetUserPassword(user: UserRecord) {
               <p>Нет активных пользователей с ролью исполнителя.</p>
             </div>
 
-            <div v-if="brigadierModalAssignments.length === 0" class="empty-table-state">
+            <div
+              v-if="displayedBrigadierModalAssignmentGroups.length === 0"
+              class="empty-table-state"
+            >
               <p>У этого изделия нет назначаемых операций.</p>
             </div>
 
             <div v-else class="assignment-list">
               <div
-                v-for="assignment in displayedBrigadierModalAssignments"
-                :key="assignment.slotId"
+                v-for="group in displayedBrigadierModalAssignmentGroups"
+                :key="group.operationId"
                 class="assignment-row"
               >
                 <div class="assignment-row__label">
-                  {{ assignment.operationLabel }}
+                  <button
+                    v-if="isBrigadierAssignmentsEditable"
+                    type="button"
+                    class="assignment-row__add"
+                    :aria-label="`Добавить исполнителя для операции ${group.operationLabel}`"
+                    :title="`Добавить исполнителя для операции ${group.operationLabel}`"
+                    @click="addBrigadierAssignment(group.operationId, group.operationLabel)"
+                  >
+                    +
+                  </button>
+                  <span>{{ group.operationLabel }}</span>
                 </div>
                 <div class="assignment-row__control">
-                  <div class="assignment-input-wrap">
-                    <input
-                      :value="assignment.workerName"
-                      type="text"
-                      class="text-input text-input--with-clear"
-                      autocomplete="off"
-                      :readonly="!isBrigadierAssignmentsEditable"
-                      :data-brigadier-assignment-slot-id="assignment.slotId"
-                      placeholder="Выберите исполнителя"
-                      @input="handleBrigadierAssignmentInput(assignment.slotId, $event)"
-                      @focus="openBrigadierAssignmentDropdown(assignment.slotId)"
-                      @click="openBrigadierAssignmentDropdown(assignment.slotId)"
-                      @blur="scheduleBrigadierAssignmentDropdownClose(assignment.slotId)"
-                    />
-                    <button
-                      v-if="assignment.workerName && isBrigadierAssignmentsEditable"
-                      type="button"
-                      class="field-action field-action--right"
-                      aria-label="Очистить исполнителя"
-                      title="Очистить исполнителя"
-                      @mousedown.prevent
-                      @click="clearBrigadierAssignment(assignment.slotId)"
-                    >
-                      <span class="field-action__icon" aria-hidden="true" />
-                    </button>
-                    <div
-                      v-if="
-                        isBrigadierAssignmentDropdownOpen(assignment.slotId) &&
-                        isBrigadierAssignmentsEditable
-                      "
-                      class="assignment-dropdown"
-                    >
+                  <div
+                    v-for="assignment in group.assignments"
+                    :key="assignment.slotId"
+                    class="assignment-row__field"
+                  >
+                    <div class="assignment-input-wrap">
+                      <input
+                        :value="assignment.workerName"
+                        type="text"
+                        class="text-input text-input--with-clear"
+                        autocomplete="off"
+                        :readonly="!isBrigadierAssignmentsEditable"
+                        :data-brigadier-assignment-slot-id="assignment.slotId"
+                        placeholder="Выберите исполнителя"
+                        @input="handleBrigadierAssignmentInput(assignment.slotId, $event)"
+                        @focus="openBrigadierAssignmentDropdown(assignment.slotId)"
+                        @click="openBrigadierAssignmentDropdown(assignment.slotId)"
+                        @blur="scheduleBrigadierAssignmentDropdownClose(assignment.slotId)"
+                      />
                       <button
-                        v-for="worker in getBrigadierAssignmentOptions(assignment)"
-                        :key="worker.id"
+                        v-if="assignment.workerName && isBrigadierAssignmentsEditable"
                         type="button"
-                        class="assignment-dropdown__option"
-                        :class="{
-                          'assignment-dropdown__option--selected':
-                            assignment.workerUserId === worker.id,
-                        }"
+                        class="field-action field-action--right"
+                        aria-label="Очистить исполнителя"
+                        title="Очистить исполнителя"
                         @mousedown.prevent
-                        @click="selectBrigadierAssignmentWorker(assignment.slotId, worker)"
+                        @click="clearBrigadierAssignment(assignment.slotId)"
                       >
-                        <span>{{ worker.name }}</span>
+                        <span class="field-action__icon" aria-hidden="true" />
                       </button>
                       <div
-                        v-if="getBrigadierAssignmentOptions(assignment).length === 0"
-                        class="assignment-dropdown__empty"
+                        v-if="
+                          isBrigadierAssignmentDropdownOpen(assignment.slotId) &&
+                          isBrigadierAssignmentsEditable
+                        "
+                        class="assignment-dropdown"
                       >
-                        Ничего не найдено.
+                        <button
+                          v-for="worker in getBrigadierAssignmentOptions(assignment)"
+                          :key="worker.id"
+                          type="button"
+                          class="assignment-dropdown__option"
+                          :class="{
+                            'assignment-dropdown__option--selected':
+                              assignment.workerUserId === worker.id,
+                          }"
+                          @mousedown.prevent
+                          @click="selectBrigadierAssignmentWorker(assignment.slotId, worker)"
+                        >
+                          <span>{{ worker.name }}</span>
+                        </button>
+                        <div
+                          v-if="getBrigadierAssignmentOptions(assignment).length === 0"
+                          class="assignment-dropdown__empty"
+                        >
+                          Ничего не найдено.
+                        </div>
                       </div>
                     </div>
+                    <p
+                      v-if="
+                        isBrigadierAssignmentsEditable &&
+                        getBrigadierAssignmentError(assignment)
+                      "
+                      class="field-error"
+                    >
+                      {{ getBrigadierAssignmentError(assignment) }}
+                    </p>
                   </div>
-                  <p
-                    v-if="
-                      isBrigadierAssignmentsEditable &&
-                      getBrigadierAssignmentError(assignment)
-                    "
-                    class="field-error"
-                  >
-                    {{ getBrigadierAssignmentError(assignment) }}
-                  </p>
                 </div>
               </div>
             </div>
@@ -10374,13 +10528,13 @@ async function handleResetUserPassword(user: UserRecord) {
             <th>Исполнитель</th>
           </tr>
           <tr
-            v-for="assignment in printableWorkOrder.assignments"
+            v-for="assignment in printableWorkOrderAssignments"
             :key="assignment.id"
           >
             <td>{{ assignment.operationName }}</td>
             <td>{{ assignment.workerUserName ?? "" }}</td>
           </tr>
-          <tr v-if="printableWorkOrder.assignments.length === 0">
+          <tr v-if="printableWorkOrderAssignments.length === 0">
             <td colspan="2">Операции с исполнителями не назначены.</td>
           </tr>
         </tbody>
@@ -12585,6 +12739,9 @@ h2 {
 }
 
 .assignment-row__label {
+  display: flex;
+  align-items: center;
+  gap: 10px;
   min-width: 0;
   font-weight: 600;
   color: var(--color-text);
@@ -12592,7 +12749,35 @@ h2 {
   overflow-wrap: anywhere;
 }
 
+.assignment-row__add {
+  flex: 0 0 auto;
+  width: 44px;
+  height: 44px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-surface);
+  color: var(--color-accent);
+  font: inherit;
+  font-size: 24px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.assignment-row__add:hover {
+  border-color: var(--color-accent);
+  background: var(--color-accent-soft);
+}
+
 .assignment-row__control {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.assignment-row__field {
   display: grid;
   gap: 8px;
   min-width: 0;

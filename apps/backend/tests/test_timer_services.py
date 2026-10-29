@@ -19,7 +19,12 @@ from app.models.work_order import (
     WorkOrderAssignmentWorkerState,
 )
 from app.models.work_shift import WorkShift
-from app.schemas.order import WorkOrderProductionStage, WorkOrderProductionStageUpdate
+from app.schemas.order import (
+    WorkOrderAssignmentCreate,
+    WorkOrderProductionStage,
+    WorkOrderProductionStageUpdate,
+    WorkOrderUpdateAssignments,
+)
 from app.schemas.statistics import StatisticsOverviewRead
 from app.schemas.timer import TimerSwitchPayload, TimerType
 from app.services.order_service import OrderService
@@ -442,6 +447,118 @@ def test_timer_service_rejects_regular_operation_during_cutting(
 
         assert exc_info.value.status_code == 422
         assert exc_info.value.detail == "Операция недоступна на текущей стадии заказа."
+    finally:
+        session.close()
+
+
+def test_adjacent_operation_timer_is_available_during_cutting_and_in_work(
+    db_session: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    Проверяем таймер смежной операции на производственных стадиях:
+    - запустить и остановить операцию в крое и в работе
+    - учесть оба интервала только в общем времени заказа
+    - запретить изменение количества после запуска пошива
+    """
+    worker_id, order_id, operation_id = _bootstrap_worker_graph(
+        db_session,
+        operation_kind="adjacent",
+        production_stage="cutting",
+    )
+    timestamps = iter(
+        [
+            1_000,
+            2_000,
+            3_000,
+            4_000,
+            63_000,
+            64_000,
+            65_000,
+            66_000,
+            67_000,
+            126_000,
+            127_000,
+            128_000,
+        ]
+    )
+    session = db_session()
+    try:
+        timer_service = TimerService(session)
+        monkeypatch.setattr(timer_service, "_now_ts", lambda: next(timestamps))
+
+        timer_service.start_day(worker_id)
+        timer_service.switch_timer(
+            worker_id,
+            TimerSwitchPayload(
+                timer_type=TimerType.OPERATION,
+                order_id=order_id,
+                operation_id=operation_id,
+            ),
+        )
+        timer_service.switch_timer(
+            worker_id,
+            TimerSwitchPayload(timer_type=TimerType.BREAK),
+        )
+
+        cutting_order = session.scalars(
+            select(WorkOrder).where(WorkOrder.id == order_id)
+        ).one()
+        assert cutting_order.total_spent_seconds == 60
+        assert cutting_order.cutting_spent_seconds == 0
+        assert cutting_order.cutting_started_at is None
+        assert cutting_order.sewing_started_at is None
+
+        OrderService(session).update_order_production_stage(
+            order_id,
+            WorkOrderProductionStageUpdate(
+                production_stage=WorkOrderProductionStage.IN_WORK
+            ),
+        )
+        timer_service.switch_timer(
+            worker_id,
+            TimerSwitchPayload(
+                timer_type=TimerType.OPERATION,
+                order_id=order_id,
+                operation_id=operation_id,
+            ),
+        )
+        timer_service.switch_timer(
+            worker_id,
+            TimerSwitchPayload(timer_type=TimerType.BREAK),
+        )
+
+        in_work_order = session.scalars(
+            select(WorkOrder).where(WorkOrder.id == order_id)
+        ).one()
+        assert in_work_order.total_spent_seconds == 120
+        assert in_work_order.cutting_spent_seconds == 0
+        assert in_work_order.cutting_started_at is None
+        assert in_work_order.sewing_started_at is not None
+
+        OrderService(session).update_order_production_stage(
+            order_id,
+            WorkOrderProductionStageUpdate(
+                production_stage=WorkOrderProductionStage.CUTTING
+            ),
+        )
+        with pytest.raises(HTTPException) as quantity_error:
+            OrderService(session).update_order_assignments(
+                order_id,
+                WorkOrderUpdateAssignments(
+                    quantity=11,
+                    assignments=[
+                        WorkOrderAssignmentCreate(
+                            operation_id=operation_id,
+                            worker_user_id=worker_id,
+                        )
+                    ],
+                ),
+            )
+        assert quantity_error.value.status_code == 422
+        assert quantity_error.value.detail == (
+            "Order quantity cannot be changed after sewing has started."
+        )
     finally:
         session.close()
 

@@ -11,6 +11,7 @@ from app.models import (  # noqa: F401
     operation_catalog,
     product,
     timer_session,
+    timer_session_audit,
     user,
     work_order,
     work_shift,

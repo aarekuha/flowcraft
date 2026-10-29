@@ -29,6 +29,7 @@ def _create_order_graph(
     quantity: int = 101,
     estimated_minutes: int = 101,
     elapsed_ms: int | None = None,
+    sewing_started_at: int | None = None,
 ) -> tuple[int, int]:
     session = db_session()
     try:
@@ -99,6 +100,7 @@ def _create_order_graph(
             production_stage="in_work",
             created_at=1,
             updated_at=1,
+            sewing_started_at=sewing_started_at,
             taken_at=1,
         )
         order.assignments = [
@@ -150,7 +152,11 @@ def test_split_order_creates_family_and_distributes_seconds(
     - разделить количество, план и секунды с остатком в исходной части
     - учитывать распределенное время в детализации и отчете без удвоения
     """
-    _, order_id = _create_order_graph(db_session, elapsed_ms=101_000)
+    _, order_id = _create_order_graph(
+        db_session,
+        elapsed_ms=101_000,
+        sewing_started_at=5,
+    )
     session = db_session()
     try:
         result = OrderService(session).split_order(
@@ -167,6 +173,11 @@ def test_split_order_creates_family_and_distributes_seconds(
             date(2026, 10, 25),
             date(2026, 10, 25),
         )
+        split_orders = session.scalars(
+            select(WorkOrder).where(
+                WorkOrder.id.in_([result.source.id, result.created.id])
+            )
+        ).all()
 
         assert result.source.order_number == "10001"
         assert result.source.part_number == 1
@@ -181,6 +192,7 @@ def test_split_order_creates_family_and_distributes_seconds(
         assert source_breakdown.total_elapsed_ms == 51_000
         assert created_breakdown.total_elapsed_ms == 50_000
         assert report.products[0].total_elapsed_ms == 101_000
+        assert {order.sewing_started_at for order in split_orders} == {5}
     finally:
         session.close()
 
@@ -236,7 +248,8 @@ def test_merge_last_part_collapses_family_and_preserves_legacy_qr(
         db_session,
         quantity=10,
         estimated_minutes=20,
-            elapsed_ms=101_000,
+        elapsed_ms=101_000,
+        sewing_started_at=20,
     )
     session = db_session()
     try:
@@ -244,6 +257,11 @@ def test_merge_last_part_collapses_family_and_preserves_legacy_qr(
             order_id,
             WorkOrderSplitRequest(source_quantity=6),
         )
+        split_source = session.scalars(
+            select(WorkOrder).where(WorkOrder.id == split_result.source.id)
+        ).one()
+        split_source.sewing_started_at = 10
+        session.commit()
         merged = OrderService(session).merge_orders(
             split_result.created.id,
             WorkOrderMergeRequest(included_order_ids=[split_result.source.id]),
@@ -261,6 +279,10 @@ def test_merge_last_part_collapses_family_and_preserves_legacy_qr(
         assert merged.estimated_minutes == 20
         assert merged.total_spent_seconds == 101
         assert merged.cutting_spent_seconds == 101
+        merged_order = session.scalars(
+            select(WorkOrder).where(WorkOrder.id == merged.id)
+        ).one()
+        assert merged_order.sewing_started_at == 10
         assert OrderService(session).get_order_time_breakdown(
             merged.id
         ).total_elapsed_ms == 101_000

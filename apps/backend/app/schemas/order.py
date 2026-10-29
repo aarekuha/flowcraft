@@ -3,6 +3,8 @@ from enum import StrEnum
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from app.schemas.operation_catalog import OperationCatalogEntryKind
+
 
 class SortDirection(StrEnum):
     ASC = "asc"
@@ -54,6 +56,7 @@ class WorkOrderAssignmentRead(BaseModel):
     id: int
     operation_id: int
     operation_name: str
+    operation_kind: OperationCatalogEntryKind
     worker_user_id: int | None
     worker_user_name: str | None
     worker_status: WorkerAssignmentStatusFilter = WorkerAssignmentStatusFilter.IN_WORK
@@ -199,6 +202,7 @@ class WorkOrderDetail(BaseModel):
     total_spent_seconds: int
     cutting_spent_seconds: int
     has_spent_time: bool
+    quantity_change_allowed: bool
     created_at: int
     updated_at: int
     production_stage: WorkOrderProductionStage

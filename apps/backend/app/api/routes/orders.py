@@ -216,6 +216,9 @@ def create_order(
 def update_order_assignments(
     order_id: int,
     payload: WorkOrderUpdateAssignments,
+    _auth_session: AuthenticatedSession = Depends(
+        require_any_role("brigadier", "admin")
+    ),
     session: Session = Depends(get_session),
 ) -> WorkOrderDetail:
     return OrderService(session).update_order_assignments(order_id, payload)
@@ -230,7 +233,7 @@ def update_order_planned_completion_date(
     order_id: int,
     payload: WorkOrderPlannedCompletionDateUpdate,
     _auth_session: AuthenticatedSession = Depends(
-        require_any_role("brigadier", "quality_control")
+        require_any_role("brigadier", "quality_control", "admin")
     ),
     session: Session = Depends(get_session),
 ) -> WorkOrderDetail:

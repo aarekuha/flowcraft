@@ -7,6 +7,7 @@ from sqlalchemy import Select, and_, exists, func, or_, select, union_all, updat
 from sqlalchemy.orm import Session, selectinload
 from sqlalchemy.sql.elements import ColumnElement
 
+from app.domain.operation_availability import is_operation_available_for_stage
 from app.models.leather_type import LeatherType
 from app.models.operation import Operation
 from app.models.operation_catalog import OperationCatalogEntry
@@ -627,6 +628,7 @@ class OrderService:
             created_at=now,
             updated_at=now,
             cutting_started_at=order.cutting_started_at,
+            sewing_started_at=order.sewing_started_at,
             taken_at=order.taken_at,
             quality_control_at=None,
             defect_quantity=0,
@@ -761,6 +763,12 @@ class OrderService:
             [
                 receiver.cutting_started_at,
                 *(order.cutting_started_at for order in included_orders),
+            ]
+        )
+        receiver.sewing_started_at = self._minimum_timestamp(
+            [
+                receiver.sewing_started_at,
+                *(order.sewing_started_at for order in included_orders),
             ]
         )
         for included_order in included_orders:
@@ -962,6 +970,7 @@ class OrderService:
             created_at=timestamp,
             updated_at=timestamp,
             cutting_started_at=None,
+            sewing_started_at=None,
         )
         order.assignments = self._build_assignments(payload.assignments)
 
@@ -992,10 +1001,7 @@ class OrderService:
         product = self._get_product_or_404(order.product_id)
         leather_type_id = self._resolve_update_leather_type_id(order, payload)
         if payload.quantity != order.quantity:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-                detail="Order quantity can only be changed by splitting or merging.",
-            )
+            self._validate_order_quantity_can_be_changed(order)
         attributes_changed = leather_type_id != order.leather_type_id
         assignments_changed = self._order_assignments_changed(order, payload)
 
@@ -1008,7 +1014,16 @@ class OrderService:
         if assignments_changed:
             self._validate_order_assignments_can_be_changed(order)
 
-        self._validate_assignments(product.id, payload.assignments)
+        existing_worker_assignment_keys = {
+            (assignment.operation_id, assignment.worker_user_id)
+            for assignment in order.assignments
+            if assignment.worker_user_id is not None
+        }
+        self._validate_assignments(
+            product.id,
+            payload.assignments,
+            allowed_unavailable_assignment_keys=existing_worker_assignment_keys,
+        )
         if assignments_changed:
             self._validate_removed_assignments_have_no_active_timers(
                 order,
@@ -1255,6 +1270,7 @@ class OrderService:
                         TimerSession.timer_type_code
                         == TIMER_TYPE_TO_CODE[TimerType.OPERATION],
                         TimerSession.ended_at.is_(None),
+                        TimerSession.deleted_at.is_(None),
                     )
                 )
             )
@@ -1301,6 +1317,7 @@ class OrderService:
                 TimerSession.timer_type_code
                 == TIMER_TYPE_TO_CODE[TimerType.OPERATION],
                 TimerSession.ended_at.is_not(None),
+                TimerSession.deleted_at.is_(None),
             )
             .order_by(TimerSession.id.asc())
         ).all()
@@ -1482,6 +1499,7 @@ class OrderService:
             )
             if not has_allocations:
                 timer_session.order_id = receiver_order_id
+                timer_session.updated_at = now
 
     def _minimum_timestamp(self, values: Sequence[int | None]) -> int | None:
         present_values = [value for value in values if value is not None]
@@ -1561,7 +1579,12 @@ class OrderService:
 
     def _order_has_timer_history(self, order_id: int) -> bool:
         raw_session_exists = self.session.scalar(
-            select(exists().where(TimerSession.order_id == order_id))
+            select(
+                exists().where(
+                    TimerSession.order_id == order_id,
+                    TimerSession.deleted_at.is_(None),
+                )
+            )
         )
         allocation_exists = self.session.scalar(
             select(
@@ -1734,6 +1757,18 @@ class OrderService:
                 detail="Order cannot be changed after time has been spent.",
             )
 
+    def _validate_order_quantity_can_be_changed(self, order: WorkOrder) -> None:
+        if order.production_stage != WorkOrderProductionStage.CUTTING.value:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="Order quantity can only be changed during cutting stage.",
+            )
+        if order.sewing_started_at is not None:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="Order quantity cannot be changed after sewing has started.",
+            )
+
     def _order_assignments_changed(
         self,
         order: WorkOrder,
@@ -1775,6 +1810,7 @@ class OrderService:
                     TimerSession.timer_type_code
                     == TIMER_TYPE_TO_CODE[TimerType.OPERATION],
                     TimerSession.ended_at.is_(None),
+                    TimerSession.deleted_at.is_(None),
                 )
             ).tuples().all()
         )
@@ -1795,6 +1831,7 @@ class OrderService:
                     TimerSession.timer_type_code
                     == TIMER_TYPE_TO_CODE[TimerType.OPERATION],
                     TimerSession.ended_at.is_(None),
+                    TimerSession.deleted_at.is_(None),
                 )
             )
         )
@@ -1817,6 +1854,7 @@ class OrderService:
             TimerSession.order_id.is_not(None),
             TimerSession.timer_type_code == TIMER_TYPE_TO_CODE[TimerType.OPERATION],
             TimerSession.ended_at.is_(None),
+            TimerSession.deleted_at.is_(None),
         )
         completed_orders = select(effective_time.c.order_id.label("order_id")).where(
             effective_time.c.elapsed_ms > 0
@@ -1839,6 +1877,7 @@ class OrderService:
         filters: list[ColumnElement[bool]] = [
             TimerSession.order_id.is_not(None),
             TimerSession.timer_type_code == TIMER_TYPE_TO_CODE[TimerType.OPERATION],
+            TimerSession.deleted_at.is_(None),
             or_(
                 TimerSession.ended_at.is_(None),
                 TimerSession.ended_at > TimerSession.started_at,
@@ -1961,6 +2000,8 @@ class OrderService:
         self,
         product_id: int,
         assignments: Sequence[WorkOrderAssignmentCreate],
+        *,
+        allowed_unavailable_assignment_keys: set[tuple[int, int]] | None = None,
     ) -> None:
         operations = self.session.scalars(
             select(Operation).where(Operation.product_id == product_id)
@@ -2015,13 +2056,26 @@ class OrderService:
             select(User).where(User.id.in_(worker_ids))
         ).all()
         workers_by_id = {worker.id: worker for worker in workers}
+        preserved_assignment_keys = allowed_unavailable_assignment_keys or set()
 
         for assignment in assignments:
             if assignment.worker_user_id is None:
                 continue
 
             worker = workers_by_id.get(assignment.worker_user_id)
-            if worker is None or worker.deleted_at is not None:
+            if worker is None:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                    detail="Assigned worker not found.",
+                )
+            assignment_key = (assignment.operation_id, assignment.worker_user_id)
+            if (
+                worker.deleted_at is not None
+                or not worker.is_active
+                or "worker" not in worker.roles
+            ) and assignment_key in preserved_assignment_keys:
+                continue
+            if worker.deleted_at is not None:
                 raise HTTPException(
                     status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                     detail="Assigned worker not found.",
@@ -2136,6 +2190,10 @@ class OrderService:
             total_spent_seconds=order.total_spent_seconds,
             cutting_spent_seconds=order.cutting_spent_seconds,
             has_spent_time=self._order_has_spent_time(order.id),
+            quantity_change_allowed=(
+                order.production_stage == WorkOrderProductionStage.CUTTING.value
+                and order.sewing_started_at is None
+            ),
             created_at=order.created_at,
             updated_at=order.updated_at,
             production_stage=order.production_stage,
@@ -2191,11 +2249,10 @@ class OrderService:
             if catalog_entry is not None
             else OperationCatalogEntryKind.REGULAR.value
         )
-        if order.production_stage == WorkOrderProductionStage.CUTTING.value:
-            return operation_kind == OperationCatalogEntryKind.CUTTING.value
-        if order.production_stage == WorkOrderProductionStage.IN_WORK.value:
-            return operation_kind != OperationCatalogEntryKind.CUTTING.value
-        return False
+        return is_operation_available_for_stage(
+            operation_kind=operation_kind,
+            production_stage=order.production_stage,
+        )
 
     def _serialize_assignment(
         self,
@@ -2216,6 +2273,11 @@ class OrderService:
             id=assignment.id,
             operation_id=assignment.operation_id,
             operation_name=self._get_operation_name(assignment.operation),
+            operation_kind=(
+                assignment.operation.catalog_entry.operation_kind
+                if assignment.operation.catalog_entry is not None
+                else OperationCatalogEntryKind.REGULAR
+            ),
             worker_user_id=assignment.worker_user_id,
             worker_user_name=assignment.worker_user.name
             if assignment.worker_user is not None

@@ -4,6 +4,7 @@ from app.models.operation import Operation
 from app.models.operation_catalog import OperationCatalogEntry
 from app.models.product import Product
 from app.models.timer_session import TimerSession
+from app.models.timer_session_audit import TimerSessionAuditLog
 from app.models.user import User
 from app.models.work_order import (
     WorkOrder,
@@ -23,6 +24,7 @@ __all__ = [
     "OperationCatalogEntry",
     "Product",
     "TimerSession",
+    "TimerSessionAuditLog",
     "User",
     "WorkOrder",
     "WorkOrderAssignment",
