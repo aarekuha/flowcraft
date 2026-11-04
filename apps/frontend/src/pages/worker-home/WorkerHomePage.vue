@@ -6830,42 +6830,44 @@ async function handleResetUserPassword(user: UserRecord) {
                       </th>
                       <th>Вид кожи</th>
                       <th>Количество изделий</th>
-                      <th>
-                        <button
-                          type="button"
-                          class="sort-header-button"
-                          :class="{
-                            'sort-header-button--active':
-                              isWorkOrderSortFieldActive('planned_completion'),
-                          }"
-                          @click="toggleWorkOrderSort('planned_completion')"
-                        >
-                          <span>Плановая дата сдачи</span>
-                          <span
-                            class="sort-header-button__icon"
-                            :class="`sort-header-button__icon--${getWorkOrderSortDirection('planned_completion')}`"
-                            aria-hidden="true"
-                          />
-                        </button>
-                      </th>
-                      <th v-if="workOrderStatusTab === 'quality_control'">
-                        <button
-                          type="button"
-                          class="sort-header-button"
-                          :class="{
-                            'sort-header-button--active':
-                              isWorkOrderSortFieldActive('quality_control'),
-                          }"
-                          @click="toggleWorkOrderSort('quality_control')"
-                        >
-                          <span>Дата передачи в ОТК</span>
-                          <span
-                            class="sort-header-button__icon"
-                            :class="`sort-header-button__icon--${getWorkOrderSortDirection('quality_control')}`"
-                            aria-hidden="true"
-                          />
-                        </button>
-                      </th>
+                      <template v-if="workOrderStatusTab === 'quality_control'">
+                        <th>
+                          <button
+                            type="button"
+                            class="sort-header-button"
+                            :class="{
+                              'sort-header-button--active':
+                                isWorkOrderSortFieldActive('quality_control'),
+                            }"
+                            @click="toggleWorkOrderSort('quality_control')"
+                          >
+                            <span>Дата передачи в ОТК</span>
+                            <span
+                              class="sort-header-button__icon"
+                              :class="`sort-header-button__icon--${getWorkOrderSortDirection('quality_control')}`"
+                              aria-hidden="true"
+                            />
+                          </button>
+                        </th>
+                        <th>
+                          <button
+                            type="button"
+                            class="sort-header-button"
+                            :class="{
+                              'sort-header-button--active':
+                                isWorkOrderSortFieldActive('planned_completion'),
+                            }"
+                            @click="toggleWorkOrderSort('planned_completion')"
+                          >
+                            <span>Плановая дата сдачи</span>
+                            <span
+                              class="sort-header-button__icon"
+                              :class="`sort-header-button__icon--${getWorkOrderSortDirection('planned_completion')}`"
+                              aria-hidden="true"
+                            />
+                          </button>
+                        </th>
+                      </template>
                       <template v-else>
                         <th>
                           <button
@@ -6957,6 +6959,24 @@ async function handleResetUserPassword(user: UserRecord) {
                             />
                           </button>
                         </th>
+                        <th>
+                          <button
+                            type="button"
+                            class="sort-header-button"
+                            :class="{
+                              'sort-header-button--active':
+                                isWorkOrderSortFieldActive('planned_completion'),
+                            }"
+                            @click="toggleWorkOrderSort('planned_completion')"
+                          >
+                            <span>Плановая дата сдачи</span>
+                            <span
+                              class="sort-header-button__icon"
+                              :class="`sort-header-button__icon--${getWorkOrderSortDirection('planned_completion')}`"
+                              aria-hidden="true"
+                            />
+                          </button>
+                        </th>
                         <th v-if="workOrderStatusTab === 'completed'">
                           <button
                             type="button"
@@ -6987,16 +7007,16 @@ async function handleResetUserPassword(user: UserRecord) {
                       <td>{{ order.productName }}</td>
                       <td>{{ order.leatherTypeName ?? "вид кожи не указан" }}</td>
                       <td>{{ order.quantity }} шт.</td>
-                      <td
-                        :class="{
-                          'work-order-deadline--overdue': isWorkOrderOverdue(order),
-                        }"
-                      >
-                        {{ formatPlannedCompletionDate(order.plannedCompletionDate) }}
-                      </td>
-                      <td v-if="workOrderStatusTab === 'quality_control'">
-                        {{ order.qualityControlAt ?? "—" }}
-                      </td>
+                      <template v-if="workOrderStatusTab === 'quality_control'">
+                        <td>{{ order.qualityControlAt ?? "—" }}</td>
+                        <td
+                          :class="{
+                            'work-order-deadline--overdue': isWorkOrderOverdue(order),
+                          }"
+                        >
+                          {{ formatPlannedCompletionDate(order.plannedCompletionDate) }}
+                        </td>
+                      </template>
                       <template v-else>
                         <td>{{ order.createdAt }}</td>
                         <td v-if="workOrderStatusTab === 'cutting'">
@@ -7010,6 +7030,13 @@ async function handleResetUserPassword(user: UserRecord) {
                         </td>
                         <td v-if="workOrderStatusTab === 'completed'">
                           {{ order.completedAt ?? "—" }}
+                        </td>
+                        <td
+                          :class="{
+                            'work-order-deadline--overdue': isWorkOrderOverdue(order),
+                          }"
+                        >
+                          {{ formatPlannedCompletionDate(order.plannedCompletionDate) }}
                         </td>
                         <td v-if="workOrderStatusTab === 'completed'">
                           {{ order.defectQuantity }} шт.
@@ -7246,14 +7273,6 @@ async function handleResetUserPassword(user: UserRecord) {
                     <span>{{ order.productName }}</span>
                     <span>Вид кожи: {{ order.leatherTypeName ?? "вид кожи не указан" }}</span>
                     <span>Количество изделий: {{ order.quantity }} шт.</span>
-                    <span
-                      :class="{
-                        'work-order-deadline--overdue': isWorkOrderOverdue(order),
-                      }"
-                    >
-                      Плановая сдача:
-                      {{ formatPlannedCompletionDate(order.plannedCompletionDate) }}
-                    </span>
                     <span>Создан: {{ order.createdAt }}</span>
                     <span v-if="workOrderStatusTab === 'cutting'">
                       Крой начат: {{ order.cuttingStartedAt ?? "—" }}
@@ -7270,11 +7289,19 @@ async function handleResetUserPassword(user: UserRecord) {
                     <span v-if="workOrderStatusTab === 'completed'">
                       ОТК проведен: {{ order.completedAt ?? "—" }}
                     </span>
-                    <span v-if="workOrderStatusTab === 'completed'">
-                      Брак: {{ order.defectQuantity }} шт.
-                    </span>
                     <span v-if="workOrderStatusTab === 'deleted'">
                       Удален: {{ order.deletedAt ?? "—" }}
+                    </span>
+                    <span
+                      :class="{
+                        'work-order-deadline--overdue': isWorkOrderOverdue(order),
+                      }"
+                    >
+                      Плановая сдача:
+                      {{ formatPlannedCompletionDate(order.plannedCompletionDate) }}
+                    </span>
+                    <span v-if="workOrderStatusTab === 'completed'">
+                      Брак: {{ order.defectQuantity }} шт.
                     </span>
                   </div>
                   <button
