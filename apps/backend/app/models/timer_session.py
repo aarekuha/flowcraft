@@ -1,4 +1,4 @@
-from sqlalchemy import BigInteger, ForeignKey, Index, Integer
+from sqlalchemy import BigInteger, ForeignKey, Index, Integer, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
@@ -13,6 +13,22 @@ class TimerSession(Base):
             "deleted_at",
             "started_at",
             "ended_at",
+        ),
+        Index(
+            "uq_timer_sessions_active_order_operation",
+            "order_id",
+            "operation_id",
+            unique=True,
+            sqlite_where=text(
+                "ended_at IS NULL AND deleted_at IS NULL "
+                "AND timer_type_code = 2 "
+                "AND order_id IS NOT NULL AND operation_id IS NOT NULL"
+            ),
+            postgresql_where=text(
+                "ended_at IS NULL AND deleted_at IS NULL "
+                "AND timer_type_code = 2 "
+                "AND order_id IS NOT NULL AND operation_id IS NOT NULL"
+            ),
         ),
     )
 

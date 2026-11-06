@@ -568,7 +568,10 @@ class StatisticsService:
                 else []
             )
             if allocations:
-                assert timer_session.ended_at is not None
+                if timer_session.ended_at is None:
+                    raise RuntimeError(
+                        "Completed allocation references an active timer session"
+                    )
                 session_elapsed_ms = max(
                     timer_session.ended_at - timer_session.started_at,
                     1,

@@ -38,7 +38,19 @@ def create_worker_user(client: TestClient, name: str = "Ирина Соколо�
         },
     )
     assert response.status_code == 201
-    return response.json()
+    worker = response.json()
+    catalog_response = client.get(
+        "/api/operation-catalog",
+        params={"page_size": 100},
+    )
+    assert catalog_response.status_code == 200
+    for operation in catalog_response.json()["items"]:
+        skill_response = client.post(
+            f"/api/users/{worker['id']}/skills",
+            json={"operation_catalog_entry_id": operation["id"]},
+        )
+        assert skill_response.status_code in {200, 409}
+    return worker
 
 
 def create_brigadier_user(
@@ -130,7 +142,31 @@ def create_product_with_leaf_operations(
         },
     )
     assert response.status_code == 201
-    return response.json()
+    product = response.json()
+    operation_catalog_entry_ids: list[int] = []
+
+    def collect_catalog_entry_ids(nodes: list[dict]) -> None:
+        for node in nodes:
+            if node["children"]:
+                collect_catalog_entry_ids(node["children"])
+            elif node["operation_catalog_entry_id"] is not None:
+                operation_catalog_entry_ids.append(node["operation_catalog_entry_id"])
+
+    collect_catalog_entry_ids(product["operations"])
+    users_response = client.get("/api/users")
+    assert users_response.status_code == 200
+    for worker in users_response.json():
+        if "worker" not in worker["roles"]:
+            continue
+        for operation_catalog_entry_id in operation_catalog_entry_ids:
+            skill_response = client.post(
+                f"/api/users/{worker['id']}/skills",
+                json={
+                    "operation_catalog_entry_id": operation_catalog_entry_id,
+                },
+            )
+            assert skill_response.status_code in {200, 409}
+    return product
 
 
 def collect_leaf_operation_ids(product: dict) -> list[int]:
@@ -2072,6 +2108,88 @@ def test_update_order_quantity_during_cutting_with_active_timer(
     assert forbidden_update_response.status_code == 422
     assert forbidden_update_response.json()["detail"] == (
         "Order quantity can only be changed during cutting stage."
+    )
+
+
+def test_assignment_requires_skill_but_preserves_existing_skillless_worker(
+    client: TestClient,
+) -> None:
+    """
+    Проверяем удаление навыка после назначения:
+    - создать заказ с подходящими навыками исполнителя
+    - удалить один навык и сохранить существующее назначение
+    - отклонить такое же назначение в новом заказе
+    """
+    author = create_author_user(client, name="Автор навыков назначения")
+    worker = create_worker_user(client, name="Исполнитель с удалённым навыком")
+    product = create_product_with_leaf_operations(
+        client,
+        author["id"],
+        name="Изделие проверки навыков",
+    )
+    leaf_nodes: list[dict] = []
+
+    def collect_leaf_nodes(nodes: list[dict]) -> None:
+        for node in nodes:
+            if node["children"]:
+                collect_leaf_nodes(node["children"])
+            else:
+                leaf_nodes.append(node)
+
+    collect_leaf_nodes(product["operations"])
+    assignments = [
+        {
+            "operation_id": node["id"],
+            "worker_user_id": worker["id"],
+        }
+        for node in leaf_nodes
+    ]
+    create_response = client.post(
+        "/api/orders",
+        json={
+            "order_number": "FC-SKILL-1",
+            "product_id": product["id"],
+            "quantity": 2,
+            "assignments": assignments,
+        },
+    )
+    assert create_response.status_code == 201
+    order_id = create_response.json()["id"]
+    cutting_response = client.patch(
+        f"/api/orders/{order_id}/production-stage",
+        json={"production_stage": "cutting"},
+    )
+    assert cutting_response.status_code == 200
+
+    removed_catalog_entry_id = leaf_nodes[0]["operation_catalog_entry_id"]
+    remove_response = client.delete(
+        f"/api/users/{worker['id']}/skills/{removed_catalog_entry_id}"
+    )
+    assert remove_response.status_code == 200
+
+    preserve_response = client.put(
+        f"/api/orders/{order_id}/assignments",
+        json={
+            "quantity": 3,
+            "estimated_minutes": 0,
+            "assignments": assignments,
+        },
+    )
+    assert preserve_response.status_code == 200
+    assert preserve_response.json()["quantity"] == 3
+
+    new_order_response = client.post(
+        "/api/orders",
+        json={
+            "order_number": "FC-SKILL-2",
+            "product_id": product["id"],
+            "quantity": 1,
+            "assignments": assignments,
+        },
+    )
+    assert new_order_response.status_code == 422
+    assert new_order_response.json()["detail"] == (
+        "Assigned worker does not have the required operation skill."
     )
 
 

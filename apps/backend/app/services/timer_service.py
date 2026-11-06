@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 
 from fastapi import HTTPException, status
 from sqlalchemy import Select, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.domain.operation_availability import is_operation_available_for_stage
@@ -26,6 +27,7 @@ from app.schemas.timer import (
     WorkerTimerStateRead,
     WorkShiftRead,
 )
+from app.services.planning_revision_service import PlanningRevisionService
 from app.services.work_order_time_service import WorkOrderTimeService
 
 TIMER_TYPE_TO_CODE = {
@@ -69,6 +71,7 @@ class TimerService:
                 timer_type=TimerType.PREPARATION,
                 started_at=now,
             )
+            PlanningRevisionService(self.session).request_recalculation()
             self.session.commit()
             self.session.refresh(shift)
             return self._serialize_state(shift)
@@ -81,6 +84,7 @@ class TimerService:
                 timer_type=TimerType.PREPARATION,
                 started_at=self._now_ts(),
             )
+            PlanningRevisionService(self.session).request_recalculation()
             self.session.commit()
 
         return self._serialize_state(shift)
@@ -101,6 +105,8 @@ class TimerService:
         active_session = self._get_open_timer_session(user_id)
         if active_session is not None and self._is_same_target(active_session, payload):
             return self._serialize_state(shift)
+
+        self._ensure_operation_is_not_active(payload)
 
         now = self._now_ts()
         affected_order_ids: set[int] = set()
@@ -126,17 +132,32 @@ class TimerService:
                 started_at=now,
             )
 
-        self._open_timer_session(
-            user_id=user_id,
-            shift_id=shift.id,
-            timer_type=payload.timer_type,
-            order_id=payload.order_id,
-            operation_id=payload.operation_id,
-            started_at=now,
-        )
-
-        self._refresh_work_order_totals(affected_order_ids)
-        self.session.commit()
+        try:
+            self._open_timer_session(
+                user_id=user_id,
+                shift_id=shift.id,
+                timer_type=payload.timer_type,
+                order_id=payload.order_id,
+                operation_id=payload.operation_id,
+                started_at=now,
+            )
+            self._refresh_work_order_totals(affected_order_ids)
+            PlanningRevisionService(self.session).request_recalculation()
+            self.session.commit()
+        except IntegrityError:
+            self.session.rollback()
+            if (
+                payload.timer_type == TimerType.OPERATION
+                and payload.order_id is not None
+                and payload.operation_id is not None
+                and self._find_active_operation_session(
+                    order_id=payload.order_id,
+                    operation_id=payload.operation_id,
+                )
+                is not None
+            ):
+                self._raise_operation_already_active()
+            raise
         self.session.refresh(shift)
         return self._serialize_state(shift)
 
@@ -161,6 +182,7 @@ class TimerService:
 
         shift.ended_at = now
         self._refresh_work_order_totals(affected_order_ids)
+        PlanningRevisionService(self.session).request_recalculation()
         self.session.commit()
         return WorkerTimerStateRead(shift=None, active_timer=None, timer_totals=[])
 
@@ -356,6 +378,49 @@ class TimerService:
             timer_session.timer_type_code == TIMER_TYPE_TO_CODE[payload.timer_type]
             and timer_session.order_id == payload.order_id
             and timer_session.operation_id == payload.operation_id
+        )
+
+    def _ensure_operation_is_not_active(self, payload: TimerSwitchPayload) -> None:
+        if (
+            payload.timer_type != TimerType.OPERATION
+            or payload.order_id is None
+            or payload.operation_id is None
+        ):
+            return
+        active_session = self._find_active_operation_session(
+            order_id=payload.order_id,
+            operation_id=payload.operation_id,
+        )
+        if active_session is not None:
+            self._raise_operation_already_active()
+
+    def _find_active_operation_session(
+        self,
+        *,
+        order_id: int,
+        operation_id: int,
+    ) -> TimerSession | None:
+        return self.session.scalar(
+            select(TimerSession)
+            .where(
+                TimerSession.order_id == order_id,
+                TimerSession.operation_id == operation_id,
+                TimerSession.timer_type_code
+                == TIMER_TYPE_TO_CODE[TimerType.OPERATION],
+                TimerSession.ended_at.is_(None),
+                TimerSession.deleted_at.is_(None),
+            )
+            .order_by(TimerSession.id.asc())
+            .limit(1)
+        )
+
+    def _raise_operation_already_active(self) -> None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "operation_already_active",
+                "message": "Операция уже выполняется другим исполнителем.",
+            },
         )
 
     def _refresh_work_order_totals(self, order_ids: set[int]) -> None:

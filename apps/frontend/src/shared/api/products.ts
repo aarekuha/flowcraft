@@ -1,11 +1,19 @@
 import { apiFetch, createRequestError, handleJsonResponse } from "@/shared/api/http";
+import type { OperationCatalogEntryKind } from "@/shared/api/operationCatalog";
 
 export type OperationNode = {
   id: number;
   operationCatalogEntryId: number | null;
   name: string;
+  operationKind: OperationCatalogEntryKind | null;
   priceCents: number | null;
   standardTimeSeconds: number | null;
+  statisticalTimeSeconds: number | null;
+  statisticalCompletedOrdersCount: number;
+  statisticalItemsCount: number;
+  statisticalTimeCalculatedAt: number | null;
+  stageStart: number;
+  stageEnd: number;
   children: OperationNode[];
 };
 
@@ -16,6 +24,7 @@ export type ProductSummary = {
   author: string;
   authorUserId: number | null;
   materialCostCents: number | null;
+  stageCount: number;
   isActive: boolean;
   createdAt: string;
   createdAtTs: number;
@@ -30,6 +39,7 @@ export type ProductDetail = {
   author: string;
   authorUserId: number | null;
   materialCostCents: number | null;
+  stageCount: number;
   isActive: boolean;
   createdAt: string;
   createdAtTs: number;
@@ -39,15 +49,28 @@ export type ProductDetail = {
 export type ProductCreatePayload = {
   name: string;
   version: string;
+  source_product_id?: number | null;
   comment?: string | null;
   author_user_id?: number | null;
   material_cost_cents?: number | null;
+  stage_count?: number;
   operations: Array<{
     operation_catalog_entry_id?: number | null;
     name: string;
     price_cents?: number | null;
     standard_time_seconds?: number | null;
+    stage_start?: number;
+    stage_end?: number;
     children: ProductCreatePayload["operations"];
+  }>;
+};
+
+export type ProductStagesUpdatePayload = {
+  stage_count: number;
+  operations: Array<{
+    operation_id: number;
+    stage_start: number;
+    stage_end: number;
   }>;
 };
 
@@ -66,8 +89,15 @@ type OperationNodeApi = {
   id: number;
   operation_catalog_entry_id: number | null;
   name: string;
+  operation_kind: OperationCatalogEntryKind | null;
   price_cents: number | null;
   standard_time_seconds: number | null;
+  statistical_time_seconds: number | null;
+  statistical_completed_orders_count: number;
+  statistical_items_count: number;
+  statistical_time_calculated_at: number | null;
+  stage_start: number;
+  stage_end: number;
   children: OperationNodeApi[];
 };
 
@@ -78,6 +108,7 @@ type ProductSummaryApi = {
   author: string;
   author_user_id: number | null;
   material_cost_cents: number | null;
+  stage_count: number;
   is_active: boolean;
   created_at: number;
   operations_count: number;
@@ -91,6 +122,7 @@ type ProductDetailApi = {
   author: string;
   author_user_id: number | null;
   material_cost_cents: number | null;
+  stage_count: number;
   is_active: boolean;
   created_at: number;
   operations: OperationNodeApi[];
@@ -138,6 +170,21 @@ export async function updateProductCosts(
   return handleJsonResponse<ProductDetailApi>(response).then(mapProductDetail);
 }
 
+export async function updateProductStages(
+  productId: number,
+  payload: ProductStagesUpdatePayload,
+): Promise<ProductDetail> {
+  const response = await apiFetch(`/api/products/${productId}/stages`, {
+    method: "PATCH",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(payload),
+  });
+
+  return handleJsonResponse<ProductDetailApi>(response).then(mapProductDetail);
+}
+
 export async function deleteProduct(productId: number): Promise<void> {
   const response = await apiFetch(`/api/products/${productId}`, {
     method: "DELETE",
@@ -171,6 +218,7 @@ function mapProductSummary(product: ProductSummaryApi): ProductSummary {
     author: product.author,
     authorUserId: product.author_user_id,
     materialCostCents: product.material_cost_cents,
+    stageCount: product.stage_count,
     isActive: product.is_active,
     createdAt: formatDate(product.created_at),
     createdAtTs: product.created_at,
@@ -187,6 +235,7 @@ function mapProductDetail(product: ProductDetailApi): ProductDetail {
     author: product.author,
     authorUserId: product.author_user_id,
     materialCostCents: product.material_cost_cents,
+    stageCount: product.stage_count,
     isActive: product.is_active,
     createdAt: formatDate(product.created_at),
     createdAtTs: product.created_at,
@@ -199,8 +248,16 @@ function mapOperationNode(operation: OperationNodeApi): OperationNode {
     id: operation.id,
     operationCatalogEntryId: operation.operation_catalog_entry_id,
     name: operation.name,
+    operationKind: operation.operation_kind,
     priceCents: operation.price_cents,
     standardTimeSeconds: operation.standard_time_seconds,
+    statisticalTimeSeconds: operation.statistical_time_seconds,
+    statisticalCompletedOrdersCount:
+      operation.statistical_completed_orders_count,
+    statisticalItemsCount: operation.statistical_items_count,
+    statisticalTimeCalculatedAt: operation.statistical_time_calculated_at,
+    stageStart: operation.stage_start,
+    stageEnd: operation.stage_end,
     children: operation.children.map(mapOperationNode),
   };
 }

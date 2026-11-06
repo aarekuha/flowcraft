@@ -74,3 +74,4 @@ class UserRead(BaseModel):
     created_at: int
     updated_at: int
     deleted_at: int | None = None
+    skill_operation_catalog_entry_ids: list[int] = Field(default_factory=list)

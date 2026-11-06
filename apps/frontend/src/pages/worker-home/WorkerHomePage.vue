@@ -6,6 +6,13 @@ import { useRoute, useRouter } from "vue-router";
 import flowcraftLogoUrl from "@/shared/assets/flowcraft_logo.png";
 import AdminWorkTimePanel from "@/pages/worker-home/AdminWorkTimePanel.vue";
 import ReportsPanel from "@/pages/worker-home/ReportsPanel.vue";
+import ProductStagesModal from "@/pages/worker-home/ProductStagesModal.vue";
+import PlanningForecastModal from "@/pages/worker-home/PlanningForecastModal.vue";
+import PlanningPriorityPanel from "@/pages/worker-home/PlanningPriorityPanel.vue";
+import PlanningSettingsModal from "@/pages/worker-home/PlanningSettingsModal.vue";
+import PlanningWorkloadModal from "@/pages/worker-home/PlanningWorkloadModal.vue";
+import UserSkillsModal from "@/pages/worker-home/UserSkillsModal.vue";
+import WorkScheduleModal from "@/pages/worker-home/WorkScheduleModal.vue";
 
 import {
   changePassword,
@@ -74,9 +81,17 @@ import {
   updateProductStatus,
   type OperationNode,
   type ProductCreatePayload,
+  type ProductCostsUpdatePayload,
   type ProductDetail,
   type ProductSummary,
 } from "@/shared/api/products";
+import {
+  fetchPlanningOrderForecasts,
+  fetchProductionPlanningStatus,
+  requestProductionPlanningRecalculation,
+  type PlanningOrderForecast,
+  type ProductionPlanningStatus,
+} from "@/shared/api/planning";
 import {
   downloadStatisticsExport,
   fetchStatisticsOverview,
@@ -110,6 +125,11 @@ import {
 } from "@/shared/lib/standardTime";
 import { formatOrderDuration } from "@/shared/lib/duration";
 import { sortAssignmentsForPrint } from "@/shared/lib/workOrderPrint";
+import {
+  canSelectWorkerForOperation,
+  workerHasOperationSkill,
+} from "@/shared/lib/assignmentSkills";
+import { getPlanningForecastLabel } from "@/shared/lib/productionPlanning";
 
 type TabId =
   | "worker"
@@ -121,7 +141,11 @@ type TabId =
   | "users";
 type ModalMode = "create" | "copy" | "view" | null;
 type WorkOrderStatusTabId = Exclude<WorkOrderStatusFilter, "all">;
-type BrigadierTabId = "orders" | "order_search" | WorkOrderStatusTabId;
+type BrigadierTabId =
+  | "orders"
+  | "order_search"
+  | "prioritization"
+  | WorkOrderStatusTabId;
 type ConstructorTabId = "products" | "directories";
 type ConstructorDirectoryTabId = "operation-catalog" | "leather-types";
 type ProductVisibilityFilter = "all" | "active" | "inactive";
@@ -152,6 +176,9 @@ type FlatOperationNodeRow = {
   name: string;
   priceCents: number | null;
   standardTimeSeconds: number | null;
+  statisticalTimeSeconds: number | null;
+  statisticalCompletedOrdersCount: number;
+  statisticalItemsCount: number;
   level: number;
   isGroup: boolean;
   canMoveUp: boolean;
@@ -163,6 +190,7 @@ type FlatOperationNodeRow = {
 type BrigadierOrderAssignment = {
   slotId: string;
   operationId: number;
+  operationCatalogEntryId: number | null;
   operationLabel: string;
   workerUserId: number | null;
   workerName: string;
@@ -170,11 +198,13 @@ type BrigadierOrderAssignment = {
 
 type BrigadierOrderOperation = {
   operationId: number;
+  operationCatalogEntryId: number | null;
   operationLabel: string;
 };
 
 type BrigadierOrderAssignmentGroup = {
   operationId: number;
+  operationCatalogEntryId: number | null;
   operationLabel: string;
   assignments: BrigadierOrderAssignment[];
 };
@@ -326,7 +356,12 @@ const activeTab = ref<TabId>(readStoredTab<TabId>(ACTIVE_TAB_STORAGE_KEY, tabs.m
 const brigadierTab = ref<BrigadierTabId>(
   readStoredTab<BrigadierTabId>(
     BRIGADIER_TAB_STORAGE_KEY,
-    ["orders", ...workOrderStatusTabs.map((tab) => tab.id), "order_search"],
+    [
+      "orders",
+      ...workOrderStatusTabs.map((tab) => tab.id),
+      "prioritization",
+      "order_search",
+    ],
     "orders",
   ),
 );
@@ -401,6 +436,7 @@ const productName = ref("");
 const productVersion = ref("");
 const productComment = ref("");
 const productMaterialCostCents = ref<number | null>(null);
+const productStageCount = ref(1);
 const operationTree = ref<OperationNode[]>([]);
 const operationStandardTimeInputs = ref<Record<number, string>>({});
 const operationStandardTimeInputErrors = ref<Record<number, string>>({});
@@ -410,7 +446,19 @@ const productModalRef = ref<HTMLElement | null>(null);
 const productOperationsSectionRef = ref<HTMLElement | null>(null);
 const productNameInputRef = ref<HTMLInputElement | null>(null);
 const productPendingDelete = ref<ProductSummary | null>(null);
+const stagesProduct = ref<ProductSummary | null>(null);
+const isPlanningSettingsOpen = ref(false);
+const isWorkScheduleOpen = ref(false);
+const isPlanningWorkloadOpen = ref(false);
+const planningForecastOrderId = ref<number | null>(null);
+const productionPlanningStatus = ref<ProductionPlanningStatus | null>(null);
+const planningOrderForecasts = ref<PlanningOrderForecast[]>([]);
+const planningForecastRunId = ref<number | null>(null);
+const productionPlanningLoading = ref(false);
+const productionPlanningRecalculating = ref(false);
+const productionPlanningError = ref("");
 const userPendingDelete = ref<UserRecord | null>(null);
+const skillsUser = ref<UserRecord | null>(null);
 const editingUserId = ref<number | null>(null);
 const editingUserDraft = ref<UserRecord | null>(null);
 const brigadierModalMode = ref<"create" | "manage" | "quality_control" | null>(null);
@@ -522,6 +570,8 @@ let workerAssignmentStatusDropdownCloseTimeoutId: number | null = null;
 let leatherTypesRequestId = 0;
 let operationCatalogRequestId = 0;
 let workOrderTimeBreakdownRequestId = 0;
+let productionPlanningPollIntervalId: number | null = null;
+let productionPlanningRequestInFlight = false;
 let operationNameDropdownCloseTimeoutId: number | null = null;
 const openOperationNameDropdownId = ref<number | null>(null);
 const isModalOpen = computed(() => modalMode.value !== null);
@@ -569,7 +619,9 @@ const workerQrScannerError = ref("");
 let workerQrScannerControls: IScannerControls | null = null;
 let workerQrScannerRunId = 0;
 const workOrderStatusTab = computed<WorkOrderStatusTabId>(() =>
-  brigadierTab.value === "orders" || brigadierTab.value === "order_search"
+  brigadierTab.value === "orders"
+  || brigadierTab.value === "order_search"
+  || brigadierTab.value === "prioritization"
     ? "created"
     : brigadierTab.value,
 );
@@ -596,6 +648,44 @@ const canManageWorkOrders = computed(
     currentSession.value?.userRoles.includes("quality_control") ||
     currentSession.value?.userRoles.includes("admin") ||
     false,
+);
+const canManagePlanningSchedule = computed(
+  () =>
+    currentSession.value?.userRoles.includes("brigadier")
+    || currentSession.value?.userRoles.includes("admin")
+    || false,
+);
+const planningForecastByOrderId = computed(() => new Map(
+  planningOrderForecasts.value.map((forecast) => [forecast.orderId, forecast]),
+));
+const isProductionPlanningUpdating = computed(() =>
+  productionPlanningStatus.value?.calculationStatus === "pending"
+  || productionPlanningStatus.value?.calculationStatus === "running",
+);
+const productionPlanningStatusMessage = computed(() => {
+  const status = productionPlanningStatus.value;
+  if (!status) {
+    return "Результат планирования ещё не загружен.";
+  }
+  if (status.calculationStatus === "error") {
+    return status.activeRunId === null
+      ? "Расчёт завершился с ошибкой. Успешного прогноза пока нет."
+      : "Новый расчёт завершился с ошибкой. Показан предыдущий успешный прогноз.";
+  }
+  if (status.calculationStatus === "pending" || status.calculationStatus === "running") {
+    return status.activeRunId === null
+      ? "Выполняется первый расчёт производственного плана."
+      : "Расчёт обновляется. Показан предыдущий успешный прогноз.";
+  }
+  if (status.activeRunId === null) {
+    return "Успешный расчёт ещё не опубликован.";
+  }
+  return status.activeCompletedAt === null
+    ? "Расчёт готов."
+    : `Расчёт обновлён ${formatPlanningTimestamp(status.activeCompletedAt)}.`;
+});
+const canManagePlanningSettings = computed(
+  () => currentSession.value?.userRoles.includes("admin") ?? false,
 );
 const canAcceptQualityControl = computed(
   () => currentSession.value?.userRoles.includes("quality_control") ?? false,
@@ -658,6 +748,11 @@ const hasOperationErrors = computed(
 const firstOperationErrorRow = computed(() =>
   flatOperationRows.value.find((row) => Boolean(operationErrors.value[row.id])),
 );
+const firstOperationStandardTimeInputErrorRow = computed(() =>
+  flatOperationRows.value.find((row) =>
+    Boolean(operationStandardTimeInputErrors.value[row.id]),
+  ),
+);
 
 const productNameError = computed(() =>
   productName.value.trim() ? "" : "Укажите наименование изделия.",
@@ -706,7 +801,8 @@ const canSaveProduct = computed(
       return (
         modalProductId.value !== null &&
         !productCommentError.value &&
-        !productMaterialCostError.value
+        !productMaterialCostError.value &&
+        firstOperationStandardTimeInputErrorRow.value === undefined
       );
     }
 
@@ -761,7 +857,21 @@ const saveBlockIssue = computed<{
     };
   }
 
-  if (hasOperationErrors.value && firstOperationErrorRow.value) {
+  if (firstOperationStandardTimeInputErrorRow.value) {
+    return {
+      message:
+        operationStandardTimeInputErrors.value[
+          firstOperationStandardTimeInputErrorRow.value.id
+        ],
+      selector: `[data-standard-time-operation-id="${firstOperationStandardTimeInputErrorRow.value.id}"]`,
+    };
+  }
+
+  if (
+    shouldShowValidation.value &&
+    hasOperationErrors.value &&
+    firstOperationErrorRow.value
+  ) {
     return {
       message: operationErrors.value[firstOperationErrorRow.value.id],
       selector: `[data-operation-id="${firstOperationErrorRow.value.id}"]`,
@@ -796,7 +906,7 @@ const modalDescription = computed(() => {
   }
 
   if (modalMode.value === "view") {
-    return "Структура изделия, цены и нормы операций доступны для просмотра, стоимость материала и комментарий можно изменить.";
+    return "Структура изделия и цены операций доступны для просмотра, стоимость материала, нормы времени и комментарий можно изменить.";
   }
 
   return "Заполните карточку изделия и задайте дерево производственных операций.";
@@ -1506,6 +1616,7 @@ const statisticsIdleMax = computed(() =>
 
 onMounted(async () => {
   await initializePage();
+  syncProductionPlanningPolling();
   updateSmartphoneViewport();
   window.addEventListener("keydown", handleWindowKeydown);
   window.addEventListener("resize", updateSmartphoneViewport);
@@ -1520,6 +1631,7 @@ watch(activeTab, (value) => {
   if (value === "worker" && !authInitializing.value && canLoadWorkerWorkspace()) {
     void loadWorkerWorkspace();
   }
+  syncProductionPlanningPolling();
 });
 
 watch([workerOrderRouteId, workerOrderRouteReference], ([orderId, orderReference]) => {
@@ -1647,6 +1759,7 @@ onBeforeUnmount(() => {
   clearWorkerAssignmentStatusDropdownCloseTimeout();
   clearOperationNameDropdownCloseTimeout();
   clearOrderNumberSearchTimeout();
+  stopProductionPlanningPolling();
   if (workerClockIntervalId !== null) {
     window.clearInterval(workerClockIntervalId);
   }
@@ -2013,7 +2126,10 @@ async function loadProtectedData() {
   if (workerQrRouteTarget.value !== null && canLoadWorkerWorkspace()) {
     activeTab.value = "worker";
   }
-  if (!canEditBrigadierOrderDetails.value && brigadierTab.value === "orders") {
+  if (
+    !canEditBrigadierOrderDetails.value
+    && (brigadierTab.value === "orders" || brigadierTab.value === "prioritization")
+  ) {
     brigadierTab.value = "quality_control";
   }
 
@@ -2035,6 +2151,12 @@ async function loadProtectedData() {
     workOrdersPages.value = 1;
     brigadierOrdersError.value = "";
     brigadierOrdersLoading.value = false;
+  }
+
+  if (canManagePlanningSchedule.value) {
+    protectedDataLoaders.push(loadProductionPlanning());
+  } else {
+    resetProductionPlanningState();
   }
 
   await Promise.all(protectedDataLoaders);
@@ -2080,6 +2202,8 @@ function redirectToAuth(message = "Требуется аутентификаци
   workerAssignmentsError.value = "";
   workerAssignmentsLoading.value = false;
   resetWorkerTimerState();
+  resetProductionPlanningState();
+  stopProductionPlanningPolling();
   closeWorkerQrScanner();
   closeChangePasswordModal();
   closeBrigadierOrderModal();
@@ -2132,6 +2256,7 @@ async function submitAuthentication() {
     authConfirmPassword.value = "";
     authError.value = "";
     await loadProtectedData();
+    syncProductionPlanningPolling();
   } catch (error) {
     authError.value = getErrorMessage(error, "Не удалось пройти аутентификацию.");
   } finally {
@@ -2412,6 +2537,106 @@ async function loadWorkOrders() {
   }
 }
 
+async function loadProductionPlanning(options: { silent?: boolean } = {}) {
+  if (!canManagePlanningSchedule.value || productionPlanningRequestInFlight) {
+    return;
+  }
+
+  productionPlanningRequestInFlight = true;
+  if (!options.silent) {
+    productionPlanningLoading.value = true;
+  }
+  try {
+    const status = await fetchProductionPlanningStatus();
+    productionPlanningStatus.value = status;
+    if (status.activeRunId === null) {
+      planningOrderForecasts.value = [];
+      planningForecastRunId.value = null;
+    } else if (status.activeRunId !== planningForecastRunId.value) {
+      planningOrderForecasts.value = await fetchPlanningOrderForecasts();
+      planningForecastRunId.value = status.activeRunId;
+    }
+    productionPlanningError.value = "";
+  } catch (error) {
+    if (isUnauthorizedError(error)) {
+      redirectToAuth(getErrorMessage(error, "Требуется аутентификация."));
+      return;
+    }
+    if (!options.silent || productionPlanningStatus.value === null) {
+      productionPlanningError.value = getErrorMessage(
+        error,
+        "Не удалось загрузить результат планирования.",
+      );
+    }
+  } finally {
+    productionPlanningRequestInFlight = false;
+    productionPlanningLoading.value = false;
+  }
+}
+
+async function requestProductionPlanningUpdate() {
+  if (
+    !canManagePlanningSchedule.value
+    || productionPlanningRecalculating.value
+  ) {
+    return;
+  }
+  productionPlanningRecalculating.value = true;
+  productionPlanningError.value = "";
+  try {
+    productionPlanningStatus.value =
+      await requestProductionPlanningRecalculation();
+    await loadProductionPlanning({ silent: true });
+  } catch (error) {
+    if (isUnauthorizedError(error)) {
+      redirectToAuth(getErrorMessage(error, "Требуется аутентификация."));
+      return;
+    }
+    productionPlanningError.value = getErrorMessage(
+      error,
+      "Не удалось запустить пересчёт.",
+    );
+  } finally {
+    productionPlanningRecalculating.value = false;
+  }
+}
+
+function syncProductionPlanningPolling() {
+  if (
+    activeTab.value !== "brigadier"
+    || !canManagePlanningSchedule.value
+  ) {
+    stopProductionPlanningPolling();
+    return;
+  }
+  if (productionPlanningPollIntervalId === null) {
+    productionPlanningPollIntervalId = window.setInterval(() => {
+      void loadProductionPlanning({ silent: true });
+    }, 5000);
+  }
+  if (!authInitializing.value) {
+    void loadProductionPlanning({ silent: true });
+  }
+}
+
+function stopProductionPlanningPolling() {
+  if (productionPlanningPollIntervalId !== null) {
+    window.clearInterval(productionPlanningPollIntervalId);
+    productionPlanningPollIntervalId = null;
+  }
+}
+
+function resetProductionPlanningState() {
+  productionPlanningStatus.value = null;
+  planningOrderForecasts.value = [];
+  planningForecastRunId.value = null;
+  productionPlanningLoading.value = false;
+  productionPlanningRecalculating.value = false;
+  productionPlanningError.value = "";
+  planningForecastOrderId.value = null;
+  isPlanningWorkloadOpen.value = false;
+}
+
 function canLoadWorkerWorkspace(): boolean {
   return currentSession.value?.userRoles.includes("worker") ?? false;
 }
@@ -2545,6 +2770,7 @@ function resetForm() {
   productVersion.value = "";
   productComment.value = "";
   productMaterialCostCents.value = null;
+  productStageCount.value = 1;
   operationTree.value = [];
   operationStandardTimeInputs.value = {};
   operationStandardTimeInputErrors.value = {};
@@ -2645,6 +2871,59 @@ function openDeleteConfirmation(product: ProductSummary) {
   productPendingDelete.value = product;
 }
 
+function openProductStages(product: ProductSummary) {
+  stagesProduct.value = product;
+}
+
+function closeProductStages() {
+  stagesProduct.value = null;
+}
+
+function openWorkSchedule() {
+  if (canManagePlanningSchedule.value) {
+    isWorkScheduleOpen.value = true;
+  }
+}
+
+function closeWorkSchedule() {
+  isWorkScheduleOpen.value = false;
+}
+
+function openPlanningSettings() {
+  if (canManagePlanningSettings.value) {
+    isPlanningSettingsOpen.value = true;
+  }
+}
+
+function closePlanningSettings() {
+  isPlanningSettingsOpen.value = false;
+}
+
+function openPlanningWorkload() {
+  if (canManagePlanningSchedule.value) {
+    isPlanningWorkloadOpen.value = true;
+  }
+}
+
+function closePlanningWorkload() {
+  isPlanningWorkloadOpen.value = false;
+}
+
+function openPlanningForecast(order: WorkOrderSummary) {
+  if (planningForecastByOrderId.value.has(order.id)) {
+    planningForecastOrderId.value = order.id;
+  }
+}
+
+function closePlanningForecast() {
+  planningForecastOrderId.value = null;
+}
+
+async function handleProductStagesUpdated() {
+  await loadProducts();
+  closeProductStages();
+}
+
 function closeDeleteConfirmation() {
   productPendingDelete.value = null;
 }
@@ -2659,6 +2938,25 @@ function openUserDeleteConfirmation(user: UserRecord) {
 
 function closeUserDeleteConfirmation() {
   userPendingDelete.value = null;
+}
+
+function openUserSkills(user: UserRecord) {
+  if (user.isNew || isUserLocked(user.id)) {
+    return;
+  }
+  skillsUser.value = user;
+}
+
+function closeUserSkills() {
+  skillsUser.value = null;
+}
+
+async function handleUserSkillsUpdated() {
+  const userId = skillsUser.value?.id;
+  await loadUsers();
+  if (userId !== undefined) {
+    skillsUser.value = users.value.find((user) => user.id === userId) ?? null;
+  }
 }
 
 function openWorkOrderActionConfirm(
@@ -3055,7 +3353,11 @@ function fillFormFromProduct(product: ProductDetail) {
   productVersion.value = product.version;
   productComment.value = product.comment ?? "";
   productMaterialCostCents.value = product.materialCostCents;
-  operationTree.value = cloneOperations(product.operations);
+  productStageCount.value = product.stageCount;
+  operationTree.value = cloneOperations(
+    product.operations,
+    modalMode.value !== "copy",
+  );
   nextOperationId = getMaxOperationId(operationTree.value) + 1;
   setProductFormBaseline();
 }
@@ -3918,7 +4220,7 @@ async function saveProductToApi() {
       await updateProductCosts(modalProductId.value, {
         material_cost_cents: productMaterialCostCents.value,
         comment: productComment.value.trim() || null,
-        operations: [],
+        operations: serializeOperationCostUpdates(operationTree.value),
       });
       await loadProducts();
       closeProductModal();
@@ -3928,9 +4230,11 @@ async function saveProductToApi() {
     const payload: ProductCreatePayload = {
       name: productName.value.trim(),
       version: productVersion.value.trim(),
+      source_product_id: modalMode.value === "copy" ? modalProductId.value : null,
       comment: productComment.value.trim() || null,
       author_user_id: currentSession.value?.userId ?? null,
       material_cost_cents: productMaterialCostCents.value,
+      stage_count: productStageCount.value,
       operations: serializeOperations(operationTree.value),
     };
 
@@ -4118,13 +4422,27 @@ function getOperationCatalogEntryByName(
 }
 
 function getOperationCatalogEntryForRow(
-  row: Pick<FlatOperationNodeRow, "operationCatalogEntryId" | "name">,
-): OperationCatalogEntry | null {
+  row: Pick<
+    OperationNode,
+    "operationCatalogEntryId" | "name" | "operationKind"
+  >,
+): Pick<OperationCatalogEntry, "id" | "name" | "operationKind"> | null {
   if (row.operationCatalogEntryId !== null) {
     const entry = activeOperationCatalogEntryById.value.get(row.operationCatalogEntryId);
     if (entry) {
       return entry;
     }
+  }
+
+  if (
+    modalMode.value === "copy"
+    && row.operationCatalogEntryId !== null
+  ) {
+    return {
+      id: row.operationCatalogEntryId,
+      name: row.name,
+      operationKind: row.operationKind ?? "regular",
+    };
   }
 
   return getOperationCatalogEntryByName(row.name);
@@ -4157,7 +4475,7 @@ function handleOperationPriceInput(operationId: number, event: Event) {
 function handleOperationStandardTimeInput(operationId: number, event: Event) {
   const target = event.target;
 
-  if (isViewMode.value || !(target instanceof HTMLInputElement)) {
+  if (!(target instanceof HTMLInputElement)) {
     return;
   }
 
@@ -4206,6 +4524,23 @@ function getOperationStandardTimeInput(row: FlatOperationNodeRow): string {
     operationStandardTimeInputs.value[row.id] ??
     formatStandardTimeInput(row.standardTimeSeconds)
   );
+}
+
+function getOperationStandardTimePlaceholder(row: FlatOperationNodeRow): string {
+  return formatStandardTimeInput(row.statisticalTimeSeconds) || "мм:сс";
+}
+
+function getOperationStatisticalTimeLabel(row: FlatOperationNodeRow): string {
+  if (row.statisticalTimeSeconds !== null) {
+    return `По статистике: ${formatStandardTimeInput(row.statisticalTimeSeconds)} · ${row.statisticalCompletedOrdersCount} заказов / ${row.statisticalItemsCount} изделий`;
+  }
+  if (
+    row.statisticalCompletedOrdersCount > 0 ||
+    row.statisticalItemsCount > 0
+  ) {
+    return `Недостаточно статистики: ${row.statisticalCompletedOrdersCount} из 5 заказов, ${row.statisticalItemsCount} из 20 изделий`;
+  }
+  return "Статистика ещё не накоплена";
 }
 
 function clearOperationStandardTimeInputError(operationId: number) {
@@ -4412,8 +4747,15 @@ function createOperationNode(): OperationNode {
     id: operationId,
     operationCatalogEntryId: null,
     name: "",
+    operationKind: null,
     priceCents: null,
     standardTimeSeconds: null,
+    statisticalTimeSeconds: null,
+    statisticalCompletedOrdersCount: 0,
+    statisticalItemsCount: 0,
+    statisticalTimeCalculatedAt: null,
+    stageStart: 1,
+    stageEnd: 1,
     children: [],
   };
 }
@@ -4427,8 +4769,15 @@ function appendChildOperation(
       return {
         ...operation,
         operationCatalogEntryId: null,
+        operationKind: null,
         priceCents: null,
         standardTimeSeconds: null,
+        statisticalTimeSeconds: null,
+        statisticalCompletedOrdersCount: 0,
+        statisticalItemsCount: 0,
+        statisticalTimeCalculatedAt: null,
+        stageStart: 1,
+        stageEnd: 1,
         children: [...operation.children, createOperationNode()],
       };
     }
@@ -4505,6 +4854,10 @@ function indentOperationNode(
   siblings[currentIndex - 1].operationCatalogEntryId = null;
   siblings[currentIndex - 1].priceCents = null;
   siblings[currentIndex - 1].standardTimeSeconds = null;
+  siblings[currentIndex - 1].statisticalTimeSeconds = null;
+  siblings[currentIndex - 1].statisticalCompletedOrdersCount = 0;
+  siblings[currentIndex - 1].statisticalItemsCount = 0;
+  siblings[currentIndex - 1].statisticalTimeCalculatedAt = null;
   siblings[currentIndex - 1].children = [
     ...siblings[currentIndex - 1].children,
     movedOperation,
@@ -4555,9 +4908,14 @@ function renameOperation(
 ): OperationNode[] {
   return operations.map((operation) => {
     if (operation.id === operationId) {
+      const operationKind = operationCatalogEntryId === null
+        ? null
+        : activeOperationCatalogEntryById.value.get(operationCatalogEntryId)?.operationKind
+          ?? null;
       return {
         ...operation,
         operationCatalogEntryId,
+        operationKind,
         name,
       };
     }
@@ -4586,6 +4944,10 @@ function flattenOperations(
         name: operation.name,
         priceCents: operation.priceCents,
         standardTimeSeconds: operation.standardTimeSeconds,
+        statisticalTimeSeconds: operation.statisticalTimeSeconds,
+        statisticalCompletedOrdersCount:
+          operation.statisticalCompletedOrdersCount,
+        statisticalItemsCount: operation.statisticalItemsCount,
         level,
         isGroup: operation.children.length > 0,
         canMoveUp: index > 0,
@@ -4675,14 +5037,30 @@ function validateOperationTree(
   return errors;
 }
 
-function cloneOperations(operations: OperationNode[]): OperationNode[] {
+function cloneOperations(
+  operations: OperationNode[],
+  preserveStatistics = true,
+): OperationNode[] {
   return operations.map((operation) => ({
     id: operation.id,
     operationCatalogEntryId: operation.operationCatalogEntryId,
     name: operation.name,
+    operationKind: operation.operationKind,
     priceCents: operation.priceCents,
     standardTimeSeconds: operation.standardTimeSeconds,
-    children: cloneOperations(operation.children),
+    statisticalTimeSeconds: preserveStatistics
+      ? operation.statisticalTimeSeconds
+      : null,
+    statisticalCompletedOrdersCount: preserveStatistics
+      ? operation.statisticalCompletedOrdersCount
+      : 0,
+    statisticalItemsCount: preserveStatistics ? operation.statisticalItemsCount : 0,
+    statisticalTimeCalculatedAt: preserveStatistics
+      ? operation.statisticalTimeCalculatedAt
+      : null,
+    stageStart: operation.stageStart,
+    stageEnd: operation.stageEnd,
+    children: cloneOperations(operation.children, preserveStatistics),
   }));
 }
 
@@ -4704,6 +5082,8 @@ function serializeOperations(
         name: operation.name.trim(),
         price_cents: null,
         standard_time_seconds: null,
+        stage_start: 1,
+        stage_end: 1,
         children: serializeOperations(operation.children),
       };
     }
@@ -4718,9 +5098,23 @@ function serializeOperations(
       name: entry.name,
       price_cents: operation.priceCents,
       standard_time_seconds: operation.standardTimeSeconds,
+      stage_start: operation.stageStart,
+      stage_end: operation.stageEnd,
       children: [],
     };
   });
+}
+
+function serializeOperationCostUpdates(
+  operations: OperationNode[],
+): ProductCostsUpdatePayload["operations"] {
+  return operations.map((operation) => ({
+    id: operation.id,
+    price_cents: operation.children.length > 0 ? null : operation.priceCents,
+    standard_time_seconds:
+      operation.children.length > 0 ? null : operation.standardTimeSeconds,
+    children: serializeOperationCostUpdates(operation.children),
+  }));
 }
 
 function compareProducts(
@@ -4852,6 +5246,16 @@ function formatTimestamp(value: number): string {
   }).format(value);
 }
 
+function formatPlanningTimestamp(value: number): string {
+  const timestamp = new Date(value);
+  const date = timestamp.toLocaleDateString("ru-RU");
+  const time = timestamp.toLocaleTimeString("ru-RU", {
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+  return `${date} ${time}`;
+}
+
 function getDateInputValue(timestamp: number): string {
   const value = new Date(timestamp);
   const year = value.getFullYear();
@@ -4961,6 +5365,7 @@ function createUserRecord(params: {
   createdAtTs: number | null;
   updatedAtTs: number | null;
   deletedAtTs: number | null;
+  skillOperationCatalogEntryIds?: number[];
   isNew?: boolean;
 }): UserRecord {
   return {
@@ -4977,6 +5382,9 @@ function createUserRecord(params: {
     updatedAtTs: params.updatedAtTs,
     updatedAt: params.updatedAtTs ? formatTimestamp(params.updatedAtTs) : "",
     deletedAtTs: params.deletedAtTs,
+    skillOperationCatalogEntryIds: [
+      ...(params.skillOperationCatalogEntryIds ?? []),
+    ],
     isNew: params.isNew,
   };
 }
@@ -4994,6 +5402,7 @@ function cloneUser(user: UserRecord): UserRecord {
     createdAtTs: user.createdAtTs,
     updatedAtTs: user.updatedAtTs,
     deletedAtTs: user.deletedAtTs,
+    skillOperationCatalogEntryIds: user.skillOperationCatalogEntryIds,
     isNew: user.isNew,
   });
 }
@@ -5330,6 +5739,7 @@ function buildBrigadierOperations(
       return [
         {
           operationId: operation.id,
+          operationCatalogEntryId: operation.operationCatalogEntryId,
           operationLabel: nextParents.join(" / "),
         },
       ];
@@ -5357,6 +5767,7 @@ function mergeBrigadierAssignments(
       .map((assignment) =>
         createBrigadierAssignmentSlot({
           operationId: operation.operationId,
+          operationCatalogEntryId: operation.operationCatalogEntryId,
           operationLabel: operation.operationLabel,
           workerUserId: assignment.workerUserId,
           workerName: assignment.workerUserName ?? "",
@@ -5368,6 +5779,7 @@ function mergeBrigadierAssignments(
 
 function createBrigadierAssignmentSlot(params: {
   operationId: number;
+  operationCatalogEntryId: number | null;
   operationLabel: string;
   workerUserId?: number | null;
   workerName?: string;
@@ -5377,6 +5789,7 @@ function createBrigadierAssignmentSlot(params: {
   return {
     slotId: params.slotId ?? `assignment-slot-${brigadierAssignmentSlotSequence}`,
     operationId: params.operationId,
+    operationCatalogEntryId: params.operationCatalogEntryId,
     operationLabel: params.operationLabel,
     workerUserId: params.workerUserId ?? null,
     workerName: params.workerName ?? "",
@@ -5403,7 +5816,11 @@ function focusBrigadierAssignment(slotId: string) {
   });
 }
 
-function addBrigadierAssignment(operationId: number, operationLabel: string) {
+function addBrigadierAssignment(
+  operationId: number,
+  operationCatalogEntryId: number | null,
+  operationLabel: string,
+) {
   if (!isBrigadierAssignmentsEditable.value) {
     return;
   }
@@ -5419,6 +5836,7 @@ function addBrigadierAssignment(operationId: number, operationLabel: string) {
 
   const assignment = createBrigadierAssignmentSlot({
     operationId,
+    operationCatalogEntryId,
     operationLabel,
   });
   brigadierModalAssignments.value = [...brigadierModalAssignments.value, assignment];
@@ -5508,6 +5926,11 @@ function handleBrigadierAssignmentInput(slotId: string, event: Event) {
     brigadierWorkerUsers.value.find(
       (user) =>
         normalizeName(user.name) === normalizedName &&
+        canSelectWorkerForOperation(
+          user,
+          editedAssignment.operationCatalogEntryId,
+          editedAssignment.workerUserId,
+        ) &&
         !unavailableWorkerIds.has(user.id),
     ) ?? null;
 
@@ -5586,6 +6009,11 @@ function getBrigadierAssignmentOptions(assignment: BrigadierOrderAssignment): Us
     .filter(
       (user) =>
         !unavailableWorkerIds.has(user.id) &&
+        canSelectWorkerForOperation(
+          user,
+          assignment.operationCatalogEntryId,
+          assignment.workerUserId,
+        ) &&
         (user.id === assignment.workerUserId ||
           !shouldFilterByQuery ||
           normalizeName(user.name).includes(normalizedQuery)),
@@ -5737,6 +6165,24 @@ function getBrigadierAssignmentError(assignment: BrigadierOrderAssignment): stri
   return assignment.workerName.trim() ? "Выберите исполнителя из списка." : "";
 }
 
+function getBrigadierAssignmentSkillWarning(
+  assignment: BrigadierOrderAssignment,
+): string {
+  if (assignment.workerUserId === null) {
+    return "";
+  }
+  const worker = users.value.find((item) => item.id === assignment.workerUserId);
+  if (!worker || !worker.isActive) {
+    return "";
+  }
+  if (
+    workerHasOperationSkill(worker, assignment.operationCatalogEntryId)
+  ) {
+    return "";
+  }
+  return "У назначенного исполнителя больше нет требуемого навыка.";
+}
+
 function scrollToBrigadierSaveIssue() {
   const selector = brigadierSaveIssue.value?.selector;
 
@@ -5768,6 +6214,23 @@ function formatPlannedCompletionDate(value: string | null): string {
 
   const [year, month, day] = value.split("-");
   return year && month && day ? `${day}.${month}.${year}` : value;
+}
+
+function getWorkOrderPlanningForecast(
+  order: WorkOrderSummary,
+): PlanningOrderForecast | undefined {
+  return planningForecastByOrderId.value.get(order.id);
+}
+
+function getWorkOrderPlanningForecastLabel(order: WorkOrderSummary): string {
+  return getPlanningForecastLabel(getWorkOrderPlanningForecast(order));
+}
+
+function isWorkOrderPlanningForecastUnavailable(
+  order: WorkOrderSummary,
+): boolean {
+  const forecast = getWorkOrderPlanningForecast(order);
+  return Boolean(forecast && forecast.calculatedFinishDate === null);
 }
 
 function isWorkOrderOverdue(order: WorkOrderSummary): boolean {
@@ -6624,6 +7087,42 @@ async function handleResetUserPassword(user: UserRecord) {
               <h2>Управление заказами</h2>
             </div>
 
+            <div class="planning-entry-actions">
+              <button
+                v-if="canManagePlanningSchedule"
+                type="button"
+                class="secondary-button"
+                @click="openPlanningWorkload"
+              >
+                Загрузка по операциям
+              </button>
+              <button
+                v-if="canManagePlanningSchedule"
+                type="button"
+                class="secondary-button"
+                @click="openWorkSchedule"
+              >
+                График работы сотрудников
+              </button>
+              <button
+                v-if="canManagePlanningSettings"
+                type="button"
+                class="secondary-button"
+                @click="openPlanningSettings"
+              >
+                Настройки планирования
+              </button>
+              <button
+                v-if="canManagePlanningSchedule"
+                type="button"
+                class="secondary-button"
+                :disabled="productionPlanningRecalculating || isProductionPlanningUpdating"
+                @click="void requestProductionPlanningUpdate()"
+              >
+                {{ productionPlanningRecalculating ? "Запуск..." : "Пересчитать" }}
+              </button>
+            </div>
+
             <div
               class="subtabs subtabs--work-orders"
               role="tablist"
@@ -6659,6 +7158,20 @@ async function handleResetUserPassword(user: UserRecord) {
                 </span>
               </button>
               <button
+                v-if="canEditBrigadierOrderDetails"
+                type="button"
+                class="subtab-button"
+                :class="{
+                  'subtab-button--active': brigadierTab === 'prioritization',
+                }"
+                @click="setBrigadierTab('prioritization')"
+              >
+                <span class="button-content">
+                  <span class="button-icon button-icon--orders" aria-hidden="true" />
+                  <span>Приоритезация</span>
+                </span>
+              </button>
+              <button
                 type="button"
                 class="subtab-button"
                 :class="{ 'subtab-button--active': brigadierTab === 'order_search' }"
@@ -6669,6 +7182,35 @@ async function handleResetUserPassword(user: UserRecord) {
                   <span>Поиск заказа</span>
                 </span>
               </button>
+            </div>
+          </div>
+
+          <div
+            v-if="canManagePlanningSchedule && productionPlanningError"
+            class="banner banner--error planning-status-banner"
+          >
+            <p>{{ productionPlanningError }}</p>
+            <button
+              type="button"
+              class="ghost-button"
+              @click="void loadProductionPlanning()"
+            >
+              Повторить
+            </button>
+          </div>
+          <div
+            v-else-if="canManagePlanningSchedule"
+            class="banner planning-status-banner"
+            :class="{
+              'banner--error': productionPlanningStatus?.calculationStatus === 'error',
+              'planning-status-banner--updating': isProductionPlanningUpdating,
+            }"
+          >
+            <div>
+              <strong v-if="productionPlanningLoading && !productionPlanningStatus">
+                Загрузка расчёта...
+              </strong>
+              <strong v-else>{{ productionPlanningStatusMessage }}</strong>
             </div>
           </div>
 
@@ -6742,6 +7284,8 @@ async function handleResetUserPassword(user: UserRecord) {
               </table>
             </div>
           </template>
+
+          <PlanningPriorityPanel v-else-if="brigadierTab === 'prioritization'" />
 
           <template v-else-if="brigadierTab !== 'orders'">
             <div v-if="brigadierOrdersError" class="banner banner--error">
@@ -6867,6 +7411,7 @@ async function handleResetUserPassword(user: UserRecord) {
                             />
                           </button>
                         </th>
+                        <th>Расчётная дата готовности</th>
                       </template>
                       <template v-else>
                         <th>
@@ -6977,6 +7522,7 @@ async function handleResetUserPassword(user: UserRecord) {
                             />
                           </button>
                         </th>
+                        <th>Расчётная дата готовности</th>
                         <th v-if="workOrderStatusTab === 'completed'">
                           <button
                             type="button"
@@ -7016,6 +7562,21 @@ async function handleResetUserPassword(user: UserRecord) {
                         >
                           {{ formatPlannedCompletionDate(order.plannedCompletionDate) }}
                         </td>
+                        <td>
+                          <button
+                            v-if="getWorkOrderPlanningForecast(order)"
+                            type="button"
+                            class="planning-date-button"
+                            :class="{
+                              'planning-date-button--warning':
+                                isWorkOrderPlanningForecastUnavailable(order),
+                            }"
+                            @click="openPlanningForecast(order)"
+                          >
+                            {{ getWorkOrderPlanningForecastLabel(order) }}
+                          </button>
+                          <span v-else>—</span>
+                        </td>
                       </template>
                       <template v-else>
                         <td>{{ order.createdAt }}</td>
@@ -7037,6 +7598,21 @@ async function handleResetUserPassword(user: UserRecord) {
                           }"
                         >
                           {{ formatPlannedCompletionDate(order.plannedCompletionDate) }}
+                        </td>
+                        <td>
+                          <button
+                            v-if="getWorkOrderPlanningForecast(order)"
+                            type="button"
+                            class="planning-date-button"
+                            :class="{
+                              'planning-date-button--warning':
+                                isWorkOrderPlanningForecastUnavailable(order),
+                            }"
+                            @click="openPlanningForecast(order)"
+                          >
+                            {{ getWorkOrderPlanningForecastLabel(order) }}
+                          </button>
+                          <span v-else>—</span>
                         </td>
                         <td v-if="workOrderStatusTab === 'completed'">
                           {{ order.defectQuantity }} шт.
@@ -7299,6 +7875,22 @@ async function handleResetUserPassword(user: UserRecord) {
                     >
                       Плановая сдача:
                       {{ formatPlannedCompletionDate(order.plannedCompletionDate) }}
+                    </span>
+                    <span>
+                      Расчётная готовность:
+                      <button
+                        v-if="getWorkOrderPlanningForecast(order)"
+                        type="button"
+                        class="planning-date-button"
+                        :class="{
+                          'planning-date-button--warning':
+                            isWorkOrderPlanningForecastUnavailable(order),
+                        }"
+                        @click="openPlanningForecast(order)"
+                      >
+                        {{ getWorkOrderPlanningForecastLabel(order) }}
+                      </button>
+                      <span v-else>—</span>
                     </span>
                     <span v-if="workOrderStatusTab === 'completed'">
                       Брак: {{ order.defectQuantity }} шт.
@@ -8128,7 +8720,18 @@ async function handleResetUserPassword(user: UserRecord) {
                         >
                           <span class="button-content">
                             <span class="button-icon button-icon--view" aria-hidden="true" />
-                            <span>Просмотр ({{ product.operationsCount }} этапов)</span>
+                            <span>Операции ({{ product.operationsCount }})</span>
+                          </span>
+                        </button>
+                        <button
+                          type="button"
+                          class="action-link"
+                          :disabled="isProductBusy(product.id)"
+                          @click="openProductStages(product)"
+                        >
+                          <span class="button-content">
+                            <span class="button-icon button-icon--edit" aria-hidden="true" />
+                            <span>Этапы ({{ product.stageCount }})</span>
                           </span>
                         </button>
                         <button
@@ -8842,6 +9445,17 @@ async function handleResetUserPassword(user: UserRecord) {
                   <td>
                     <div class="table-actions">
                       <button
+                        v-if="!user.isNew"
+                        type="button"
+                        class="action-link"
+                        :disabled="isUserLocked(user.id)"
+                        @click="openUserSkills(user)"
+                      >
+                        <span class="button-content">
+                          <span>Навыки</span>
+                        </span>
+                      </button>
+                      <button
                         type="button"
                         class="action-link"
                         :disabled="isUserLocked(user.id)"
@@ -9233,7 +9847,11 @@ async function handleResetUserPassword(user: UserRecord) {
                     class="assignment-row__add"
                     :aria-label="`Добавить исполнителя для операции ${group.operationLabel}`"
                     :title="`Добавить исполнителя для операции ${group.operationLabel}`"
-                    @click="addBrigadierAssignment(group.operationId, group.operationLabel)"
+                    @click="addBrigadierAssignment(
+                      group.operationId,
+                      group.operationCatalogEntryId,
+                      group.operationLabel,
+                    )"
                   >
                     +
                   </button>
@@ -9295,7 +9913,7 @@ async function handleResetUserPassword(user: UserRecord) {
                           v-if="getBrigadierAssignmentOptions(assignment).length === 0"
                           class="assignment-dropdown__empty"
                         >
-                          Ничего не найдено.
+                          Нет исполнителей с требуемым навыком.
                         </div>
                       </div>
                     </div>
@@ -9307,6 +9925,12 @@ async function handleResetUserPassword(user: UserRecord) {
                       class="field-error"
                     >
                       {{ getBrigadierAssignmentError(assignment) }}
+                    </p>
+                    <p
+                      v-else-if="getBrigadierAssignmentSkillWarning(assignment)"
+                      class="field__hint assignment-skill-warning"
+                    >
+                      {{ getBrigadierAssignmentSkillWarning(assignment) }}
                     </p>
                   </div>
                 </div>
@@ -10019,25 +10643,28 @@ async function handleResetUserPassword(user: UserRecord) {
                       <span v-if="row.isGroup" class="readonly-note">
                         Норма только у операций
                       </span>
-                      <span v-else-if="isViewMode" class="operation-text">
-                        {{ formatStandardTimeInput(row.standardTimeSeconds) || "Не указана" }}
-                      </span>
                       <input
                         v-else
                         :value="getOperationStandardTimeInput(row)"
                         type="text"
                         inputmode="numeric"
                         class="operation-input operation-input--standard-time"
-                        placeholder="мм:сс"
+                        :placeholder="getOperationStandardTimePlaceholder(row)"
+                        :data-standard-time-operation-id="row.id"
                         :aria-label="`Норма времени операции ${row.name || row.id}`"
                         @input="handleOperationStandardTimeInput(row.id, $event)"
                         @blur="normalizeOperationStandardTimeInput(row.id, $event)"
                       />
+                      <small
+                        v-if="!row.isGroup && row.standardTimeSeconds === null"
+                        class="readonly-note"
+                      >
+                        {{ getOperationStatisticalTimeLabel(row) }}
+                      </small>
                       <p
                         v-if="
-                          !isViewMode &&
-                          (operationErrors[row.id]?.startsWith('Норма') ||
-                            operationErrors[row.id]?.includes('нормы времени'))
+                          operationErrors[row.id]?.startsWith('Норма') ||
+                          operationErrors[row.id]?.includes('нормы времени')
                         "
                         class="field-error"
                       >
@@ -10217,7 +10844,7 @@ async function handleResetUserPassword(user: UserRecord) {
                     saveLoading
                       ? "Сохранение..."
                       : isViewMode
-                        ? "Сохранить стоимость"
+                        ? "Сохранить изменения"
                         : "Сохранить изделие"
                   }}
                 </span>
@@ -10428,6 +11055,43 @@ async function handleResetUserPassword(user: UserRecord) {
         </div>
       </section>
     </div>
+
+    <UserSkillsModal
+      v-if="skillsUser"
+      :target-user="skillsUser"
+      :users="users"
+      @close="closeUserSkills"
+      @updated="handleUserSkillsUpdated"
+    />
+
+    <ProductStagesModal
+      v-if="stagesProduct"
+      :product-id="stagesProduct.id"
+      :product-label="`${stagesProduct.name} · ${stagesProduct.version}`"
+      @close="closeProductStages"
+      @updated="handleProductStagesUpdated"
+    />
+
+    <WorkScheduleModal
+      v-if="isWorkScheduleOpen"
+      @close="closeWorkSchedule"
+    />
+
+    <PlanningSettingsModal
+      v-if="isPlanningSettingsOpen"
+      @close="closePlanningSettings"
+    />
+
+    <PlanningWorkloadModal
+      v-if="isPlanningWorkloadOpen"
+      @close="closePlanningWorkload"
+    />
+
+    <PlanningForecastModal
+      v-if="planningForecastOrderId !== null"
+      :order-id="planningForecastOrderId"
+      @close="closePlanningForecast"
+    />
 
     <div
       v-if="isWorkerQrScannerOpen"
@@ -10884,6 +11548,30 @@ h2 {
   justify-content: flex-end;
   gap: 12px;
   flex-wrap: wrap;
+}
+
+.planning-entry-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.planning-status-banner {
+  margin-top: 16px;
+}
+
+.planning-status-banner > div {
+  display: grid;
+  gap: 4px;
+}
+
+.planning-status-banner small {
+  color: var(--color-text-secondary);
+}
+
+.planning-status-banner--updating {
+  background: rgba(195, 154, 82, 0.14);
 }
 
 .worker-panel__subtitle {
@@ -11721,6 +12409,10 @@ h2 {
   color: var(--color-text-muted);
 }
 
+.assignment-skill-warning {
+  color: #9a681d;
+}
+
 .checkbox-field {
   min-height: 46px;
   align-self: end;
@@ -12434,6 +13126,29 @@ h2 {
 .work-order-deadline--overdue {
   color: var(--color-danger);
   font-weight: 800;
+}
+
+.planning-date-button {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--color-primary);
+  font: inherit;
+  font-weight: 750;
+  text-align: left;
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+
+.planning-date-button--warning {
+  color: #8a5c10;
+}
+
+.planning-date-button:focus-visible {
+  outline: 3px solid rgba(47, 110, 163, 0.22);
+  outline-offset: 3px;
 }
 
 .pagination-bar {

@@ -2,12 +2,13 @@ from datetime import UTC, datetime
 
 from fastapi import HTTPException, status
 from sqlalchemy import Select, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from app.core.phone import normalize_phone
 from app.models.auth_session import AuthSession
 from app.models.user import User
 from app.schemas.user import UserCreate, UserRead, UserStatusUpdate, UserUpdate
+from app.services.planning_revision_service import PlanningRevisionService
 
 
 class UserService:
@@ -17,6 +18,7 @@ class UserService:
     def list_users(self) -> list[UserRead]:
         stmt: Select[tuple[User]] = (
             select(User)
+            .options(selectinload(User.operation_skills))
             .where(User.deleted_at.is_(None))
             .order_by(User.created_at.desc(), User.id.desc())
         )
@@ -26,6 +28,7 @@ class UserService:
     def list_deleted_users(self) -> list[UserRead]:
         stmt: Select[tuple[User]] = (
             select(User)
+            .options(selectinload(User.operation_skills))
             .where(User.deleted_at.is_not(None))
             .order_by(User.deleted_at.desc(), User.id.desc())
         )
@@ -80,6 +83,7 @@ class UserService:
             else user.author_user_id
         )
         user.updated_at = self._now_ts()
+        PlanningRevisionService(self.session).request_recalculation()
         self.session.commit()
         self.session.refresh(user)
         return self._serialize_user(user)
@@ -94,6 +98,7 @@ class UserService:
         )
         user.is_active = payload.is_active
         user.updated_at = self._now_ts()
+        PlanningRevisionService(self.session).request_recalculation()
         self.session.commit()
         self.session.refresh(user)
         return self._serialize_user(user)
@@ -110,6 +115,7 @@ class UserService:
         user.deleted_at = timestamp
         user.updated_at = timestamp
         self._revoke_user_sessions(user.id, timestamp)
+        PlanningRevisionService(self.session).request_recalculation()
         self.session.commit()
 
     def reset_user_password(self, user_id: int) -> UserRead:
@@ -123,7 +129,11 @@ class UserService:
         return self._serialize_user(user)
 
     def _get_user_or_404(self, user_id: int, *, include_deleted: bool = False) -> User:
-        stmt: Select[tuple[User]] = select(User).where(User.id == user_id)
+        stmt: Select[tuple[User]] = (
+            select(User)
+            .options(selectinload(User.operation_skills))
+            .where(User.id == user_id)
+        )
         if not include_deleted:
             stmt = stmt.where(User.deleted_at.is_(None))
 
@@ -148,6 +158,10 @@ class UserService:
             created_at=user.created_at,
             updated_at=user.updated_at,
             deleted_at=user.deleted_at,
+            skill_operation_catalog_entry_ids=sorted(
+                skill.operation_catalog_entry_id
+                for skill in user.operation_skills
+            ),
         )
 
     def _now_ts(self) -> int:

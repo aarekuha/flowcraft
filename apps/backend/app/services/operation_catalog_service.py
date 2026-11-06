@@ -4,15 +4,18 @@ from fastapi import HTTPException, status
 from sqlalchemy import Select, select
 from sqlalchemy.orm import Session
 
+from app.models.operation import Operation
 from app.models.operation_catalog import OperationCatalogEntry
 from app.schemas.operation_catalog import (
     OperationCatalogEntryCreate,
+    OperationCatalogEntryKind,
     OperationCatalogEntryKindUpdate,
     OperationCatalogEntryPage,
     OperationCatalogEntryRead,
     OperationCatalogEntryStatusUpdate,
     OperationCatalogSortDirection,
 )
+from app.services.planning_revision_service import PlanningRevisionService
 
 
 class OperationCatalogService:
@@ -95,9 +98,29 @@ class OperationCatalogService:
         payload: OperationCatalogEntryKindUpdate,
     ) -> OperationCatalogEntryRead:
         entry = self._get_entry_or_404(entry_id)
+        if (
+            payload.operation_kind != OperationCatalogEntryKind.ADJACENT
+            and self.session.scalar(
+                select(Operation.id)
+                .where(
+                    Operation.operation_catalog_entry_id == entry.id,
+                    Operation.stage_end > Operation.stage_start,
+                )
+                .limit(1)
+            )
+            is not None
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    "Нельзя изменить тип: операция растянута на несколько "
+                    "технологических этапов изделия."
+                ),
+            )
         entry.operation_kind = payload.operation_kind.value
         entry.updated_at = self._now_ts()
 
+        PlanningRevisionService(self.session).request_recalculation()
         self.session.commit()
         self.session.refresh(entry)
         return self._serialize_entry(entry)
@@ -138,7 +161,7 @@ class OperationCatalogService:
         return OperationCatalogEntryRead(
             id=entry.id,
             name=entry.name,
-            operation_kind=entry.operation_kind,
+            operation_kind=OperationCatalogEntryKind(entry.operation_kind),
             is_active=entry.is_active,
             created_at=entry.created_at,
             updated_at=entry.updated_at,

@@ -3,13 +3,15 @@ from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import HTTPException, status
-from sqlalchemy import Select, func, select
+from sqlalchemy import Select, func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.models.operation import Operation
 from app.models.operation_catalog import OperationCatalogEntry
 from app.models.product import Product
 from app.models.user import User
+from app.models.work_order import WorkOrder
+from app.schemas.operation_catalog import OperationCatalogEntryKind
 from app.schemas.product import (
     OperationCostUpdate,
     OperationCreate,
@@ -18,7 +20,12 @@ from app.schemas.product import (
     ProductCreate,
     ProductDetail,
     ProductListItem,
+    ProductStagesUpdate,
 )
+from app.services.operation_time_estimate_service import (
+    OperationTimeEstimateService,
+)
+from app.services.planning_revision_service import PlanningRevisionService
 
 
 class ProductService:
@@ -43,6 +50,7 @@ class ProductService:
                 Product.author,
                 Product.author_user_id,
                 Product.material_cost_cents,
+                Product.stage_count,
                 Product.is_active,
                 Product.created_at,
                 func.coalesce(operations_count.c.operations_count, 0).label(
@@ -66,6 +74,7 @@ class ProductService:
             author=product.author,
             author_user_id=product.author_user_id,
             material_cost_cents=product.material_cost_cents,
+            stage_count=product.stage_count,
             is_active=product.is_active,
             created_at=product.created_at,
             operations=[
@@ -75,10 +84,18 @@ class ProductService:
 
     def create_product(self, payload: ProductCreate) -> ProductDetail:
         self._validate_group_operations(payload.operations)
-        resolved_entries = self._resolve_operation_catalog_entries(payload.operations)
+        resolved_entries = self._resolve_operation_catalog_entries(
+            payload.operations,
+            source_product_id=payload.source_product_id,
+        )
         self._validate_operation_catalog_entries_unique(
             payload.operations,
             resolved_entries,
+        )
+        self._validate_created_operation_stages(
+            payload.operations,
+            resolved_entries,
+            payload.stage_count,
         )
         self._validate_product_identity(name=payload.name, version=payload.version)
         author_user = self._resolve_product_author(payload.author_user_id)
@@ -90,6 +107,7 @@ class ProductService:
             author=author_user.name,
             author_user_id=author_user.id,
             material_cost_cents=payload.material_cost_cents,
+            stage_count=payload.stage_count,
             is_active=True,
             created_at=int(datetime.now(UTC).timestamp() * 1000),
         )
@@ -105,9 +123,77 @@ class ProductService:
             )
 
         self.session.add(product)
+        self.session.flush()
+        OperationTimeEstimateService(self.session).mark_operations_dirty(
+            {
+                operation.id
+                for operation in self._walk_operations(product.operations)
+                if not operation.children
+            },
+            dirty_at=product.created_at,
+        )
         self.session.commit()
         self.session.refresh(product)
 
+        return self.get_product(product.id)
+
+    def update_product_stages(
+        self,
+        product_id: int,
+        payload: ProductStagesUpdate,
+    ) -> ProductDetail:
+        product = self._get_product_or_404(product_id)
+        operations = self.session.scalars(
+            select(Operation).where(Operation.product_id == product.id)
+        ).all()
+        parent_operation_ids = {
+            operation.parent_id
+            for operation in operations
+            if operation.parent_id is not None
+        }
+        leaf_operations = {
+            operation.id: operation
+            for operation in operations
+            if operation.id not in parent_operation_ids
+        }
+        requested_ids = [item.operation_id for item in payload.operations]
+        requested_id_set = set(requested_ids)
+        if len(requested_ids) != len(requested_id_set):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="Каждая операция должна встречаться в схеме этапов один раз.",
+            )
+        if requested_id_set != set(leaf_operations):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=(
+                    "Схема этапов должна содержать все конечные операции изделия "
+                    "и не должна содержать группы."
+                ),
+            )
+
+        for requested_stage in payload.operations:
+            operation = leaf_operations[requested_stage.operation_id]
+            self._validate_stage_range(
+                stage_start=requested_stage.stage_start,
+                stage_end=requested_stage.stage_end,
+                stage_count=payload.stage_count,
+                operation_kind=(
+                    operation.catalog_entry.operation_kind
+                    if operation.catalog_entry is not None
+                    else None
+                ),
+            )
+
+        for requested_stage in payload.operations:
+            operation = leaf_operations[requested_stage.operation_id]
+            operation.stage_start = requested_stage.stage_start
+            operation.stage_end = requested_stage.stage_end
+
+        product.stage_count = payload.stage_count
+        PlanningRevisionService(self.session).request_recalculation()
+        self.session.commit()
+        self.session.refresh(product)
         return self.get_product(product.id)
 
     def update_product_costs(
@@ -116,38 +202,61 @@ class ProductService:
         payload: ProductCostsUpdate,
     ) -> ProductDetail:
         product = self._get_product_or_404(product_id)
-        requested_operation_costs = self._collect_operation_costs(payload.operations)
+        requested_operation_updates = self._collect_operation_costs(
+            payload.operations
+        )
         operations = self.session.scalars(
             select(Operation).where(Operation.product_id == product.id)
         ).all()
         operations_by_id = {operation.id: operation for operation in operations}
+        parent_operation_ids = {
+            operation.parent_id
+            for operation in operations
+            if operation.parent_id is not None
+        }
 
-        unknown_operation_ids = set(requested_operation_costs) - set(operations_by_id)
+        unknown_operation_ids = set(requested_operation_updates) - set(
+            operations_by_id
+        )
         if unknown_operation_ids:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail="Operation prices must reference existing product operations.",
             )
 
-        for operation_id, requested_costs in requested_operation_costs.items():
+        standard_times_changed = False
+        for operation_id, requested_update in requested_operation_updates.items():
             operation = operations_by_id[operation_id]
-            current_price_cents = None if operation.children else operation.price_cents
-            current_standard_time_seconds = (
-                None if operation.children else operation.standard_time_seconds
-            )
-            if requested_costs[0] != current_price_cents:
+            is_group = operation.id in parent_operation_ids
+            current_price_cents = None if is_group else operation.price_cents
+            if (
+                "price_cents" in requested_update.model_fields_set
+                and requested_update.price_cents != current_price_cents
+            ):
                 raise HTTPException(
                     status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                     detail="Operation prices cannot be changed after product creation.",
                 )
-            if requested_costs[1] != current_standard_time_seconds:
-                raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-                    detail=(
-                        "Operation standard times cannot be changed after product "
-                        "creation."
-                    ),
+            if "standard_time_seconds" not in requested_update.model_fields_set:
+                continue
+            if is_group:
+                if requested_update.standard_time_seconds is not None:
+                    raise HTTPException(
+                        status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                        detail="Operation groups cannot have standard times.",
+                    )
+                continue
+            if (
+                requested_update.standard_time_seconds
+                != operation.standard_time_seconds
+            ):
+                operation.standard_time_seconds = (
+                    requested_update.standard_time_seconds
                 )
+                standard_times_changed = True
+
+        if standard_times_changed:
+            PlanningRevisionService(self.session).request_recalculation()
 
         product.material_cost_cents = payload.material_cost_cents
         if "comment" in payload.model_fields_set:
@@ -159,6 +268,16 @@ class ProductService:
 
     def delete_product(self, product_id: int) -> None:
         product = self._get_product_or_404(product_id)
+        if self.session.scalar(
+            select(WorkOrder.id).where(WorkOrder.product_id == product.id).limit(1)
+        ) is not None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    "Нельзя удалить изделие, которое уже используется в заказах. "
+                    "Изделие можно деактивировать."
+                ),
+            )
         self.session.delete(product)
         self.session.commit()
 
@@ -179,6 +298,7 @@ class ProductService:
             author=product.author,
             author_user_id=product.author_user_id,
             material_cost_cents=product.material_cost_cents,
+            stage_count=product.stage_count,
             is_active=product.is_active,
             created_at=product.created_at,
             operations_count=self._count_operations(product.operations),
@@ -222,6 +342,8 @@ class ProductService:
             standard_time_seconds=(
                 payload.standard_time_seconds if not is_group else None
             ),
+            stage_start=payload.stage_start if not is_group else 1,
+            stage_end=payload.stage_end if not is_group else 1,
             sort_order=sort_order,
             product=product,
         )
@@ -267,18 +389,43 @@ class ProductService:
     def _resolve_operation_catalog_entries(
         self,
         operations: Sequence[OperationCreate],
+        *,
+        source_product_id: int | None,
     ) -> dict[int, OperationCatalogEntry]:
+        permitted_inactive_entry_ids: set[int] = set()
+        if source_product_id is not None:
+            source_product_exists = self.session.scalar(
+                select(Product.id).where(Product.id == source_product_id)
+            )
+            if source_product_exists is None:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                    detail="Source product not found.",
+                )
+            source_entry_ids = self.session.scalars(
+                select(Operation.operation_catalog_entry_id).where(
+                    Operation.product_id == source_product_id,
+                    Operation.operation_catalog_entry_id.is_not(None),
+                )
+            ).all()
+            permitted_inactive_entry_ids = {
+                entry_id for entry_id in source_entry_ids if entry_id is not None
+            }
+
         if not operations:
             return {}
 
-        active_entries = self.session.scalars(
+        entries = self.session.scalars(
             select(OperationCatalogEntry).where(
-                OperationCatalogEntry.is_active.is_(True)
+                or_(
+                    OperationCatalogEntry.is_active.is_(True),
+                    OperationCatalogEntry.id.in_(permitted_inactive_entry_ids),
+                )
             )
         ).all()
-        active_entries_by_id = {entry.id: entry for entry in active_entries}
-        active_entries_by_name = {
-            self._normalize_search(entry.name): entry for entry in active_entries
+        entries_by_id = {entry.id: entry for entry in entries}
+        entries_by_name = {
+            self._normalize_search(entry.name): entry for entry in entries
         }
         resolved_entries: dict[int, OperationCatalogEntry] = {}
 
@@ -290,8 +437,8 @@ class ProductService:
 
                 entry = self._resolve_operation_catalog_entry(
                     operation,
-                    active_entries_by_id,
-                    active_entries_by_name,
+                    entries_by_id,
+                    entries_by_name,
                 )
                 resolved_entries[id(operation)] = entry
 
@@ -348,6 +495,49 @@ class ProductService:
 
         walk(operations)
 
+    def _validate_created_operation_stages(
+        self,
+        operations: Sequence[OperationCreate],
+        resolved_entries: dict[int, OperationCatalogEntry],
+        stage_count: int,
+    ) -> None:
+        def walk(nodes: Sequence[OperationCreate]) -> None:
+            for operation in nodes:
+                if operation.children:
+                    walk(operation.children)
+                    continue
+
+                self._validate_stage_range(
+                    stage_start=operation.stage_start,
+                    stage_end=operation.stage_end,
+                    stage_count=stage_count,
+                    operation_kind=resolved_entries[id(operation)].operation_kind,
+                )
+
+        walk(operations)
+
+    def _validate_stage_range(
+        self,
+        *,
+        stage_start: int,
+        stage_end: int,
+        stage_count: int,
+        operation_kind: str | None,
+    ) -> None:
+        if stage_start > stage_end or stage_end > stage_count:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="Диапазон операции должен находиться внутри этапов изделия.",
+            )
+        if (
+            stage_start != stage_end
+            and operation_kind != OperationCatalogEntryKind.ADJACENT.value
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="Несмежная операция может находиться только на одном этапе.",
+            )
+
     def _validate_product_identity(self, name: str, version: str) -> None:
         stmt = select(Product.id).where(
             Product.name == name,
@@ -364,8 +554,8 @@ class ProductService:
     def _collect_operation_costs(
         self,
         operations: Sequence[OperationCostUpdate],
-    ) -> dict[int, tuple[int | None, int | None]]:
-        costs: dict[int, tuple[int | None, int | None]] = {}
+    ) -> dict[int, OperationCostUpdate]:
+        costs: dict[int, OperationCostUpdate] = {}
 
         def walk(nodes: Sequence[OperationCostUpdate]) -> None:
             for operation in nodes:
@@ -377,10 +567,7 @@ class ProductService:
                         ),
                     )
 
-                costs[operation.id] = (
-                    operation.price_cents,
-                    operation.standard_time_seconds,
-                )
+                costs[operation.id] = operation
                 walk(operation.children)
 
         walk(operations)
@@ -388,16 +575,48 @@ class ProductService:
 
     def _serialize_operation(self, operation: Operation) -> OperationRead:
         ordered_children = sorted(operation.children, key=lambda item: item.sort_order)
+        time_estimate = operation.time_estimate if not ordered_children else None
         return OperationRead(
             id=operation.id,
             operation_catalog_entry_id=operation.operation_catalog_entry_id,
             name=self._get_operation_name(operation),
+            operation_kind=(
+                operation.catalog_entry.operation_kind
+                if operation.catalog_entry is not None
+                else None
+            ),
             price_cents=None if ordered_children else operation.price_cents,
             standard_time_seconds=(
                 None if ordered_children else operation.standard_time_seconds
             ),
+            statistical_time_seconds=(
+                time_estimate.seconds_per_item if time_estimate is not None else None
+            ),
+            statistical_completed_orders_count=(
+                time_estimate.completed_orders_count
+                if time_estimate is not None
+                else 0
+            ),
+            statistical_items_count=(
+                time_estimate.items_count if time_estimate is not None else 0
+            ),
+            statistical_time_calculated_at=(
+                time_estimate.calculated_at if time_estimate is not None else None
+            ),
+            stage_start=operation.stage_start,
+            stage_end=operation.stage_end,
             children=[self._serialize_operation(child) for child in ordered_children],
         )
+
+    def _walk_operations(
+        self,
+        operations: Sequence[Operation],
+    ) -> list[Operation]:
+        result: list[Operation] = []
+        for operation in operations:
+            result.append(operation)
+            result.extend(self._walk_operations(operation.children))
+        return result
 
     def _count_operations(self, operations: Sequence[Operation]) -> int:
         return sum(
@@ -412,6 +631,7 @@ class ProductService:
             author=row.author,
             author_user_id=row.author_user_id,
             material_cost_cents=row.material_cost_cents,
+            stage_count=row.stage_count,
             is_active=row.is_active,
             created_at=row.created_at,
             operations_count=row.operations_count,
@@ -445,5 +665,5 @@ class ProductService:
 
     def _get_operation_name(self, operation: Operation) -> str:
         if operation.catalog_entry is not None:
-            return operation.catalog_entry.name
+            return str(operation.catalog_entry.name)
         return operation.name

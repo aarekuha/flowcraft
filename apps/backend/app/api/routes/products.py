@@ -1,12 +1,13 @@
 from fastapi import APIRouter, Depends, Response, status
 from sqlalchemy.orm import Session
 
-from app.api.dependencies import get_session
+from app.api.dependencies import get_session, require_any_role
 from app.schemas.product import (
     ProductCostsUpdate,
     ProductCreate,
     ProductDetail,
     ProductListItem,
+    ProductStagesUpdate,
     ProductStatusUpdate,
 )
 from app.services.product_service import ProductService
@@ -51,6 +52,20 @@ def update_product_costs(
     session: Session = Depends(get_session),
 ) -> ProductDetail:
     return ProductService(session).update_product_costs(product_id, payload)
+
+
+@router.patch(
+    "/{product_id}/stages",
+    response_model=ProductDetail,
+    summary="Update product production stages",
+)
+def update_product_stages(
+    product_id: int,
+    payload: ProductStagesUpdate,
+    _: object = Depends(require_any_role("constructor", "admin")),
+    session: Session = Depends(get_session),
+) -> ProductDetail:
+    return ProductService(session).update_product_stages(product_id, payload)
 
 
 @router.delete(

@@ -27,3 +27,9 @@ class User(Base):
         back_populates="user",
         cascade="all, delete-orphan",
     )
+    operation_skills = relationship(
+        "UserOperationSkill",
+        foreign_keys="UserOperationSkill.user_id",
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )

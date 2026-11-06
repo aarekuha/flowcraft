@@ -9,10 +9,12 @@ from app.models import (  # noqa: F401
     leather_type,
     operation,
     operation_catalog,
+    planning,
     product,
     timer_session,
     timer_session_audit,
     user,
+    user_operation_skill,
     work_order,
     work_shift,
 )

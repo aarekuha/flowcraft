@@ -26,6 +26,10 @@ from app.schemas.timer import TimerType
 from app.services.effective_order_time import (
     build_effective_operation_order_links_subquery,
 )
+from app.services.operation_time_estimate_service import (
+    OperationTimeEstimateService,
+)
+from app.services.planning_revision_service import PlanningRevisionService
 from app.services.timer_service import CODE_TO_TIMER_TYPE, TIMER_TYPE_TO_CODE
 from app.services.work_order_time_service import WorkOrderTimeService
 
@@ -222,6 +226,12 @@ class AdminWorkTimeService:
             started_at=payload.started_at,
             ended_at=payload.ended_at,
         )
+        self._ensure_no_operation_collision(
+            order_id=order.id,
+            operation_id=operation.id,
+            started_at=payload.started_at,
+            ended_at=payload.ended_at,
+        )
         self._extend_shift(
             shift=shift,
             started_at=payload.started_at,
@@ -263,6 +273,11 @@ class AdminWorkTimeService:
             recalculate_cutting_started_at=True,
             updated_at=now,
         )
+        OperationTimeEstimateService(self.session).mark_operations_dirty(
+            {operation.id},
+            dirty_at=now,
+        )
+        PlanningRevisionService(self.session).request_recalculation()
         self.session.commit()
         self.session.refresh(timer_session)
         return self._serialize_session(timer_session)
@@ -283,6 +298,7 @@ class AdminWorkTimeService:
             payload.expected_updated_at,
         )
         before_payload = self._snapshot(timer_session)
+        previous_operation_id = timer_session.operation_id
         timer_type = CODE_TO_TIMER_TYPE[timer_session.timer_type_code]
         target_order: WorkOrder | None = None
         operation: Operation | None = None
@@ -334,6 +350,14 @@ class AdminWorkTimeService:
                 ended_at=payload.ended_at,
                 exclude_session_id=timer_session.id,
             )
+            if operation is not None:
+                self._ensure_no_operation_collision(
+                    order_id=target_order.id,
+                    operation_id=operation.id,
+                    started_at=payload.started_at,
+                    ended_at=payload.ended_at,
+                    exclude_session_id=timer_session.id,
+                )
         self._extend_shift(
             shift=shift,
             started_at=payload.started_at,
@@ -371,6 +395,15 @@ class AdminWorkTimeService:
                 recalculate_cutting_started_at=True,
                 updated_at=now,
             )
+        OperationTimeEstimateService(self.session).mark_operations_dirty(
+            {
+                operation_id
+                for operation_id in (previous_operation_id, timer_session.operation_id)
+                if operation_id is not None
+            },
+            dirty_at=now,
+        )
+        PlanningRevisionService(self.session).request_recalculation()
         self.session.commit()
         self.session.refresh(timer_session)
         return self._serialize_session(timer_session)
@@ -392,6 +425,7 @@ class AdminWorkTimeService:
             if timer_type == TimerType.OPERATION
             else None
         )
+        operation_id = timer_session.operation_id
 
         before_payload = self._snapshot(timer_session)
         timer_session.deleted_at = now
@@ -414,6 +448,11 @@ class AdminWorkTimeService:
                 recalculate_cutting_started_at=True,
                 updated_at=now,
             )
+        OperationTimeEstimateService(self.session).mark_operations_dirty(
+            {operation_id} if operation_id is not None else set(),
+            dirty_at=now,
+        )
+        PlanningRevisionService(self.session).request_recalculation()
         self.session.commit()
 
     def _validate_period(self, period_start: int, period_end: int) -> None:
@@ -681,6 +720,64 @@ class AdminWorkTimeService:
             detail={
                 "code": "same_order_time_overlap",
                 "message": "В заказе уже есть пересекающийся интервал.",
+                "collision": {
+                    "session_id": collision.id,
+                    "label": collision_label,
+                    "started_at": collision.started_at,
+                    "ended_at": collision.ended_at,
+                },
+            },
+        )
+
+    def _ensure_no_operation_collision(
+        self,
+        *,
+        order_id: int,
+        operation_id: int,
+        started_at: int,
+        ended_at: int,
+        exclude_session_id: int | None = None,
+    ) -> None:
+        associated_orders = build_effective_operation_order_links_subquery()
+        stmt = (
+            select(TimerSession)
+            .join(
+                associated_orders,
+                associated_orders.c.timer_session_id == TimerSession.id,
+            )
+            .where(
+                associated_orders.c.order_id == order_id,
+                TimerSession.operation_id == operation_id,
+                TimerSession.timer_type_code
+                == TIMER_TYPE_TO_CODE[TimerType.OPERATION],
+                TimerSession.started_at < ended_at,
+                or_(
+                    TimerSession.ended_at.is_(None),
+                    TimerSession.ended_at > started_at,
+                ),
+            )
+        )
+        if exclude_session_id is not None:
+            stmt = stmt.where(TimerSession.id != exclude_session_id)
+        collision = self.session.scalar(
+            stmt.order_by(TimerSession.started_at.asc(), TimerSession.id.asc()).limit(1)
+        )
+        if collision is None:
+            return
+
+        collision_label = (
+            self._operation_name(collision.operation)
+            if collision.operation is not None
+            else TIMER_TYPE_LABELS[TimerType.OPERATION]
+        )
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "same_operation_time_overlap",
+                "message": (
+                    "Операция уже выполнялась другим исполнителем "
+                    "в этом интервале."
+                ),
                 "collision": {
                     "session_id": collision.id,
                     "label": collision_label,

@@ -604,6 +604,191 @@ def test_admin_blocks_same_order_overlap_and_allows_other_orders(
     assert adjacent_overlap_response.json() == []
 
 
+def test_admin_blocks_same_operation_overlap_for_different_workers(
+    client: TestClient,
+    db_session: sessionmaker[Session],
+) -> None:
+    """
+    Проверяем ручной учёт резервных исполнителей:
+    - создать фактический интервал операции первого сотрудника
+    - запретить пересечение той же операции для второго сотрудника
+    - разрешить параллельную другую операцию заказа
+    """
+    worker_id, order_id, regular_id, cutting_id, shift_id = _seed_work_time_graph(
+        db_session
+    )
+    session = db_session()
+    try:
+        admin = session.scalars(select(User).where(User.phone == "+79990000001")).one()
+        backup_worker = User(
+            name="Резервный исполнитель времени",
+            phone="+79990000202",
+            password_hash=None,
+            roles=["worker"],
+            is_active=True,
+            created_at=1,
+            updated_at=1,
+            deleted_at=None,
+            author_user_id=admin.id,
+        )
+        session.add(backup_worker)
+        session.flush()
+        backup_shift = WorkShift(
+            user_id=backup_worker.id,
+            started_at=_timestamp(20, 8),
+            ended_at=_timestamp(20, 18),
+            business_date="2026-10-20",
+            created_at=_timestamp(20, 8),
+        )
+        existing_operation = TimerSession(
+            shift_id=shift_id,
+            user_id=worker_id,
+            timer_type_code=TIMER_TYPE_TO_CODE[TimerType.OPERATION],
+            order_id=order_id,
+            operation_id=regular_id,
+            started_at=_timestamp(20, 9),
+            ended_at=_timestamp(20, 10),
+            created_at=_timestamp(20, 9),
+            updated_at=_timestamp(20, 10),
+        )
+        session.add_all([backup_shift, existing_operation])
+        session.commit()
+        backup_worker_id = backup_worker.id
+        existing_operation_id = existing_operation.id
+    finally:
+        session.close()
+
+    collision_response = client.post(
+        "/api/admin/work-time/sessions",
+        json={
+            "worker_user_id": backup_worker_id,
+            "order_id": order_id,
+            "operation_id": regular_id,
+            "started_at": _timestamp(20, 9, 30),
+            "ended_at": _timestamp(20, 10, 30),
+        },
+    )
+    assert collision_response.status_code == 409
+    assert collision_response.json()["detail"] == {
+        "code": "same_operation_time_overlap",
+        "message": (
+            "Операция уже выполнялась другим исполнителем в этом интервале."
+        ),
+        "collision": {
+            "session_id": existing_operation_id,
+            "label": "Пошив",
+            "started_at": _timestamp(20, 9),
+            "ended_at": _timestamp(20, 10),
+        },
+    }
+
+    parallel_response = client.post(
+        "/api/admin/work-time/sessions",
+        json={
+            "worker_user_id": backup_worker_id,
+            "order_id": order_id,
+            "operation_id": cutting_id,
+            "started_at": _timestamp(20, 9, 30),
+            "ended_at": _timestamp(20, 10, 30),
+        },
+    )
+    assert parallel_response.status_code == 201
+
+
+def test_admin_blocks_replacing_service_time_with_overlapping_operation(
+    client: TestClient,
+    db_session: sessionmaker[Session],
+) -> None:
+    """
+    Проверяем замену служебного интервала операцией:
+    - сохранить пересекающуюся операцию другого сотрудника
+    - попытаться заменить перерыв резервного сотрудника той же операцией
+    - оставить служебный интервал без изменений после конфликта
+    """
+    worker_id, order_id, regular_id, _cutting_id, shift_id = (
+        _seed_work_time_graph(db_session)
+    )
+    session = db_session()
+    try:
+        admin = session.scalars(select(User).where(User.phone == "+79990000001")).one()
+        backup_worker = User(
+            name="Резервный исполнитель замены",
+            phone="+79990000203",
+            password_hash=None,
+            roles=["worker"],
+            is_active=True,
+            created_at=1,
+            updated_at=1,
+            deleted_at=None,
+            author_user_id=admin.id,
+        )
+        session.add(backup_worker)
+        session.flush()
+        backup_shift = WorkShift(
+            user_id=backup_worker.id,
+            started_at=_timestamp(20, 8),
+            ended_at=_timestamp(20, 18),
+            business_date="2026-10-20",
+            created_at=_timestamp(20, 8),
+        )
+        session.add(backup_shift)
+        session.flush()
+        existing_operation = TimerSession(
+            shift_id=shift_id,
+            user_id=worker_id,
+            timer_type_code=TIMER_TYPE_TO_CODE[TimerType.OPERATION],
+            order_id=order_id,
+            operation_id=regular_id,
+            started_at=_timestamp(20, 9),
+            ended_at=_timestamp(20, 10),
+            created_at=_timestamp(20, 9),
+            updated_at=_timestamp(20, 10),
+        )
+        service_interval = TimerSession(
+            shift_id=backup_shift.id,
+            user_id=backup_worker.id,
+            timer_type_code=TIMER_TYPE_TO_CODE[TimerType.BREAK],
+            order_id=None,
+            operation_id=None,
+            started_at=_timestamp(20, 9, 30),
+            ended_at=_timestamp(20, 10, 30),
+            created_at=_timestamp(20, 9, 30),
+            updated_at=_timestamp(20, 10, 30),
+        )
+        session.add_all([existing_operation, service_interval])
+        session.commit()
+        service_interval_id = service_interval.id
+        service_interval_version = service_interval.updated_at
+    finally:
+        session.close()
+
+    collision_response = client.patch(
+        f"/api/admin/work-time/sessions/{service_interval_id}",
+        json={
+            "order_id": order_id,
+            "operation_id": regular_id,
+            "started_at": _timestamp(20, 9, 30),
+            "ended_at": _timestamp(20, 10, 30),
+            "expected_updated_at": service_interval_version,
+        },
+    )
+    assert collision_response.status_code == 409
+    assert collision_response.json()["detail"]["code"] == (
+        "same_operation_time_overlap"
+    )
+
+    session = db_session()
+    try:
+        unchanged_interval = session.scalars(
+            select(TimerSession).where(TimerSession.id == service_interval_id)
+        ).one()
+        assert unchanged_interval.timer_type_code == TIMER_TYPE_TO_CODE[TimerType.BREAK]
+        assert unchanged_interval.order_id is None
+        assert unchanged_interval.operation_id is None
+    finally:
+        session.close()
+
+
 def test_admin_ignores_zero_time_allocations_in_overlap_checks(
     client: TestClient,
     db_session: sessionmaker[Session],

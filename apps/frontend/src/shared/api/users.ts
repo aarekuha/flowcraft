@@ -22,7 +22,23 @@ export type UserRecord = {
   updatedAtTs: number | null;
   updatedAt: string;
   deletedAtTs: number | null;
+  skillOperationCatalogEntryIds: number[];
   isNew?: boolean;
+};
+
+export type UserSkill = {
+  operationCatalogEntryId: number;
+  operationName: string;
+  operationKind: "regular" | "cutting" | "adjacent";
+  createdAt: number;
+};
+
+export type UserSkills = {
+  userId: number;
+  userName: string;
+  skills: UserSkill[];
+  totalCount: number;
+  hiddenInactiveCount: number;
 };
 
 export type UserCreatePayload = {
@@ -47,6 +63,22 @@ type UserApi = {
   created_at: number;
   updated_at: number;
   deleted_at: number | null;
+  skill_operation_catalog_entry_ids: number[];
+};
+
+type UserSkillApi = {
+  operation_catalog_entry_id: number;
+  operation_name: string;
+  operation_kind: "regular" | "cutting" | "adjacent";
+  created_at: number;
+};
+
+type UserSkillsApi = {
+  user_id: number;
+  user_name: string;
+  skills: UserSkillApi[];
+  total_count: number;
+  hidden_inactive_count: number;
 };
 
 export async function fetchUsers(): Promise<UserRecord[]> {
@@ -114,6 +146,52 @@ export async function deleteUser(userId: number): Promise<void> {
   }
 }
 
+export async function fetchUserSkills(userId: number): Promise<UserSkills> {
+  const response = await apiFetch(`/api/users/${userId}/skills`);
+  return handleJsonResponse<UserSkillsApi>(response).then(mapUserSkills);
+}
+
+export async function addUserSkill(
+  userId: number,
+  operationCatalogEntryId: number,
+): Promise<UserSkills> {
+  const response = await apiFetch(`/api/users/${userId}/skills`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      operation_catalog_entry_id: operationCatalogEntryId,
+    }),
+  });
+  return handleJsonResponse<UserSkillsApi>(response).then(mapUserSkills);
+}
+
+export async function removeUserSkill(
+  userId: number,
+  operationCatalogEntryId: number,
+): Promise<UserSkills> {
+  const response = await apiFetch(
+    `/api/users/${userId}/skills/${operationCatalogEntryId}`,
+    { method: "DELETE" },
+  );
+  return handleJsonResponse<UserSkillsApi>(response).then(mapUserSkills);
+}
+
+export async function copyUserSkills(
+  targetUserId: number,
+  sourceUserId: number,
+): Promise<UserSkills> {
+  const response = await apiFetch(`/api/users/${targetUserId}/skills/copy`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ source_user_id: sourceUserId }),
+  });
+  return handleJsonResponse<UserSkillsApi>(response).then(mapUserSkills);
+}
+
 function mapUser(user: UserApi): UserRecord {
   return {
     id: user.id,
@@ -129,6 +207,24 @@ function mapUser(user: UserApi): UserRecord {
     updatedAtTs: user.updated_at,
     updatedAt: formatDate(user.updated_at),
     deletedAtTs: user.deleted_at,
+    skillOperationCatalogEntryIds: [
+      ...user.skill_operation_catalog_entry_ids,
+    ],
+  };
+}
+
+function mapUserSkills(value: UserSkillsApi): UserSkills {
+  return {
+    userId: value.user_id,
+    userName: value.user_name,
+    skills: value.skills.map((skill) => ({
+      operationCatalogEntryId: skill.operation_catalog_entry_id,
+      operationName: skill.operation_name,
+      operationKind: skill.operation_kind,
+      createdAt: skill.created_at,
+    })),
+    totalCount: value.total_count,
+    hiddenInactiveCount: value.hidden_inactive_count,
   };
 }
 

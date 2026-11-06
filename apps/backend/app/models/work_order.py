@@ -5,6 +5,7 @@ from sqlalchemy import (
     CheckConstraint,
     Date,
     ForeignKey,
+    Index,
     Integer,
     String,
     UniqueConstraint,
@@ -70,6 +71,13 @@ class WorkOrder(Base):
             "cutting_spent_seconds >= 0",
             name="ck_work_orders_cutting_spent_seconds",
         ),
+        Index(
+            "ix_work_orders_planning_queue",
+            "planning_excluded_at",
+            "deleted_at",
+            "completed_at",
+            "planning_priority_rank",
+        ),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -114,6 +122,15 @@ class WorkOrder(Base):
     defect_quantity: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     completed_at: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     deleted_at: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    planning_priority_rank: Mapped[int] = mapped_column(
+        BigInteger,
+        nullable=False,
+        default=0,
+    )
+    planning_excluded_at: Mapped[int | None] = mapped_column(
+        BigInteger,
+        nullable=True,
+    )
 
     assignments = relationship(
         "WorkOrderAssignment",
