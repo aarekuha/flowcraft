@@ -14,10 +14,9 @@ from app.services.effective_order_time import (
     union_duration_seconds,
 )
 
-ALGORITHM_VERSION = "recent-five-median-v2"
-MIN_COMPLETED_ORDERS = 5
-MIN_ITEMS = 20
-MAX_COMPLETED_ORDERS = 5
+ALGORITHM_VERSION = "recent-30d-five-items-mean-v3"
+MIN_ITEMS = 5
+LOOKBACK_MILLISECONDS = 30 * 24 * 60 * 60 * 1000
 
 
 class OperationTimeEstimateService:
@@ -124,11 +123,13 @@ class OperationTimeEstimateService:
         for estimate in estimates:
             operation_samples = samples.get(estimate.operation_id, [])
             completed_orders_count = len(operation_samples)
-            items_count = sum(quantity for _, quantity in operation_samples)
+            items_count = sum(
+                included_quantity
+                for _, _, included_quantity in operation_samples
+            )
             seconds_per_item = (
-                self._median_seconds(operation_samples)
-                if completed_orders_count >= MIN_COMPLETED_ORDERS
-                and items_count >= MIN_ITEMS
+                self._average_seconds(operation_samples)
+                if items_count >= MIN_ITEMS
                 else None
             )
             dirty_at = dirty_tokens[estimate.operation_id]
@@ -161,7 +162,7 @@ class OperationTimeEstimateService:
     def _load_samples(
         self,
         operation_ids: set[int],
-    ) -> dict[int, list[tuple[int, int]]]:
+    ) -> dict[int, list[tuple[int, int, int]]]:
         effective_links = build_effective_operation_order_links_subquery()
         rows = self.session.execute(
             select(
@@ -224,34 +225,58 @@ class OperationTimeEstimateService:
                 )
             )
 
-        samples: dict[int, list[tuple[int, int]]] = {}
+        samples: dict[int, list[tuple[int, int, int]]] = {}
         for operation_id, operation_candidates in candidates.items():
-            recent_candidates = sorted(
+            ordered_candidates = sorted(
                 operation_candidates,
                 key=lambda item: (item[0], item[1]),
                 reverse=True,
-            )[:MAX_COMPLETED_ORDERS]
-            samples[operation_id] = [
-                (elapsed_seconds, quantity)
-                for _, _, elapsed_seconds, quantity in recent_candidates
+            )
+            latest_completed_at = ordered_candidates[0][0]
+            cutoff = latest_completed_at - LOOKBACK_MILLISECONDS
+            selected_samples = [
+                (elapsed_seconds, quantity, quantity)
+                for completed_at, _, elapsed_seconds, quantity in ordered_candidates
+                if completed_at >= cutoff
             ]
+            selected_items = sum(
+                included_quantity
+                for _, _, included_quantity in selected_samples
+            )
+            if selected_items < MIN_ITEMS:
+                for completed_at, _, elapsed_seconds, quantity in ordered_candidates:
+                    if completed_at >= cutoff:
+                        continue
+                    included_quantity = min(quantity, MIN_ITEMS - selected_items)
+                    selected_samples.append(
+                        (elapsed_seconds, quantity, included_quantity)
+                    )
+                    selected_items += included_quantity
+                    if selected_items >= MIN_ITEMS:
+                        break
+            samples[operation_id] = selected_samples
         return samples
 
-    def _median_seconds(
+    def _average_seconds(
         self,
-        samples: list[tuple[int, int]],
+        samples: list[tuple[int, int, int]],
     ) -> int:
         if not samples:
             raise RuntimeError("Operation time samples unexpectedly empty")
-        ordered = sorted(
-            Fraction(elapsed_seconds, quantity)
-            for elapsed_seconds, quantity in samples
+        items_count = sum(
+            included_quantity for _, _, included_quantity in samples
         )
-        middle_index = len(ordered) // 2
-        median = ordered[middle_index]
-        if len(ordered) % 2 == 0:
-            median = (ordered[middle_index - 1] + median) / 2
-        return (median.numerator + median.denominator - 1) // median.denominator
+        if items_count <= 0:
+            raise RuntimeError("Operation time samples contain no items")
+        total_seconds = sum(
+            (
+                Fraction(elapsed_seconds, quantity) * included_quantity
+                for elapsed_seconds, quantity, included_quantity in samples
+            ),
+            start=Fraction(0, 1),
+        )
+        average = total_seconds / Fraction(items_count, 1)
+        return (average.numerator + average.denominator - 1) // average.denominator
 
     def _now_ts(self) -> int:
         return int(datetime.now(UTC).timestamp() * 1000)

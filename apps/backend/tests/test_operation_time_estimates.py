@@ -17,13 +17,13 @@ from app.services.operation_time_estimate_service import (
 from app.services.production_planner_service import PlanningSnapshotBuilder
 
 
-def test_estimate_uses_median_of_five_latest_completed_orders(
+def test_estimate_uses_item_average_from_last_thirty_days(
     db_session: sessionmaker[Session],
 ) -> None:
     """
     Проверяем статистическую оценку норматива:
-    - учитывать только пять последних завершённых заказов
-    - не позволять объёму одного заказа изменить вес его значения
+    - исключить изделия старше тридцати суток от последнего завершения
+    - учитывать каждое изделие в среднем времени
     - объединить пересечения и исключить удалённое время
     """
     session = db_session()
@@ -44,7 +44,11 @@ def test_estimate_uses_median_of_five_latest_completed_orders(
                 product_id=operation.product_id,
                 order_number=f"STAT-{index}",
                 quantity=quantity,
-                completed_at=10_000 + index,
+                completed_at=(
+                    index
+                    if index <= 2
+                    else 40 * 24 * 60 * 60 * 1000 + index
+                ),
             )
             start = index * 20_000_000
             _add_operation_timer(
@@ -81,7 +85,7 @@ def test_estimate_uses_median_of_five_latest_completed_orders(
         estimate = session.get(OperationTimeEstimate, operation.id)
         assert recalculated == 1
         assert estimate is not None
-        assert estimate.seconds_per_item == 300
+        assert estimate.seconds_per_item == 110
         assert estimate.completed_orders_count == 5
         assert estimate.items_count == 104
         assert estimate.calculated_at == 20_000
@@ -146,37 +150,146 @@ def test_snapshot_prefers_manual_time_and_falls_back_to_statistics(
         session.close()
 
 
-def test_insufficient_sample_does_not_create_statistical_standard(
+def test_five_items_create_statistical_standard_from_single_order(
     db_session: sessionmaker[Session],
 ) -> None:
     """
     Проверяем минимальный объём статистики:
-    - не принимать четыре завершённых заказа при двадцати изделиях
-    - возвращать отдельную причину отсутствия прогноза
+    - принять пять изделий из одного завершённого заказа
+    - использовать рассчитанное среднее в планировании
     """
     session = db_session()
     try:
         operation, worker = _create_product_operation_and_worker(session)
-        for index in range(1, 5):
-            order = _create_order(
-                session,
-                product_id=operation.product_id,
-                order_number=f"SMALL-{index}",
-                quantity=5,
-                completed_at=10_000 + index,
-            )
-            _add_operation_timer(
-                session,
-                worker_id=worker.id,
-                order_id=order.id,
-                operation_id=operation.id,
-                started_at=index * 3_000_000,
-                duration_seconds=500,
-            )
+        completed_order = _create_order(
+            session,
+            product_id=operation.product_id,
+            order_number="ENOUGH-1",
+            quantity=5,
+            completed_at=10_000,
+        )
+        _add_operation_timer(
+            session,
+            worker_id=worker.id,
+            order_id=completed_order.id,
+            operation_id=operation.id,
+            started_at=3_000_000,
+            duration_seconds=500,
+        )
         open_order = _create_order(
             session,
             product_id=operation.product_id,
             order_number="OPEN-2",
+            quantity=2,
+            completed_at=None,
+        )
+        session.commit()
+
+        OperationTimeEstimateService(session).recalculate_dirty(20_000)
+        planning_input = PlanningSnapshotBuilder(session).build(
+            datetime(2026, 11, 5, 10, 0, tzinfo=UTC)
+        )
+        task = _find_task(planning_input, open_order.id, operation.id)
+        output = ProductionPlanningCalculator().calculate(planning_input)
+
+        estimate = session.get(OperationTimeEstimate, operation.id)
+        assert estimate is not None
+        assert estimate.seconds_per_item == 100
+        assert estimate.completed_orders_count == 1
+        assert estimate.items_count == 5
+        assert task.workload_seconds == 200
+        assert task.standard_time_seconds == 100
+        assert task.standard_time_source == "statistical"
+        assert output.operations[0].issue_codes != ("insufficient_statistics",)
+    finally:
+        session.close()
+
+
+def test_last_five_items_supplement_sparse_thirty_day_window(
+    db_session: sessionmaker[Session],
+) -> None:
+    """
+    Проверяем резервную выборку последних изделий:
+    - накопить два изделия за последние тридцать суток
+    - дополнить выборку тремя изделиями из более старого заказа
+    - рассчитать среднее ровно по пяти изделиям
+    """
+    session = db_session()
+    try:
+        operation, worker = _create_product_operation_and_worker(session)
+        old_order = _create_order(
+            session,
+            product_id=operation.product_id,
+            order_number="OLD-1",
+            quantity=10,
+            completed_at=1,
+        )
+        _add_operation_timer(
+            session,
+            worker_id=worker.id,
+            order_id=old_order.id,
+            operation_id=operation.id,
+            started_at=1_000_000,
+            duration_seconds=1000,
+        )
+        recent_order = _create_order(
+            session,
+            product_id=operation.product_id,
+            order_number="RECENT-1",
+            quantity=2,
+            completed_at=40 * 24 * 60 * 60 * 1000,
+        )
+        _add_operation_timer(
+            session,
+            worker_id=worker.id,
+            order_id=recent_order.id,
+            operation_id=operation.id,
+            started_at=40 * 24 * 60 * 60 * 1000,
+            duration_seconds=400,
+        )
+        session.commit()
+
+        OperationTimeEstimateService(session).recalculate_dirty(20_000)
+
+        estimate = session.get(OperationTimeEstimate, operation.id)
+        assert estimate is not None
+        assert estimate.seconds_per_item == 140
+        assert estimate.completed_orders_count == 2
+        assert estimate.items_count == 5
+    finally:
+        session.close()
+
+
+def test_fewer_than_five_items_do_not_create_statistical_standard(
+    db_session: sessionmaker[Session],
+) -> None:
+    """
+    Проверяем недостаточный объём статистики:
+    - накопить четыре изделия независимо от количества заказов
+    - вернуть отдельную причину отсутствия прогноза
+    """
+    session = db_session()
+    try:
+        operation, worker = _create_product_operation_and_worker(session)
+        completed_order = _create_order(
+            session,
+            product_id=operation.product_id,
+            order_number="SMALL-1",
+            quantity=4,
+            completed_at=10_000,
+        )
+        _add_operation_timer(
+            session,
+            worker_id=worker.id,
+            order_id=completed_order.id,
+            operation_id=operation.id,
+            started_at=3_000_000,
+            duration_seconds=400,
+        )
+        open_order = _create_order(
+            session,
+            product_id=operation.product_id,
+            order_number="OPEN-3",
             quantity=1,
             completed_at=None,
         )
@@ -192,8 +305,8 @@ def test_insufficient_sample_does_not_create_statistical_standard(
         estimate = session.get(OperationTimeEstimate, operation.id)
         assert estimate is not None
         assert estimate.seconds_per_item is None
-        assert estimate.completed_orders_count == 4
-        assert estimate.items_count == 20
+        assert estimate.completed_orders_count == 1
+        assert estimate.items_count == 4
         assert task.workload_seconds is None
         assert task.missing_time_issue == "insufficient_statistics"
         assert output.operations[0].issue_codes == ("insufficient_statistics",)

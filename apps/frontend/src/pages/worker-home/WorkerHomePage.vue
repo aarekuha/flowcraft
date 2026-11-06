@@ -4538,7 +4538,7 @@ function getOperationStatisticalTimeLabel(row: FlatOperationNodeRow): string {
     row.statisticalCompletedOrdersCount > 0 ||
     row.statisticalItemsCount > 0
   ) {
-    return `Недостаточно статистики: ${row.statisticalCompletedOrdersCount} из 5 заказов, ${row.statisticalItemsCount} из 20 изделий`;
+    return `Недостаточно статистики: ${row.statisticalItemsCount} из 5 изделий`;
   }
   return "Статистика ещё не накоплена";
 }
