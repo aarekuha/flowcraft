@@ -238,6 +238,165 @@ def test_timer_service_rejects_hidden_and_completed_assignment_timers(
         session.close()
 
 
+def test_timer_service_allows_only_one_active_worker_per_order_operation(
+    db_session: sessionmaker[Session],
+) -> None:
+    """
+    Проверяем резервного исполнителя одной операции:
+    - назначить двух сотрудников на одну операцию заказа
+    - запретить второму сотруднику запускать уже выполняемую операцию
+    - разрешить замену после остановки таймера первого сотрудника
+    """
+    worker_id, order_id, operation_id = _bootstrap_worker_graph(db_session)
+    session = db_session()
+    try:
+        backup_worker = User(
+            name="Резервный исполнитель",
+            phone="+79990000003",
+            password_hash=None,
+            roles=["worker"],
+            is_active=True,
+            created_at=1,
+            updated_at=1,
+            deleted_at=None,
+            author_user_id=worker_id,
+        )
+        session.add(backup_worker)
+        session.flush()
+        session.add(
+            WorkOrderAssignment(
+                work_order_id=order_id,
+                operation_id=operation_id,
+                worker_user_id=backup_worker.id,
+            )
+        )
+        session.commit()
+
+        timer_service = TimerService(session)
+        timer_service.start_day(worker_id)
+        timer_service.start_day(backup_worker.id)
+        timer_service.switch_timer(
+            worker_id,
+            TimerSwitchPayload(
+                timer_type=TimerType.OPERATION,
+                order_id=order_id,
+                operation_id=operation_id,
+            ),
+        )
+
+        with pytest.raises(HTTPException) as conflict_error:
+            timer_service.switch_timer(
+                backup_worker.id,
+                TimerSwitchPayload(
+                    timer_type=TimerType.OPERATION,
+                    order_id=order_id,
+                    operation_id=operation_id,
+                ),
+            )
+        assert conflict_error.value.status_code == 409
+        assert conflict_error.value.detail == {
+            "code": "operation_already_active",
+            "message": "Операция уже выполняется другим исполнителем.",
+        }
+
+        backup_state = timer_service.get_state(backup_worker.id)
+        assert backup_state.active_timer is not None
+        assert backup_state.active_timer.timer_type == TimerType.PREPARATION
+
+        timer_service.switch_timer(
+            worker_id,
+            TimerSwitchPayload(timer_type=TimerType.BREAK),
+        )
+        replacement_state = timer_service.switch_timer(
+            backup_worker.id,
+            TimerSwitchPayload(
+                timer_type=TimerType.OPERATION,
+                order_id=order_id,
+                operation_id=operation_id,
+            ),
+        )
+        assert replacement_state.active_timer is not None
+        assert replacement_state.active_timer.timer_type == TimerType.OPERATION
+        assert replacement_state.active_timer.order_id == order_id
+        assert replacement_state.active_timer.operation_id == operation_id
+    finally:
+        session.close()
+
+
+def test_timer_service_translates_active_operation_unique_conflict(
+    db_session: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    Проверяем защиту от конкурентного запуска операции:
+    - искусственно пропустить предварительную проверку активной операции
+    - получить конфликт уникальности при сохранении второго таймера
+    - вернуть предметную ошибку и сохранить прежний таймер сотрудника
+    """
+    worker_id, order_id, operation_id = _bootstrap_worker_graph(db_session)
+    session = db_session()
+    try:
+        backup_worker = User(
+            name="Резервный исполнитель гонки",
+            phone="+79990000004",
+            password_hash=None,
+            roles=["worker"],
+            is_active=True,
+            created_at=1,
+            updated_at=1,
+            deleted_at=None,
+            author_user_id=worker_id,
+        )
+        session.add(backup_worker)
+        session.flush()
+        session.add(
+            WorkOrderAssignment(
+                work_order_id=order_id,
+                operation_id=operation_id,
+                worker_user_id=backup_worker.id,
+            )
+        )
+        session.commit()
+
+        timer_service = TimerService(session)
+        timer_service.start_day(worker_id)
+        timer_service.start_day(backup_worker.id)
+        timer_service.switch_timer(
+            worker_id,
+            TimerSwitchPayload(
+                timer_type=TimerType.OPERATION,
+                order_id=order_id,
+                operation_id=operation_id,
+            ),
+        )
+        monkeypatch.setattr(
+            timer_service,
+            "_ensure_operation_is_not_active",
+            lambda _payload: None,
+        )
+
+        with pytest.raises(HTTPException) as conflict_error:
+            timer_service.switch_timer(
+                backup_worker.id,
+                TimerSwitchPayload(
+                    timer_type=TimerType.OPERATION,
+                    order_id=order_id,
+                    operation_id=operation_id,
+                ),
+            )
+        assert conflict_error.value.status_code == 409
+        assert conflict_error.value.detail == {
+            "code": "operation_already_active",
+            "message": "Операция уже выполняется другим исполнителем.",
+        }
+
+        backup_state = timer_service.get_state(backup_worker.id)
+        assert backup_state.active_timer is not None
+        assert backup_state.active_timer.timer_type == TimerType.PREPARATION
+    finally:
+        session.close()
+
+
 def test_timer_service_refreshes_work_order_total_in_seconds(
     db_session: sessionmaker[Session],
 ) -> None:

@@ -1,5 +1,7 @@
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from app.schemas.operation_catalog import OperationCatalogEntryKind
+
 
 class OperationCreate(BaseModel):
     operation_catalog_entry_id: int | None = Field(default=None, ge=1)
@@ -10,6 +12,8 @@ class OperationCreate(BaseModel):
         ge=0,
         le=2_147_483_647,
     )
+    stage_start: int = Field(default=1, ge=1)
+    stage_end: int = Field(default=1, ge=1)
     children: list["OperationCreate"] = Field(default_factory=list)
 
     @field_validator("name")
@@ -28,6 +32,8 @@ class OperationCreate(BaseModel):
             raise ValueError(
                 "Operation catalog entry id or operation name must be provided."
             )
+        if self.stage_end < self.stage_start:
+            raise ValueError("Operation stage end must not precede stage start.")
         return self
 
 
@@ -37,8 +43,15 @@ class OperationRead(BaseModel):
     id: int
     operation_catalog_entry_id: int | None
     name: str
+    operation_kind: OperationCatalogEntryKind | None = None
     price_cents: int | None = None
     standard_time_seconds: int | None = None
+    statistical_time_seconds: int | None = None
+    statistical_completed_orders_count: int = 0
+    statistical_items_count: int = 0
+    statistical_time_calculated_at: int | None = None
+    stage_start: int = 1
+    stage_end: int = 1
     children: list["OperationRead"] = Field(default_factory=list)
 
 
@@ -56,9 +69,11 @@ class OperationCostUpdate(BaseModel):
 class ProductCreate(BaseModel):
     name: str = Field(min_length=1, max_length=255)
     version: str = Field(min_length=1, max_length=64)
+    source_product_id: int | None = Field(default=None, ge=1)
     comment: str | None = Field(default=None, max_length=1000)
     author_user_id: int | None = None
     material_cost_cents: int | None = Field(default=None, ge=0)
+    stage_count: int = Field(default=1, ge=1)
     operations: list[OperationCreate] = Field(default_factory=list)
 
     @field_validator("name", "version")
@@ -94,6 +109,23 @@ class ProductCostsUpdate(BaseModel):
         return value.strip() or None
 
 
+class ProductOperationStageUpdate(BaseModel):
+    operation_id: int = Field(ge=1)
+    stage_start: int = Field(ge=1)
+    stage_end: int = Field(ge=1)
+
+    @model_validator(mode="after")
+    def validate_stage_range(self) -> "ProductOperationStageUpdate":
+        if self.stage_end < self.stage_start:
+            raise ValueError("Operation stage end must not precede stage start.")
+        return self
+
+
+class ProductStagesUpdate(BaseModel):
+    stage_count: int = Field(ge=1)
+    operations: list[ProductOperationStageUpdate]
+
+
 class ProductListItem(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -103,6 +135,7 @@ class ProductListItem(BaseModel):
     author: str
     author_user_id: int | None = None
     material_cost_cents: int | None = None
+    stage_count: int
     is_active: bool
     created_at: int
     operations_count: int
@@ -118,6 +151,7 @@ class ProductDetail(BaseModel):
     author: str
     author_user_id: int | None = None
     material_cost_cents: int | None = None
+    stage_count: int
     is_active: bool
     created_at: int
     operations: list[OperationRead] = Field(default_factory=list)

@@ -8,6 +8,21 @@ from app.schemas.timer import TimerType
 from app.services.timer_service import TIMER_TYPE_TO_CODE
 
 
+def union_duration_seconds(intervals: list[tuple[int, int]]) -> int:
+    if not intervals:
+        return 0
+    merged_duration_ms = 0
+    current_start, current_end = sorted(intervals)[0]
+    for started_at, ended_at in sorted(intervals)[1:]:
+        if started_at <= current_end:
+            current_end = max(current_end, ended_at)
+            continue
+        merged_duration_ms += current_end - current_start
+        current_start, current_end = started_at, ended_at
+    merged_duration_ms += current_end - current_start
+    return (merged_duration_ms + 999) // 1000
+
+
 def build_effective_operation_order_links_subquery() -> Any:
     allocated_session_exists = exists(
         select(WorkOrderTimeAllocation.id).where(

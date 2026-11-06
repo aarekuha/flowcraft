@@ -3,7 +3,7 @@ BACKEND_DIR := apps/backend
 NPM := npm
 PYTHON := python3
 
-.PHONY: frontend-install frontend-dev frontend-build frontend-preview backend-install backend-dev backend-run backend-migrate backend-seed-demo backend-seed-real-10 backend-create-admin backend-test backend-lint backend-typecheck
+.PHONY: frontend-install frontend-dev frontend-build frontend-preview backend-install backend-dev backend-run backend-planner backend-migrate backend-seed-demo backend-seed-real-10 backend-create-admin backend-test backend-lint backend-typecheck
 
 frontend-install:
 	cd $(FRONTEND_DIR) && $(NPM) install
@@ -25,6 +25,9 @@ backend-dev:
 
 backend-run:
 	cd $(BACKEND_DIR) && . .venv/bin/activate && uvicorn app.main:app --host 0.0.0.0 --port 8000
+
+backend-planner:
+	cd $(BACKEND_DIR) && . .venv/bin/activate && python -m app.scripts.run_planner
 
 backend-migrate:
 	cd $(BACKEND_DIR) && . .venv/bin/activate && alembic upgrade head

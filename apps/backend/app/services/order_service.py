@@ -14,6 +14,7 @@ from app.models.operation_catalog import OperationCatalogEntry
 from app.models.product import Product
 from app.models.timer_session import TimerSession
 from app.models.user import User
+from app.models.user_operation_skill import UserOperationSkill
 from app.models.work_order import (
     WorkOrder,
     WorkOrderAssignment,
@@ -55,6 +56,11 @@ from app.schemas.order import (
 )
 from app.schemas.timer import TimerType
 from app.services.effective_order_time import build_effective_operation_time_subquery
+from app.services.operation_time_estimate_service import (
+    OperationTimeEstimateService,
+)
+from app.services.planning_queue_service import PlanningQueueService
+from app.services.planning_revision_service import PlanningRevisionService
 from app.services.timer_service import TIMER_TYPE_TO_CODE
 
 
@@ -635,6 +641,7 @@ class OrderService:
             completed_at=None,
             deleted_at=None,
         )
+        PlanningQueueService(self.session).assign_lowest_priority(created_order)
         created_order.assignments = self._clone_assignments_for_split(order, now)
         self.session.add(created_order)
         self.session.flush()
@@ -664,6 +671,7 @@ class OrderService:
             created_order.id,
             cutting_only=True,
         )
+        PlanningQueueService(self.session).bump_revision()
 
         self.session.commit()
         return WorkOrderSplitResult(
@@ -823,6 +831,7 @@ class OrderService:
             self.session.flush()
             self.session.delete(family)
 
+        PlanningQueueService(self.session).bump_revision()
         self.session.commit()
         return self.get_order(receiver.id)
 
@@ -940,6 +949,7 @@ class OrderService:
             state.completed_at = now
 
         state.updated_at = now
+        PlanningRevisionService(self.session).request_recalculation()
         self.session.commit()
         self.session.refresh(order)
         return self._serialize_order(
@@ -972,9 +982,12 @@ class OrderService:
             cutting_started_at=None,
             sewing_started_at=None,
         )
+        planning_queue = PlanningQueueService(self.session)
+        planning_queue.assign_lowest_priority(order)
         order.assignments = self._build_assignments(payload.assignments)
 
         self.session.add(order)
+        planning_queue.bump_revision()
         self.session.commit()
         self.session.refresh(order)
         return self.get_order(order.id)
@@ -1003,6 +1016,9 @@ class OrderService:
         if payload.quantity != order.quantity:
             self._validate_order_quantity_can_be_changed(order)
         attributes_changed = leather_type_id != order.leather_type_id
+        queue_attributes_changed = (
+            attributes_changed or payload.quantity != order.quantity
+        )
         assignments_changed = self._order_assignments_changed(order, payload)
 
         if attributes_changed:
@@ -1035,6 +1051,10 @@ class OrderService:
         order.estimated_minutes = payload.estimated_minutes
         order.updated_at = self._now_ts()
         self._sync_assignments(order, payload.assignments)
+        if queue_attributes_changed:
+            PlanningQueueService(self.session).bump_revision()
+        elif assignments_changed:
+            PlanningRevisionService(self.session).request_recalculation()
 
         self.session.commit()
         self.session.refresh(order)
@@ -1047,6 +1067,7 @@ class OrderService:
     ) -> WorkOrderDetail:
         order = self._get_order_or_404(order_id)
         now = self._now_ts()
+        was_completed = order.completed_at is not None
         self._validate_order_is_not_deleted(order)
         if payload.is_completed:
             raise HTTPException(
@@ -1058,6 +1079,12 @@ class OrderService:
 
         order.completed_at = None
         order.updated_at = now
+        if was_completed:
+            OperationTimeEstimateService(self.session).mark_product_dirty(
+                order.product_id,
+                dirty_at=now,
+            )
+            PlanningRevisionService(self.session).request_recalculation()
 
         self.session.commit()
         self.session.refresh(order)
@@ -1070,6 +1097,7 @@ class OrderService:
     ) -> WorkOrderDetail:
         order = self._get_order_or_404(order_id)
         now = self._now_ts()
+        was_completed = order.completed_at is not None
         self._validate_order_is_not_deleted(order)
 
         if payload.is_in_quality_control:
@@ -1084,13 +1112,23 @@ class OrderService:
                     detail="Completed order cannot be sent to quality control.",
                 )
 
+            queue_changed = order.quality_control_at is None
             order.quality_control_at = order.quality_control_at or now
         else:
+            queue_changed = order.quality_control_at is not None
             order.quality_control_at = None
             order.completed_at = None
             order.defect_quantity = 0
 
         order.updated_at = now
+        if queue_changed and order.planning_excluded_at is None:
+            PlanningQueueService(self.session).bump_revision()
+        if was_completed and order.completed_at is None:
+            OperationTimeEstimateService(self.session).mark_product_dirty(
+                order.product_id,
+                dirty_at=now,
+            )
+            PlanningRevisionService(self.session).request_recalculation()
         self.session.commit()
         self.session.refresh(order)
         return self.get_order(order.id)
@@ -1118,6 +1156,15 @@ class OrderService:
 
         order.defect_quantity = payload.defect_quantity
         order.completed_at = now
+        OperationTimeEstimateService(self.session).mark_product_dirty(
+            order.product_id,
+            dirty_at=now,
+        )
+        if order.planning_excluded_at is None:
+            order.planning_excluded_at = now
+            PlanningQueueService(self.session).bump_revision()
+        else:
+            PlanningRevisionService(self.session).request_recalculation()
         order.updated_at = now
 
         self.session.commit()
@@ -1187,6 +1234,8 @@ class OrderService:
 
         order.production_stage = target_stage.value
         order.updated_at = now
+        if order.planning_excluded_at is None:
+            PlanningQueueService(self.session).bump_revision()
 
         self.session.commit()
         self.session.refresh(order)
@@ -1199,8 +1248,15 @@ class OrderService:
     ) -> WorkOrderDetail:
         order = self._get_order_or_404(order_id)
         now = self._now_ts()
+        queue_membership_changed = (
+            (order.deleted_at is None) != (not payload.is_deleted)
+            and order.planning_excluded_at is None
+            and order.completed_at is None
+        )
         order.deleted_at = now if payload.is_deleted else None
         order.updated_at = now
+        if queue_membership_changed:
+            PlanningQueueService(self.session).bump_revision()
 
         self.session.commit()
         self.session.refresh(order)
@@ -2057,6 +2113,25 @@ class OrderService:
         ).all()
         workers_by_id = {worker.id: worker for worker in workers}
         preserved_assignment_keys = allowed_unavailable_assignment_keys or set()
+        operations_by_id = {operation.id: operation for operation in operations}
+        catalog_entry_ids = {
+            operation.operation_catalog_entry_id
+            for operation in operations
+            if operation.operation_catalog_entry_id is not None
+        }
+        skill_keys = set(
+            self.session.execute(
+                select(
+                    UserOperationSkill.user_id,
+                    UserOperationSkill.operation_catalog_entry_id,
+                ).where(
+                    UserOperationSkill.user_id.in_(worker_ids),
+                    UserOperationSkill.operation_catalog_entry_id.in_(
+                        catalog_entry_ids
+                    ),
+                )
+            ).all()
+        )
 
         for assignment in assignments:
             if assignment.worker_user_id is None:
@@ -2085,6 +2160,24 @@ class OrderService:
                     status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                     detail="Assigned user must be an active worker.",
                 )
+            operation = operations_by_id[assignment.operation_id]
+            catalog_entry_id = operation.operation_catalog_entry_id
+            if (
+                catalog_entry_id is not None
+                and (worker.id, catalog_entry_id) in skill_keys
+            ):
+                continue
+            if assignment_key in preserved_assignment_keys:
+                continue
+            if catalog_entry_id is None:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                    detail="Assigned operation has no catalog skill.",
+                )
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="Assigned worker does not have the required operation skill.",
+            )
 
     def _collect_leaf_operation_ids(self, operations: Sequence[Operation]) -> set[int]:
         parent_ids = {

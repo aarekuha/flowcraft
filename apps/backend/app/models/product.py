@@ -1,4 +1,12 @@
-from sqlalchemy import BigInteger, ForeignKey, Integer, String, UniqueConstraint, and_
+from sqlalchemy import (
+    BigInteger,
+    CheckConstraint,
+    ForeignKey,
+    Integer,
+    String,
+    UniqueConstraint,
+    and_,
+)
 from sqlalchemy.orm import Mapped, foreign, mapped_column, relationship
 
 from app.core.database import Base
@@ -10,6 +18,7 @@ class Product(Base):
     __tablename__ = "products"
     __table_args__ = (
         UniqueConstraint("name", "version", name="uq_products_name_version"),
+        CheckConstraint("stage_count >= 1", name="ck_products_stage_count"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -22,6 +31,7 @@ class Product(Base):
         nullable=True,
     )
     material_cost_cents: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    stage_count: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     is_active: Mapped[bool] = mapped_column(default=True, nullable=False)
     created_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
 
