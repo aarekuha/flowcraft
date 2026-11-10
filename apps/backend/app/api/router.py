@@ -1,3 +1,5 @@
+# ruff: noqa: I001
+
 from fastapi import APIRouter
 
 from app.api.routes.admin_work_time import router as admin_work_time_router
@@ -13,7 +15,16 @@ from app.api.routes.statistics import router as statistics_router
 from app.api.routes.timers import router as timers_router
 from app.api.routes.users import router as users_router
 
+from app.api.routes.completed_work import router as completed_work_router
+from app.api.routes.personal_work import router as personal_work_router
+
 api_router = APIRouter()
+api_router.include_router(
+    personal_work_router, prefix="/worker", tags=["personal-work"]
+)
+api_router.include_router(
+    completed_work_router, prefix="/admin", tags=["completed-work"]
+)
 api_router.include_router(health_router, tags=["health"])
 api_router.include_router(auth_router, prefix="/auth", tags=["auth"])
 api_router.include_router(

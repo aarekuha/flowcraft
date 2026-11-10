@@ -11,6 +11,10 @@ import PlanningForecastModal from "@/pages/worker-home/PlanningForecastModal.vue
 import PlanningPriorityPanel from "@/pages/worker-home/PlanningPriorityPanel.vue";
 import PlanningSettingsModal from "@/pages/worker-home/PlanningSettingsModal.vue";
 import PlanningWorkloadModal from "@/pages/worker-home/PlanningWorkloadModal.vue";
+import { createWorkerTimerRequests } from "@/shared/lib/workerTimerRequests";
+import WorkSummaryModal from "@/pages/worker-home/WorkSummaryModal.vue";
+import BonusPanel from "@/pages/worker-home/BonusPanel.vue";
+import CompletedWorkModal from "@/pages/worker-home/CompletedWorkModal.vue";
 import UserSkillsModal from "@/pages/worker-home/UserSkillsModal.vue";
 import WorkScheduleModal from "@/pages/worker-home/WorkScheduleModal.vue";
 
@@ -59,7 +63,6 @@ import {
   updateWorkOrderPlannedCompletionDate,
   updateWorkOrderProductionStage,
   updateWorkOrderQualityControlStatus,
-  updateWorkOrderStatus,
   updateWorkerAssignmentStatus,
   type WorkOrderListParams,
   type WorkOrderMergeCandidate,
@@ -147,7 +150,7 @@ type BrigadierTabId =
   | "prioritization"
   | WorkOrderStatusTabId;
 type ConstructorTabId = "products" | "directories";
-type ConstructorDirectoryTabId = "operation-catalog" | "leather-types";
+type ConstructorDirectoryTabId = "operation-catalog" | "leather-types" | "bonuses";
 type ProductVisibilityFilter = "all" | "active" | "inactive";
 type ProductSort =
   | "created-desc"
@@ -165,7 +168,6 @@ type WorkOrderActionConfirmKind =
   | "return_to_created"
   | "return_to_cutting"
   | "return_to_work"
-  | "return_to_quality_control"
   | "delete"
   | "restore";
 type UserSort = "created-desc" | "created-asc" | "name-asc" | "name-desc";
@@ -375,7 +377,7 @@ const constructorTab = ref<ConstructorTabId>(
 const constructorDirectoryTab = ref<ConstructorDirectoryTabId>(
   readStoredTab<ConstructorDirectoryTabId>(
     CONSTRUCTOR_DIRECTORY_TAB_STORAGE_KEY,
-    ["operation-catalog", "leather-types"],
+    ["operation-catalog", "leather-types", "bonuses"],
     "operation-catalog",
   ),
 );
@@ -459,6 +461,10 @@ const productionPlanningRecalculating = ref(false);
 const productionPlanningError = ref("");
 const userPendingDelete = ref<UserRecord | null>(null);
 const skillsUser = ref<UserRecord | null>(null);
+const bonusUser = ref<UserRecord | null>(null);
+const completedWorkUser = ref<UserRecord | null>(null);
+const personalWorkOpen = ref(false);
+const workSummaryOpen = ref(false);
 const editingUserId = ref<number | null>(null);
 const editingUserDraft = ref<UserRecord | null>(null);
 const brigadierModalMode = ref<"create" | "manage" | "quality_control" | null>(null);
@@ -489,8 +495,11 @@ const workOrderActionConfirm = ref<{
   kind: WorkOrderActionConfirmKind;
   order: WorkOrderSummary;
 } | null>(null);
+type TimeBreakdownOrder = Pick<WorkOrderSummary, "id" | "orderNumber"> &
+  Partial<Pick<WorkOrderSummary, "productName" | "productVersion" | "quantity">>;
+
 const workOrderTimeBreakdownModal = ref<{
-  order: WorkOrderSummary;
+  order: TimeBreakdownOrder;
   breakdown: WorkOrderTimeBreakdown | null;
 } | null>(null);
 const workOrderTimeBreakdownLoading = ref(false);
@@ -512,6 +521,9 @@ const workerAssignmentsError = ref("");
 const workerAssignmentStatusFilter = ref<WorkerAssignmentStatus>("in_work");
 const isWorkerAssignmentStatusDropdownOpen = ref(false);
 const workerTimerSubmitting = ref(false);
+const workerTimerRequests = createWorkerTimerRequests((busy) => {
+  workerTimerSubmitting.value = busy;
+});
 const workerDayStartedAt = ref<number | null>(null);
 const isWorkerDayEndConfirmOpen = ref(false);
 const workerAssignmentStatusConfirm = ref<WorkerAssignmentStatusConfirm | null>(null);
@@ -593,8 +605,10 @@ const isBrigadierQuantityEditable = computed(
     canEditBrigadierOrderDetails.value &&
     (brigadierModalMode.value === "create" ||
       (brigadierModalMode.value === "manage" &&
-        brigadierModalQuantityChangeAllowed.value &&
-        brigadierCurrentOrder.value?.productionStage === "cutting" &&
+        ((brigadierModalQuantityChangeAllowed.value &&
+          brigadierCurrentOrder.value?.productionStage === "cutting") ||
+          (currentSession.value?.userRoles.includes("admin") &&
+            brigadierCurrentOrder.value?.productionStage === "in_work")) &&
         brigadierCurrentOrder.value.deletedAtTs === null &&
         brigadierCurrentOrder.value.completedAtTs === null &&
         brigadierCurrentOrder.value.qualityControlAtTs === null)),
@@ -1163,7 +1177,7 @@ const brigadierModalDescription = computed(() =>
     : isQualityControlStageBrigadierOrderModal.value
     ? "На стадии ОТК можно изменить плановую дату, назначения доступны для просмотра."
     : brigadierModalHasSpentTime.value && isBrigadierQuantityEditable.value
-    ? "По заказу уже есть трудозатраты кроя: можно изменить плановую дату, количество и исполнителей, вид кожи заблокирован."
+    ? "По заказу уже есть трудозатраты: можно изменить плановую дату, количество и исполнителей, вид кожи заблокирован."
     : brigadierModalHasSpentTime.value
     ? "По заказу уже есть трудозатраты: можно изменить плановую дату и исполнителей до передачи в ОТК, вид кожи и количество заблокированы."
     : brigadierModalMode.value === "manage"
@@ -1211,8 +1225,6 @@ const workOrderActionConfirmTitle = computed(() => {
       return "Вернуть заказ в крой?";
     case "return_to_work":
       return "Вернуть заказ в работу?";
-    case "return_to_quality_control":
-      return "Вернуть заказ на ОТК?";
     case "delete":
       return "Удалить заказ?";
     case "restore":
@@ -1236,8 +1248,6 @@ const workOrderActionConfirmDescription = computed(() => {
       return "Заказ вернется в крой. Исполнителям станут доступны только операции кроя.";
     case "return_to_work":
       return "Дата передачи в ОТК и количество брака будут очищены, заказ снова появится в работе.";
-    case "return_to_quality_control":
-      return "Время проведения ОТК будет очищено, заказ вернется во вкладку ОТК.";
     case "delete":
       return "Заказ будет перенесен во вкладку удаленных. Его можно будет восстановить позже.";
     case "restore":
@@ -1261,8 +1271,6 @@ const workOrderActionConfirmLabel = computed(() => {
       return "Вернуть в крой";
     case "return_to_work":
       return "Вернуть в работу";
-    case "return_to_quality_control":
-      return "Вернуть на ОТК";
     case "delete":
       return "Удалить";
     case "restore":
@@ -1284,8 +1292,6 @@ const workOrderActionConfirmIcon = computed(() => {
       return "button-icon--refresh";
     case "return_to_work":
       return "button-icon--in-work";
-    case "return_to_quality_control":
-      return "button-icon--check";
     case "delete":
       return "button-icon--delete";
     default:
@@ -1675,6 +1681,17 @@ watch(constructorTab, (value) => {
   storeTab(CONSTRUCTOR_TAB_STORAGE_KEY, value);
 });
 
+watch(canManagePlanningSettings, (allowed) => {
+  if (!allowed) {
+    if (constructorDirectoryTab.value === "bonuses") {
+      constructorDirectoryTab.value = "operation-catalog";
+    }
+    bonusUser.value = null;
+    completedWorkUser.value = null;
+    workSummaryOpen.value = false;
+  }
+}, { immediate: true });
+
 watch(constructorDirectoryTab, (value) => {
   storeTab(CONSTRUCTOR_DIRECTORY_TAB_STORAGE_KEY, value);
 });
@@ -1753,6 +1770,8 @@ watch(
 );
 
 onBeforeUnmount(() => {
+  workerTimerRequests.reset();
+  workerAssignmentsRequestId += 1;
   closeWorkerQrScanner();
   window.removeEventListener("keydown", handleWindowKeydown);
   window.removeEventListener("resize", updateSmartphoneViewport);
@@ -2683,7 +2702,6 @@ async function loadWorkerAssignments(): Promise<boolean> {
       redirectToAuth(getErrorMessage(error, "Требуется аутентификация."));
       return false;
     }
-    workOrderDetails.value = [];
     workerAssignmentsError.value = getErrorMessage(
       error,
       "Не удалось загрузить назначения исполнителя.",
@@ -2697,11 +2715,13 @@ async function loadWorkerAssignments(): Promise<boolean> {
 }
 
 async function loadWorkerTimerState() {
-  workerTimerSubmitting.value = true;
+  const timerRequest = workerTimerRequests.beginRead();
 
   try {
-    applyWorkerTimerApiState(await fetchWorkerTimerState());
+    const state = await fetchWorkerTimerState();
+    if (timerRequest.isCurrent()) applyWorkerTimerApiState(state);
   } catch (error) {
+    if (!timerRequest.isCurrent()) return;
     if (isUnauthorizedError(error)) {
       redirectToAuth(getErrorMessage(error, "Требуется аутентификация."));
       return;
@@ -2711,7 +2731,7 @@ async function loadWorkerTimerState() {
       "Не удалось загрузить состояние таймеров.",
     );
   } finally {
-    workerTimerSubmitting.value = false;
+    timerRequest.finish();
   }
 }
 
@@ -2975,7 +2995,7 @@ function closeWorkOrderActionConfirm() {
   workOrderActionConfirm.value = null;
 }
 
-async function openWorkOrderTimeBreakdown(order: WorkOrderSummary) {
+async function openWorkOrderTimeBreakdown(order: TimeBreakdownOrder) {
   const requestId = ++workOrderTimeBreakdownRequestId;
   workOrderTimeBreakdownModal.value = {
     order,
@@ -2985,7 +3005,10 @@ async function openWorkOrderTimeBreakdown(order: WorkOrderSummary) {
   workOrderTimeBreakdownError.value = "";
 
   try {
-    const breakdown = await fetchWorkOrderTimeBreakdown(order.id);
+    const [resolvedOrder, breakdown] = await Promise.all([
+      order.quantity === undefined ? fetchWorkOrder(order.id) : Promise.resolve(order),
+      fetchWorkOrderTimeBreakdown(order.id),
+    ]);
     if (
       requestId !== workOrderTimeBreakdownRequestId ||
       workOrderTimeBreakdownModal.value?.order.id !== order.id
@@ -2994,7 +3017,7 @@ async function openWorkOrderTimeBreakdown(order: WorkOrderSummary) {
     }
 
     workOrderTimeBreakdownModal.value = {
-      order,
+      order: resolvedOrder,
       breakdown,
     };
   } catch (error) {
@@ -3165,6 +3188,8 @@ function syncWorkerTimers(definitions: WorkerTimerDefinition[]) {
 }
 
 function resetWorkerTimerState() {
+  workerTimerRequests.reset();
+  workerAssignmentsRequestId += 1;
   workerDayStartedAt.value = null;
   activeWorkerTimerId.value = null;
   workerTimers.value = {};
@@ -3363,17 +3388,20 @@ function fillFormFromProduct(product: ProductDetail) {
 }
 
 async function startWorkerDay() {
-  if (!currentWorker.value) {
+  if (!currentWorker.value || workerTimerSubmitting.value) {
     return;
   }
 
-  workerTimerSubmitting.value = true;
+  const timerRequest = workerTimerRequests.beginMutation();
   workerAssignmentsError.value = "";
 
   try {
-    applyWorkerTimerApiState(await startWorkerDayApi());
+    const state = await startWorkerDayApi();
+    if (!timerRequest.isCurrent()) return;
+    applyWorkerTimerApiState(state);
     await loadWorkerAssignments();
   } catch (error) {
+    if (!timerRequest.isCurrent()) return;
     if (isUnauthorizedError(error)) {
       redirectToAuth(getErrorMessage(error, "Требуется аутентификация."));
       return;
@@ -3383,7 +3411,7 @@ async function startWorkerDay() {
       "Не удалось начать рабочий день.",
     );
   } finally {
-    workerTimerSubmitting.value = false;
+    timerRequest.finish();
   }
 }
 
@@ -3439,18 +3467,21 @@ async function confirmWorkerAssignmentStatusChange() {
 }
 
 async function endWorkerDay() {
-  if (workerDayStartedAt.value === null) {
+  if (workerDayStartedAt.value === null || workerTimerSubmitting.value) {
     return;
   }
 
-  workerTimerSubmitting.value = true;
+  const timerRequest = workerTimerRequests.beginMutation();
   workerAssignmentsError.value = "";
 
   try {
-    applyWorkerTimerApiState(await endWorkerDayApi());
+    const state = await endWorkerDayApi();
+    if (!timerRequest.isCurrent()) return;
+    applyWorkerTimerApiState(state);
     await loadWorkerAssignments();
     closeWorkerDayEndConfirm();
   } catch (error) {
+    if (!timerRequest.isCurrent()) return;
     if (isUnauthorizedError(error)) {
       redirectToAuth(getErrorMessage(error, "Требуется аутентификация."));
       return;
@@ -3460,12 +3491,12 @@ async function endWorkerDay() {
       "Не удалось завершить рабочий день.",
     );
   } finally {
-    workerTimerSubmitting.value = false;
+    timerRequest.finish();
   }
 }
 
 async function activateWorkerTimer(timerId: string) {
-  if (workerDayStartedAt.value === null) {
+  if (workerDayStartedAt.value === null || workerTimerSubmitting.value) {
     return;
   }
 
@@ -3483,16 +3514,16 @@ async function activateWorkerTimer(timerId: string) {
   const shouldPreserveScroll = isSmartphoneViewport.value && timer.kind === "operation";
   const previousScrollY = shouldPreserveScroll ? window.scrollY : null;
 
-  workerTimerSubmitting.value = true;
+  const timerRequest = workerTimerRequests.beginMutation();
   workerAssignmentsError.value = "";
 
   try {
-    applyWorkerTimerApiState(
-      await switchWorkerTimer(timer.kind, {
-        orderId: parseOrderIdFromTimerId(timerId),
-        operationId: parseOperationIdFromTimerId(timerId),
-      }),
-    );
+    const state = await switchWorkerTimer(timer.kind, {
+      orderId: parseOrderIdFromTimerId(timerId),
+      operationId: parseOperationIdFromTimerId(timerId),
+    });
+    if (!timerRequest.isCurrent()) return;
+    applyWorkerTimerApiState(state);
     await loadWorkerAssignments();
     if (previousScrollY !== null) {
       await nextTick();
@@ -3500,6 +3531,7 @@ async function activateWorkerTimer(timerId: string) {
       (document.activeElement as HTMLElement | null)?.blur?.();
     }
   } catch (error) {
+    if (!timerRequest.isCurrent()) return;
     if (isUnauthorizedError(error)) {
       redirectToAuth(getErrorMessage(error, "Требуется аутентификация."));
       return;
@@ -3509,7 +3541,7 @@ async function activateWorkerTimer(timerId: string) {
       "Не удалось переключить таймер.",
     );
   } finally {
-    workerTimerSubmitting.value = false;
+    timerRequest.finish();
   }
 }
 
@@ -3787,19 +3819,26 @@ async function setWorkerAssignmentStatus(
     activeWorkerTimerId.value === timer.id &&
     isWorkerDayActive.value;
 
-  workerTimerSubmitting.value = true;
+  const timerRequest = workerTimerRequests.beginMutation();
   workerAssignmentsError.value = "";
 
   try {
     if (shouldSwitchActiveTimerToBreak) {
-      applyWorkerTimerApiState(await switchWorkerTimer("break"));
+      const state = await switchWorkerTimer("break");
+      if (!timerRequest.isCurrent()) return;
+      applyWorkerTimerApiState(state);
     }
 
     await updateWorkerAssignmentStatus(timer.assignmentId, status);
+    if (!timerRequest.isCurrent()) return;
     await loadWorkerAssignments();
-    await loadWorkerTimerState();
+    if (!timerRequest.isCurrent()) return;
+    const state = await fetchWorkerTimerState();
+    if (!timerRequest.isCurrent()) return;
+    applyWorkerTimerApiState(state);
     workerAssignmentStatusConfirm.value = null;
   } catch (error) {
+    if (!timerRequest.isCurrent()) return;
     if (isUnauthorizedError(error)) {
       redirectToAuth(getErrorMessage(error, "Требуется аутентификация."));
       return;
@@ -3809,7 +3848,7 @@ async function setWorkerAssignmentStatus(
       "Не удалось обновить статус операции.",
     );
   } finally {
-    workerTimerSubmitting.value = false;
+    timerRequest.finish();
   }
 }
 
@@ -5623,8 +5662,7 @@ async function confirmWorkOrderAction() {
       await updateWorkOrderQualityControlStatus(order.id, true);
     } else if (kind === "return_to_work") {
       await updateWorkOrderQualityControlStatus(order.id, false);
-    } else if (kind === "return_to_quality_control") {
-      await updateWorkOrderStatus(order.id, false);
+
     } else if (kind === "return_to_created") {
       await updateWorkOrderProductionStage(order.id, "created");
     } else if (kind === "delete") {
@@ -6753,6 +6791,12 @@ async function handleResetUserPassword(user: UserRecord) {
             <span class="section-label">Текущий пользователь</span>
             <strong>{{ currentSession.userName }}</strong>
           </div>
+          <button
+            v-if="currentSession.userRoles.includes('worker')"
+            type="button"
+            class="action-link"
+            @click="personalWorkOpen = true"
+          >Мой расчёт за месяц</button>
           <div class="current-user-card__actions">
             <button type="button" class="ghost-button" @click="openChangePasswordModal">
               <span class="button-content">
@@ -7764,7 +7808,7 @@ async function handleResetUserPassword(user: UserRecord) {
                             </span>
                           </button>
                           <button
-                            v-if="workOrderStatusTab === 'in_work'"
+                            v-if="workOrderStatusTab === 'in_work' && canManagePlanningSettings"
                             type="button"
                             class="action-link"
                             :disabled="isWorkOrderBusy(order.id)"
@@ -7773,18 +7817,6 @@ async function handleResetUserPassword(user: UserRecord) {
                             <span class="button-content">
                               <span class="button-icon button-icon--refresh" aria-hidden="true" />
                               <span>Вернуть в крой</span>
-                            </span>
-                          </button>
-                          <button
-                            v-if="workOrderStatusTab === 'completed'"
-                            type="button"
-                            class="action-link"
-                            :disabled="isWorkOrderBusy(order.id)"
-                            @click="openWorkOrderActionConfirm(order, 'return_to_quality_control')"
-                          >
-                            <span class="button-content">
-                              <span class="button-icon button-icon--check" aria-hidden="true" />
-                              <span>Вернуть на ОТК</span>
                             </span>
                           </button>
                           <button
@@ -8010,7 +8042,7 @@ async function handleResetUserPassword(user: UserRecord) {
                     </span>
                   </button>
                   <button
-                    v-if="workOrderStatusTab === 'in_work'"
+                    v-if="workOrderStatusTab === 'in_work' && canManagePlanningSettings"
                     type="button"
                     class="action-link"
                     :disabled="isWorkOrderBusy(order.id)"
@@ -8019,18 +8051,6 @@ async function handleResetUserPassword(user: UserRecord) {
                     <span class="button-content">
                       <span class="button-icon button-icon--refresh" aria-hidden="true" />
                       <span>Вернуть в крой</span>
-                    </span>
-                  </button>
-                  <button
-                    v-if="workOrderStatusTab === 'completed'"
-                    type="button"
-                    class="action-link"
-                    :disabled="isWorkOrderBusy(order.id)"
-                    @click="openWorkOrderActionConfirm(order, 'return_to_quality_control')"
-                  >
-                    <span class="button-content">
-                      <span class="button-icon button-icon--check" aria-hidden="true" />
-                      <span>Вернуть на ОТК</span>
                     </span>
                   </button>
                   <button
@@ -8802,6 +8822,21 @@ async function handleResetUserPassword(user: UserRecord) {
 
               <div class="subtabs" role="tablist" aria-label="Справочники конструктора">
                 <button
+                  v-if="canManagePlanningSettings"
+                  type="button"
+                  class="subtab-button"
+                  :class="{ 'subtab-button--active': constructorDirectoryTab === 'bonuses' }"
+                  @click="constructorDirectoryTab = 'bonuses'"
+                >
+                  <span class="button-content">
+                    <svg class="button-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                      <circle cx="12" cy="12" r="9" />
+                      <path d="M10 17V7h3a3 3 0 0 1 0 6H8m0 2h5" />
+                    </svg>
+                    <span>Премии</span>
+                  </span>
+                </button>
+                <button
                   type="button"
                   class="subtab-button"
                   :class="{
@@ -8831,6 +8866,8 @@ async function handleResetUserPassword(user: UserRecord) {
                 </button>
               </div>
             </div>
+
+            <BonusPanel v-if="constructorDirectoryTab === 'bonuses' && canManagePlanningSettings" />
 
             <template v-if="constructorDirectoryTab === 'operation-catalog'">
               <form class="dictionary-form" @submit.prevent="void submitOperationCatalogEntry()">
@@ -9221,7 +9258,7 @@ async function handleResetUserPassword(user: UserRecord) {
       </section>
 
       <section v-else-if="activeTab === 'work_time'">
-        <AdminWorkTimePanel />
+        <AdminWorkTimePanel @open-order-time="void openWorkOrderTimeBreakdown($event)" />
       </section>
 
       <section v-else>
@@ -9231,6 +9268,8 @@ async function handleResetUserPassword(user: UserRecord) {
               <h2>Пользователи и доступы</h2>
             </div>
 
+            <div class="user-management-actions">
+              <button type="button" class="secondary-button" @click="workSummaryOpen = true">Общий расчёт выполненной работы</button>
             <button
               type="button"
               class="primary-button"
@@ -9242,6 +9281,7 @@ async function handleResetUserPassword(user: UserRecord) {
                 <span>Добавить пользователя</span>
               </span>
             </button>
+            </div>
           </div>
 
           <div class="toolbar">
@@ -9444,6 +9484,8 @@ async function handleResetUserPassword(user: UserRecord) {
                   <td>{{ getDisplayedUser(user).updatedAt || "—" }}</td>
                   <td>
                     <div class="table-actions">
+                      <button v-if="!user.isNew" type="button" class="action-link" :disabled="isUserLocked(user.id)" @click="bonusUser = user">Премии</button>
+                      <button v-if="!user.isNew" type="button" class="action-link" :disabled="isUserLocked(user.id)" @click="completedWorkUser = user">Расчёт выполненной работы</button>
                       <button
                         v-if="!user.isNew"
                         type="button"
@@ -10279,10 +10321,12 @@ async function handleResetUserPassword(user: UserRecord) {
             <p class="modal__eyebrow">Суммарное время</p>
             <h2>Детализация времени</h2>
             <p class="modal__description">
-              Заказ {{ workOrderTimeBreakdownModal.order.orderNumber }} ·
-              {{ workOrderTimeBreakdownModal.order.productName }}
-              · {{ workOrderTimeBreakdownModal.order.productVersion }}
-              · {{ workOrderTimeBreakdownModal.order.quantity }} шт.
+              Заказ {{ workOrderTimeBreakdownModal.order.orderNumber }}
+              <template v-if="workOrderTimeBreakdownModal.order.quantity !== undefined">
+                · {{ workOrderTimeBreakdownModal.order.productName }}
+                · {{ workOrderTimeBreakdownModal.order.productVersion }}
+                · {{ workOrderTimeBreakdownModal.order.quantity }} шт.
+              </template>
             </p>
           </div>
 
@@ -10374,7 +10418,7 @@ async function handleResetUserPassword(user: UserRecord) {
                         formatTimerDuration(
                           calculateAverageDuration(
                             workOrderTimeBreakdownModal.breakdown.totalElapsedMs,
-                            workOrderTimeBreakdownModal.order.quantity,
+                            workOrderTimeBreakdownModal.order.quantity ?? 0,
                           ),
                         )
                       }}
@@ -11056,6 +11100,17 @@ async function handleResetUserPassword(user: UserRecord) {
       </section>
     </div>
 
+    <WorkSummaryModal v-if="workSummaryOpen && canManagePlanningSettings" @close="workSummaryOpen = false" />
+    <CompletedWorkModal v-if="personalWorkOpen && currentSession?.userRoles.includes('worker')" :key="currentSession.userId" :user-id="currentSession.userId" personal @close="personalWorkOpen = false" />
+    <CompletedWorkModal v-if="completedWorkUser && canManagePlanningSettings" :user-id="completedWorkUser.id" @close="completedWorkUser = null" />
+    <div v-if="bonusUser && canManagePlanningSettings" class="bonus-dialog-overlay" @click.self="bonusUser = null" @keydown.esc="bonusUser = null">
+      <section class="bonus-dialog" role="dialog" aria-modal="true" aria-label="Премии" tabindex="-1">
+        <button type="button" class="ghost-button" @click="bonusUser = null">Закрыть</button>
+        <h2 v-if="bonusUser">{{ bonusUser.name }}</h2>
+        <BonusPanel :key="bonusUser.id" :user-id="bonusUser.id" @close="bonusUser = null" />
+      </section>
+    </div>
+
     <UserSkillsModal
       v-if="skillsUser"
       :target-user="skillsUser"
@@ -11254,6 +11309,10 @@ async function handleResetUserPassword(user: UserRecord) {
 </template>
 
 <style scoped>
+.user-management-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+.bonus-dialog-overlay { position: fixed; inset: 0; z-index: 120; display: grid; place-items: center; padding: 20px; background: #0f172a88; }
+.bonus-dialog { width: min(900px, 100%); max-height: 90vh; overflow: auto; padding: 24px; border-radius: 18px; background: white; color: #0f172a; }
+
 .page {
   --color-bg: #f4f7fa;
   --color-surface: #ffffff;

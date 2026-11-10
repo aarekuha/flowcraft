@@ -16,10 +16,17 @@ class XlsxDuration:
 
 @dataclass(frozen=True, slots=True)
 class XlsxTotal:
-    value: str | int | float | XlsxDuration | None
+    value: str | int | float | XlsxDuration | XlsxFormula | None
+    gray: bool = False
 
 
-CellValue = str | int | float | XlsxDuration | XlsxTotal | None
+@dataclass(frozen=True, slots=True)
+class XlsxFormula:
+    expression: str
+    cached_value: int | float
+
+
+CellValue = str | int | float | XlsxDuration | XlsxTotal | XlsxFormula | None
 SheetRows = Sequence[Sequence[CellValue]]
 
 
@@ -98,6 +105,7 @@ def _workbook(sheets: Sequence[tuple[str, SheetRows]]) -> str:
         'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/'
         'relationships">'
         f"<sheets>{sheet_items}</sheets>"
+        '<calcPr fullCalcOnLoad="1"/>'
         "</workbook>"
     )
 
@@ -129,14 +137,16 @@ def _styles() -> str:
         '</numFmts>'
         '<fonts count="2"><font><sz val="11"/><name val="Calibri"/></font>'
         '<font><b/><sz val="11"/><name val="Calibri"/></font></fonts>'
-        '<fills count="3"><fill><patternFill patternType="none"/></fill>'
+        '<fills count="4"><fill><patternFill patternType="none"/></fill>'
         '<fill><patternFill patternType="gray125"/></fill>'
         '<fill><patternFill patternType="solid"><fgColor rgb="FFDCEAF5"/>'
+        '<bgColor indexed="64"/></patternFill></fill>'
+        '<fill><patternFill patternType="solid"><fgColor rgb="FFE5E7EB"/>'
         '<bgColor indexed="64"/></patternFill></fill></fills>'
         '<borders count="1"><border/></borders>'
         '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" '
         'borderId="0"/></cellStyleXfs>'
-        '<cellXfs count="5"><xf numFmtId="0" fontId="0" fillId="0" '
+        '<cellXfs count="6"><xf numFmtId="0" fontId="0" fillId="0" '
         'borderId="0" xfId="0"/>'
         '<xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" '
         'applyFont="1"/>'
@@ -145,7 +155,9 @@ def _styles() -> str:
         '<xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" '
         'applyFont="1" applyFill="1"/>'
         '<xf numFmtId="164" fontId="1" fillId="2" borderId="0" xfId="0" '
-        'applyFont="1" applyFill="1" applyNumberFormat="1"/></cellXfs>'
+        'applyFont="1" applyFill="1" applyNumberFormat="1"/>'
+        '<xf numFmtId="0" fontId="1" fillId="3" borderId="0" xfId="0" '
+        'applyFont="1" applyFill="1"/></cellXfs>'
         "</styleSheet>"
     )
 
@@ -197,8 +209,12 @@ def _columns(rows: SheetRows) -> str:
 
 
 def _display_value(value: CellValue) -> str:
+    if isinstance(value, XlsxFormula):
+        return str(value.cached_value)
     if isinstance(value, XlsxTotal):
         value = value.value
+    if isinstance(value, XlsxFormula):
+        return str(value.cached_value)
     if value is None:
         return ""
     if isinstance(value, XlsxDuration):
@@ -215,9 +231,12 @@ def _cells(row: Sequence[CellValue], row_index: int) -> str:
 
 def _cell(value: CellValue, reference: str, *, is_header: bool) -> str:
     is_total = isinstance(value, XlsxTotal)
-    if is_total:
+    gray = isinstance(value, XlsxTotal) and value.gray
+    if isinstance(value, XlsxTotal):
         value = value.value
-    if is_total and isinstance(value, XlsxDuration):
+    if gray:
+        style = ' s="5"'
+    elif is_total and isinstance(value, XlsxDuration):
         style = ' s="4"'
     elif is_total:
         style = ' s="3"'
@@ -227,6 +246,11 @@ def _cell(value: CellValue, reference: str, *, is_header: bool) -> str:
         style = ' s="1"'
     else:
         style = ""
+    if isinstance(value, XlsxFormula):
+        return (
+            f'<c r="{reference}"{style}><f>{_xml_text(value.expression)}</f>'
+            f'<v>{value.cached_value}</v></c>'
+        )
     if value is None:
         return f'<c r="{reference}"{style}/>'
     if isinstance(value, XlsxDuration):

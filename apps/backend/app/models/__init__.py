@@ -1,3 +1,5 @@
+# ruff: noqa: I001
+
 from app.models.auth_session import AuthSession
 from app.models.leather_type import LeatherType
 from app.models.operation import Operation
@@ -14,6 +16,12 @@ from app.models.planning import (
     UserWorkScheduleDay,
 )
 from app.models.product import Product
+from app.models.production_calendar import (
+    CalendarDay,
+    CalendarImport,
+    CalendarMonth,
+    CalendarYear,
+)
 from app.models.timer_session import TimerSession
 from app.models.timer_session_audit import TimerSessionAuditLog
 from app.models.user import User
@@ -30,6 +38,10 @@ from app.models.work_order import (
 from app.models.work_shift import WorkShift
 
 __all__ = [
+    "CalendarDay",
+    "CalendarImport",
+    "CalendarMonth",
+    "CalendarYear",
     "AuthSession",
     "LeatherType",
     "Operation",
@@ -56,4 +68,8 @@ __all__ = [
     "WorkOrderQrReference",
     "WorkOrderTimeAllocation",
     "WorkShift",
+    "Bonus",
+    "UserBonus",
+    "MonthlyBonusExclusion",
 ]
+from app.models.bonus import Bonus, UserBonus, MonthlyBonusExclusion

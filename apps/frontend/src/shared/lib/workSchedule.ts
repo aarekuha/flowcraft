@@ -23,9 +23,10 @@ export function getScheduleSelection(
   endDate: string,
   existingDates: Set<string>,
   editExistingOnly: boolean,
+  includeEmptyDates = false,
 ): string[] {
   const range = getDateRange(startDate, endDate);
-  return editExistingOnly
+  return editExistingOnly && !includeEmptyDates
     ? range.filter((workDate) => existingDates.has(workDate))
     : range;
 }

@@ -284,6 +284,7 @@ class PlanningSnapshotBuilder:
         schedule_days = self.session.scalars(
             select(UserWorkScheduleDay).where(
                 UserWorkScheduleDay.user_id.in_(worker_ids),
+                UserWorkScheduleDay.period_type == "work",
                 UserWorkScheduleDay.work_date >= start_date,
                 UserWorkScheduleDay.work_date <= end_date,
             )

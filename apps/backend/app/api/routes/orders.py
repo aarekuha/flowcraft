@@ -221,7 +221,9 @@ def update_order_assignments(
     ),
     session: Session = Depends(get_session),
 ) -> WorkOrderDetail:
-    return OrderService(session).update_order_assignments(order_id, payload)
+    return OrderService(session).update_order_assignments(
+        order_id, payload, is_admin="admin" in _auth_session.user_roles
+    )
 
 
 @router.patch(
@@ -294,9 +296,12 @@ def accept_order_quality_control(
 def update_order_production_stage(
     order_id: int,
     payload: WorkOrderProductionStageUpdate,
+    auth_session: AuthenticatedSession = Depends(get_authenticated_session),
     session: Session = Depends(get_session),
 ) -> WorkOrderDetail:
-    return OrderService(session).update_order_production_stage(order_id, payload)
+    return OrderService(session).update_order_production_stage(
+        order_id, payload, is_admin="admin" in auth_session.user_roles
+    )
 
 
 @router.patch(
