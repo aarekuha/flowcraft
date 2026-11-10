@@ -11,8 +11,8 @@ export type WorkReport = {
     operation_name: string; quantity: string; price_cents: number | null;
     amount_cents: number | null;
   }>;
-  total_quantity: string; piecework_cents: number | null;
-  bonuses: Array<Bonus & { selected: boolean }>; bonuses_cents: number; payout_cents: number | null;
+  total_quantity: string; piecework_cents: number;
+  bonuses: Array<Bonus & { selected: boolean }>; bonuses_cents: number; payout_cents: number;
 };
 
 export async function getBonuses(userId?: number): Promise<Bonus[]> {
@@ -82,7 +82,7 @@ export type WorkSummary = {
   year: number; month: number;
   items: Array<{
     user_id: number; user_name: string; sick_days: number; vacation_days: number;
-    piecework_cents: number | null; bonuses_cents: number;
+    piecework_cents: number; bonuses_cents: number; incomplete: boolean;
   }>;
 };
 export async function getWorkSummary(year: number, month: number): Promise<WorkSummary> {

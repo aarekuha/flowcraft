@@ -58,13 +58,13 @@ class PersonalWorkReport(BaseModel):
     absence_days: int
     items: list[CompletedWorkRow]
     total_quantity: Decimal
-    piecework_cents: int | None
+    piecework_cents: int
 
 
 class CompletedWorkReport(PersonalWorkReport):
     bonuses: list[CompletedWorkBonus]
     bonuses_cents: int
-    payout_cents: int | None
+    payout_cents: int
 
 
 class PersonalReportUnlock(BaseModel):
@@ -77,11 +77,12 @@ class PersonalReportAccess(BaseModel):
 
 
 class WorkSummaryRow(BaseModel):
+    incomplete: bool = False
     user_id: int
     user_name: str
     sick_days: int
     vacation_days: int
-    piecework_cents: int | None
+    piecework_cents: int
     bonuses_cents: int
 
 

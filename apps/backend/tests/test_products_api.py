@@ -651,9 +651,15 @@ def test_create_product_rejects_group_operation_catalog_reference(
     )
 
 
-def test_update_product_costs_rejects_operation_price_change(
+def test_update_product_costs_allows_admin_operation_price_change(
     client: TestClient,
 ) -> None:
+    """
+    Проверяем изменение расценки администратором:
+    - создать изделие с ценой операции
+    - изменить цену существующей операции через API
+    - получить сохранённую новую расценку
+    """
     author_user = create_author_user(client)
     ensure_operation_catalog_entries(client, ["Крой", "Пошив"])
     create_response = client.post(
@@ -685,11 +691,10 @@ def test_update_product_costs_rejects_operation_price_change(
         },
     )
 
-    assert patch_response.status_code == 422
-    assert (
-        patch_response.json()["detail"]
-        == "Operation prices cannot be changed after product creation."
-    )
+    assert patch_response.status_code == 200
+    assert patch_response.json()["operations"][0]["price_cents"] == 11000
+    saved = client.get(f"/api/products/{product['id']}").json()
+    assert saved["operations"][0]["price_cents"] == 11000
 
 
 def test_update_product_costs_allows_operation_standard_time_change_and_removal(

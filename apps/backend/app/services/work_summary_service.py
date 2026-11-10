@@ -1,4 +1,3 @@
-from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -24,6 +23,7 @@ class WorkSummaryService:
             report = service.calculate(user.id, year, month)
             items.append(
                 WorkSummaryRow(
+                    incomplete=any(item.amount_cents is None for item in report.items),
                     user_id=user.id,
                     user_name=user.name,
                     sick_days=report.sick_days,
@@ -36,10 +36,6 @@ class WorkSummaryService:
 
     def export(self, year: int, month: int) -> bytes:
         report = self.calculate(year, month)
-        if any(row.piecework_cents is None for row in report.items):
-            raise HTTPException(
-                409, "Для выгрузки указать недостающие расценки операций"
-            )
         rows: list[list[CellValue]] = [
             ["ФИО", "Больничные", "Отпуск", "Сделка, ₽", "Премии, ₽"],
         ]

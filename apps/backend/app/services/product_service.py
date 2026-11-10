@@ -200,6 +200,8 @@ class ProductService:
         self,
         product_id: int,
         payload: ProductCostsUpdate,
+        *,
+        can_change_prices: bool = False,
     ) -> ProductDetail:
         product = self._get_product_or_404(product_id)
         requested_operation_updates = self._collect_operation_costs(
@@ -233,10 +235,19 @@ class ProductService:
                 "price_cents" in requested_update.model_fields_set
                 and requested_update.price_cents != current_price_cents
             ):
-                raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-                    detail="Operation prices cannot be changed after product creation.",
-                )
+                if not can_change_prices:
+                    raise HTTPException(
+                        status_code=status.HTTP_403_FORBIDDEN,
+                        detail=(
+                            "Изменение цены операции доступно только администратору."
+                        ),
+                    )
+                if is_group:
+                    raise HTTPException(
+                        status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                        detail="Operation groups cannot have prices.",
+                    )
+                operation.price_cents = requested_update.price_cents
             if "standard_time_seconds" not in requested_update.model_fields_set:
                 continue
             if is_group:

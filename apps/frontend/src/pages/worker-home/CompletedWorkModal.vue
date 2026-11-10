@@ -114,13 +114,13 @@ watch([year, month, () => props.userId], load, { immediate: true });
         <label>Месяц <select v-model="month" :disabled="printing || savingBonus"><option v-for="(name, index) in months" :key="index" :value="index + 1">{{ name }}</option></select></label>
         <label>Год <input v-model.number="year" type="number" min="2000" max="9998" :disabled="printing || savingBonus" /></label>
         <button :disabled="busy || printing || savingBonus" @click="load">Пересчитать</button>
-        <button v-if="!personal" :disabled="!report || report.piecework_cents === null || printing || busy || savingBonus" @click="print">{{ printing ? 'Подготовка…' : 'Распечатать · XLSX' }}</button>
+        <button v-if="!personal" :disabled="!report || printing || busy || savingBonus" @click="print">{{ printing ? 'Подготовка…' : 'Распечатать · XLSX' }}</button>
       </div>
       <p v-if="error" role="alert">{{ error }}</p><p v-if="busy">Расчёт…</p>
       <template v-if="report">
         <h3>{{ report.user_name }}</h3>
         <div class="summary"><span>Рабочих дней по графику: <b>{{ report.work_days }}</b></span><span>Часов по графику: <b>{{ report.work_hours }}</b></span><span>Больничных дней: <b>{{ report.sick_days }}</b></span><span>Дней отпуска: <b>{{ report.vacation_days }}</b></span><span>Дней прогулов: <b>{{ report.absence_days }}</b></span></div>
-        <p v-if="report.piecework_cents === null" role="alert">Расчёт неполный: отсутствуют расценки операций. Для полного расчёта требуется указать расценки.</p>
+        <p v-if="report.items.some((item) => item.amount_cents === null)" role="alert">Расчёт неполный: отсутствуют расценки операций. Для полного расчёта требуется указать расценки.</p>
         <div class="table-scroll"><table>
           <thead><tr><th>Номер заказа</th><th>Дата сдачи</th><th>Изделие и версия</th><th>Операция</th><th>Количество изделий</th><th>Расценка, ₽</th><th>Начисление, ₽</th></tr></thead>
           <tbody><tr v-for="item in report.items" :key="`${item.order_id}-${item.operation_id}`"><td>{{ item.order_number }}</td><td>{{ day(item.completed_at) }}</td><td>{{ item.product_name }} · {{ item.product_version }}</td><td>{{ item.operation_name }}</td><td>{{ quantity(item.quantity) }}</td><td>{{ item.price_cents === null ? 'Не задана' : money(item.price_cents) }}</td><td>{{ money(item.amount_cents) }}</td></tr></tbody>
