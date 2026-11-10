@@ -1,5 +1,7 @@
 import { apiFetch, createRequestError, handleJsonResponse } from "@/shared/api/http";
 
+import type { ProductionCalendarMonth } from "@/shared/api/productionCalendar";
+
 export type PlanningSettings = {
   displayOffsetDays: number;
   preparationSeconds: number;
@@ -8,9 +10,12 @@ export type PlanningSettings = {
   updatedByUserId: number | null;
 };
 
+export type WorkSchedulePeriodType = "work" | "sick_leave" | "vacation" | "absence";
+
 export type WorkScheduleDay = {
   workDate: string;
   availableSeconds: number;
+  periodType: WorkSchedulePeriodType;
 };
 
 export type WorkScheduleWorker = {
@@ -20,6 +25,7 @@ export type WorkScheduleWorker = {
 };
 
 export type WorkScheduleMonth = {
+  productionCalendar: ProductionCalendarMonth | null;
   month: string;
   daysInMonth: number;
   workers: WorkScheduleWorker[];
@@ -129,6 +135,7 @@ type PlanningSettingsApi = {
 };
 
 type WorkScheduleMonthApi = {
+  production_calendar: ProductionCalendarMonth | null;
   month: string;
   days_in_month: number;
   workers: Array<{
@@ -137,6 +144,7 @@ type WorkScheduleMonthApi = {
     days: Array<{
       work_date: string;
       available_seconds: number;
+      period_type: WorkSchedulePeriodType;
     }>;
   }>;
 };
@@ -345,12 +353,14 @@ export async function fetchWorkSchedule(
   return handleJsonResponse<WorkScheduleMonthApi>(response).then((payload) => ({
     month: payload.month,
     daysInMonth: payload.days_in_month,
+    productionCalendar: payload.production_calendar,
     workers: payload.workers.map((worker) => ({
       userId: worker.user_id,
       userName: worker.user_name,
       days: worker.days.map((day) => ({
         workDate: day.work_date,
         availableSeconds: day.available_seconds,
+        periodType: day.period_type,
       })),
     })),
   }));
@@ -360,6 +370,7 @@ export async function updateWorkSchedule(payload: {
   user_id: number;
   work_dates: string[];
   available_seconds: number;
+  period_type: WorkSchedulePeriodType;
 }): Promise<void> {
   const response = await apiFetch("/api/planning/work-schedule", {
     method: "PUT",

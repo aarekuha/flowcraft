@@ -103,7 +103,9 @@ class UserWorkScheduleDay(Base):
             name="uq_user_work_schedule_days_user_date",
         ),
         CheckConstraint(
-            "available_seconds BETWEEN 3600 AND 57600",
+            "(period_type = 'work' AND available_seconds BETWEEN 3600 AND 57600) "
+            "OR (period_type IN ('sick_leave', 'vacation', 'absence') "
+            "AND available_seconds = 0)",
             name="ck_user_work_schedule_days_available_seconds",
         ),
     )
@@ -116,6 +118,9 @@ class UserWorkScheduleDay(Base):
     )
     work_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
     available_seconds: Mapped[int] = mapped_column(Integer, nullable=False)
+    period_type: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="work", server_default="work"
+    )
     updated_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
     updated_by_user_id: Mapped[int | None] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL"),

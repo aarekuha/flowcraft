@@ -1,6 +1,11 @@
 from datetime import date
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+from app.schemas.production_calendar import CalendarMonthDetail
+
+WorkSchedulePeriodType = Literal["work", "sick_leave", "vacation", "absence"]
 
 ALLOWED_HORIZON_MONTHS = {1, 3, 6, 12}
 
@@ -31,7 +36,16 @@ class PlanningSettingsRead(BaseModel):
 class WorkScheduleBatchUpdate(BaseModel):
     user_id: int = Field(ge=1)
     work_dates: list[date] = Field(min_length=1, max_length=366)
-    available_seconds: int = Field(ge=3600, le=57_600)
+    available_seconds: int = Field(ge=0, le=57_600)
+    period_type: WorkSchedulePeriodType = "work"
+
+    @model_validator(mode="after")
+    def validate_period_hours(self) -> "WorkScheduleBatchUpdate":
+        if self.period_type == "work" and self.available_seconds < 3600:
+            raise ValueError("Working days require between 1 and 16 hours.")
+        if self.period_type != "work" and self.available_seconds != 0:
+            raise ValueError("Absence days must have zero available seconds.")
+        return self
 
     @field_validator("work_dates")
     @classmethod
@@ -55,6 +69,7 @@ class WorkScheduleBatchDelete(BaseModel):
 class WorkScheduleDayRead(BaseModel):
     work_date: date
     available_seconds: int
+    period_type: WorkSchedulePeriodType
 
 
 class WorkScheduleWorkerRead(BaseModel):
@@ -64,6 +79,7 @@ class WorkScheduleWorkerRead(BaseModel):
 
 
 class WorkScheduleMonthRead(BaseModel):
+    production_calendar: CalendarMonthDetail | None = None
     month: str
     days_in_month: int
     workers: list[WorkScheduleWorkerRead]

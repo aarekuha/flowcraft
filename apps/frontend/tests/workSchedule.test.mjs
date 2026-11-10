@@ -82,3 +82,23 @@ test("builds month columns and detects weekends", function monthCalendar() {
   assert.equal(isWeekendDate("2026-11-07"), true);
   assert.equal(isWeekendDate("2026-11-09"), false);
 });
+
+
+test("selects the entire period with Shift including gaps and weekends", function fullPeriod() {
+  `
+  Проверяем выбор периода отсутствия с Shift:
+  - начать выбор с заполненного рабочего дня
+  - включить пустые дни и выходные в прямом и обратном диапазоне
+  `;
+
+  const existingDates = new Set(["2026-11-06", "2026-11-09"]);
+  const expected = ["2026-11-06", "2026-11-07", "2026-11-08", "2026-11-09"];
+  assert.deepEqual(
+    getScheduleSelection("2026-11-06", "2026-11-09", existingDates, true, true),
+    expected,
+  );
+  assert.deepEqual(
+    getScheduleSelection("2026-11-09", "2026-11-06", existingDates, true, true),
+    expected,
+  );
+});

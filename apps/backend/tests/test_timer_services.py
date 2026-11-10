@@ -562,6 +562,7 @@ def test_cutting_timer_sets_start_and_accounted_time_after_stop(
             WorkOrderProductionStageUpdate(
                 production_stage=WorkOrderProductionStage.CUTTING
             ),
+            is_admin=True,
         )
         with pytest.raises(HTTPException) as spent_exc_info:
             OrderService(session).update_order_production_stage(
@@ -618,7 +619,7 @@ def test_adjacent_operation_timer_is_available_during_cutting_and_in_work(
     Проверяем таймер смежной операции на производственных стадиях:
     - запустить и остановить операцию в крое и в работе
     - учесть оба интервала только в общем времени заказа
-    - запретить изменение количества после запуска пошива
+    - запретить изменение количества в крое после возврата администратором из пошива
     """
     worker_id, order_id, operation_id = _bootstrap_worker_graph(
         db_session,
@@ -700,6 +701,7 @@ def test_adjacent_operation_timer_is_available_during_cutting_and_in_work(
             WorkOrderProductionStageUpdate(
                 production_stage=WorkOrderProductionStage.CUTTING
             ),
+            is_admin=True,
         )
         with pytest.raises(HTTPException) as quantity_error:
             OrderService(session).update_order_assignments(

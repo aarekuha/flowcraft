@@ -1903,13 +1903,13 @@ def test_update_order_rejects_assignment_change_in_quality_control(
     )
 
 
-def test_update_order_rejects_quantity_change_after_taken_without_spent_time(
+def test_admin_changes_quantity_in_work_without_spent_time(
     client: TestClient,
 ) -> None:
     """
-    Проверяем неизменяемость количества заказа в работе:
+    Проверяем изменение количества администратором в работе:
     - взять заказ без учтенного времени в работу
-    - отклонить изменение количества через форму назначений
+    - сохранить новое количество через форму назначений
     """
     author = create_author_user(client)
     worker = create_worker_user(client, name="Валерия Иванова")
@@ -1948,10 +1948,8 @@ def test_update_order_rejects_quantity_change_after_taken_without_spent_time(
         },
     )
 
-    assert update_response.status_code == 422
-    assert update_response.json()["detail"] == (
-        "Order quantity can only be changed during cutting stage."
-    )
+    assert update_response.status_code == 200
+    assert update_response.json()["quantity"] == 4
 
 
 def test_update_order_quantity_during_cutting_with_active_timer(
@@ -2653,6 +2651,7 @@ def test_quality_control_lifecycle_and_permissions(client: TestClient) -> None:
     Проверяем жизненный цикл и права ОТК:
     - передать заказ в ОТК
     - разрешить приемку только пользователю с нужной ролью
+    - запретить снятие завершения и сохранить данные приемки
     """
     author = create_author_user(client)
     worker = create_worker_user(client, name="Екатерина Селезнева")
@@ -2745,20 +2744,17 @@ def test_quality_control_lifecycle_and_permissions(client: TestClient) -> None:
         f"/api/orders/{order_id}/status",
         json={"is_completed": False},
     )
-    assert returned_response.status_code == 200
-    assert returned_response.json()["completed_at"] is None
-    assert (
-        returned_response.json()["quality_control_at"]
-        == quality_control_payload["quality_control_at"]
-    )
+    assert returned_response.status_code == 422
 
     return_to_work_response = client.patch(
         f"/api/orders/{order_id}/quality-control-status",
         json={"is_in_quality_control": False},
     )
-    assert return_to_work_response.status_code == 200
-    assert return_to_work_response.json()["quality_control_at"] is None
-    assert return_to_work_response.json()["defect_quantity"] == 0
+    assert return_to_work_response.status_code == 422
+    preserved = client.get(f"/api/orders/{order_id}").json()
+    assert preserved["completed_at"] == accepted_payload["completed_at"]
+    assert preserved["quality_control_at"] == accepted_payload["quality_control_at"]
+    assert preserved["defect_quantity"] == 1
 
 
 def test_quality_control_acceptance_uses_current_user_roles(

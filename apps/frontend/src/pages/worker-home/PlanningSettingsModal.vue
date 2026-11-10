@@ -6,6 +6,56 @@ import {
   updatePlanningSettings,
 } from "@/shared/api/planning";
 
+import {
+  fetchCalendarStatus,
+  refreshProductionCalendar,
+  type CalendarStatus,
+} from "@/shared/api/productionCalendar";
+
+const calendarStatus = ref<CalendarStatus | null>(null);
+const calendarLoading = ref(false);
+const calendarUpdating = ref(false);
+const calendarError = ref("");
+const calendarMessage = ref("");
+const calendarUpdateLabel = computed(() => {
+  if (calendarUpdating.value) return "Загрузка календаря...";
+  if (calendarLoading.value) return "Загрузка даты актуализации...";
+  if (!calendarStatus.value) return "Загрузить календарь · дата актуализации неизвестна";
+  if (calendarStatus.value.imported_at === null) {
+    return "Загрузить календарь · данные не загружены";
+  }
+  const formatted = new Intl.DateTimeFormat("ru-RU", {
+    dateStyle: "short", timeStyle: "short", timeZone: "Europe/Moscow",
+  }).format(calendarStatus.value.imported_at);
+  return `Обновить календарь · актуализирован ${formatted} МСК`;
+});
+
+async function loadCalendarStatus() {
+  calendarLoading.value = true;
+  try {
+    calendarStatus.value = await fetchCalendarStatus();
+  } catch (loadError) {
+    calendarError.value = getErrorMessage(loadError, "Не удалось загрузить дату актуализации.");
+  } finally {
+    calendarLoading.value = false;
+  }
+}
+
+async function updateCalendar() {
+  if (calendarUpdating.value) return;
+  calendarUpdating.value = true;
+  calendarError.value = "";
+  calendarMessage.value = "";
+  try {
+    calendarStatus.value = await refreshProductionCalendar();
+    calendarMessage.value = "Календарь успешно актуализирован.";
+  } catch (updateError) {
+    calendarError.value = getErrorMessage(updateError, "Не удалось обновить календарь.");
+  } finally {
+    calendarUpdating.value = false;
+  }
+}
+
 const emit = defineEmits<{
   close: [];
 }>();
@@ -43,6 +93,7 @@ const formError = computed(() => {
 
 onMounted(() => {
   void loadSettings();
+  void loadCalendarStatus();
 });
 
 async function loadSettings() {
@@ -85,7 +136,7 @@ async function save() {
 }
 
 function requestClose() {
-  if (saving.value) {
+  if (saving.value || calendarUpdating.value) {
     return;
   }
   if (hasChanges.value) {
@@ -151,6 +202,27 @@ function getErrorMessage(value: unknown, fallback: string): string {
         </p>
       </div>
 
+      <section class="calendar-settings" aria-label="Производственный календарь">
+        <h3>Производственный календарь РФ</h3>
+        <p>Источник: calendar.kuzyak.in · пятидневная 40-часовая неделя</p>
+        <button
+          type="button"
+          class="planning-button"
+          :disabled="calendarLoading || calendarUpdating"
+          @click="updateCalendar"
+        >
+          {{ calendarUpdateLabel }}
+        </button>
+        <p v-if="calendarStatus?.years.length">
+          Сохранённые годы: {{ calendarStatus.years.join(", ") }}
+        </p>
+        <p>Загрузить текущий год и доступные последующие годы.</p>
+        <p v-if="calendarError" class="planning-message planning-message--error" role="alert">
+          {{ calendarError }}
+        </p>
+        <p v-if="calendarMessage" class="planning-message" role="status">{{ calendarMessage }}</p>
+      </section>
+
       <footer class="planning-modal__actions">
         <span v-if="hasChanges">Есть несохранённые изменения</span>
         <button
@@ -204,6 +276,8 @@ function getErrorMessage(value: unknown, fallback: string): string {
 .planning-modal {
   position: relative;
   width: min(640px, 94vw);
+  max-height: 92vh;
+  overflow-y: auto;
   padding: 24px;
   border-radius: 18px;
   background: #fff;
@@ -231,6 +305,17 @@ function getErrorMessage(value: unknown, fallback: string): string {
 .planning-modal__actions span,
 .planning-fields small {
   color: #65727d;
+}
+
+.calendar-settings {
+  margin: 20px 0;
+  padding-top: 12px;
+  border-top: 1px solid #c7d1da;
+}
+
+.calendar-settings p {
+  color: #65727d;
+  font-size: 14px;
 }
 
 .planning-fields {

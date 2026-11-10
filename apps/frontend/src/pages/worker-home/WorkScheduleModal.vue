@@ -7,6 +7,8 @@ import {
   updateWorkSchedule,
   type WorkScheduleMonth,
   type WorkScheduleWorker,
+  type WorkScheduleDay,
+  type WorkSchedulePeriodType,
 } from "@/shared/api/planning";
 import {
   getMonthDates,
@@ -27,6 +29,20 @@ type ScheduleEditor = {
   workDates: string[];
   mode: "create" | "edit";
   hours: number;
+  periodType: WorkSchedulePeriodType;
+};
+
+const periodLabels: Record<WorkSchedulePeriodType, string> = {
+  work: "Работа",
+  sick_leave: "Больничный",
+  vacation: "Отпуск",
+  absence: "Прогул",
+};
+const periodMarks: Record<WorkSchedulePeriodType, string> = {
+  work: "",
+  sick_leave: "Б",
+  vacation: "О",
+  absence: "П",
 };
 
 const emit = defineEmits<{
@@ -45,6 +61,22 @@ const editor = ref<ScheduleEditor | null>(null);
 const monthDates = computed(() =>
   getMonthDates(month.value, calendar.value?.daysInMonth ?? 0),
 );
+const productionDays = computed(() => new Map(
+  (calendar.value?.productionCalendar?.days ?? []).map((day) => [day.calendar_date, day]),
+));
+
+function isCalendarDayOff(workDate: string): boolean {
+  const day = productionDays.value.get(workDate);
+  return day ? !day.is_working : isWeekendDate(workDate);
+}
+
+function calendarDayLabel(workDate: string): string {
+  const day = productionDays.value.get(workDate);
+  if (!day) return "Производственный календарь за этот год не загружен";
+  if (day.is_shortened) return `Сокращённый рабочий день: ${day.name ?? ""}`;
+  return day.name ?? (day.is_working ? "Рабочий день" : "Выходной день");
+}
+
 const sortedWorkers = computed(() => {
   const workers = [...(calendar.value?.workers ?? [])];
   return workers.sort((left, right) => {
@@ -53,19 +85,19 @@ const sortedWorkers = computed(() => {
   });
 });
 const scheduleByWorker = computed(() => {
-  const result = new Map<number, Map<string, number>>();
+  const result = new Map<number, Map<string, WorkScheduleDay>>();
   for (const worker of calendar.value?.workers ?? []) {
     result.set(
       worker.userId,
       new Map(
-        worker.days.map((day) => [day.workDate, day.availableSeconds]),
+        worker.days.map((day) => [day.workDate, day]),
       ),
     );
   }
   return result;
 });
 const editorError = computed(() => {
-  if (editor.value === null) {
+  if (editor.value === null || editor.value.periodType !== "work") {
     return "";
   }
   return Number.isFinite(editor.value.hours)
@@ -124,6 +156,7 @@ async function selectDate(
     workDate,
     existingDates,
     anchor.editExistingOnly,
+    anchor.customHours || event.shiftKey,
   );
   selectionAnchor.value = null;
   if (selectedDates.length === 0) {
@@ -135,11 +168,22 @@ async function selectDate(
       userName: worker.userName,
       workDates: selectedDates,
       mode: anchor.editExistingOnly ? "edit" : "create",
-      hours: getCommonHours(worker, selectedDates) ?? 8,
+      hours: getCommonHours(worker, selectedDates) || 8,
+      periodType: getCommonPeriodType(worker, selectedDates),
     };
     return;
   }
   await saveDates(worker.userId, selectedDates, 8);
+}
+
+function getCommonPeriodType(
+  worker: WorkScheduleWorker,
+  workDates: string[],
+): WorkSchedulePeriodType {
+  const values = new Set(workDates.map((workDate) =>
+    worker.days.find((day) => day.workDate === workDate)?.periodType ?? "work",
+  ));
+  return values.size === 1 ? [...values][0] : "work";
 }
 
 function getCommonHours(
@@ -163,24 +207,31 @@ async function saveEditor() {
     editor.value.userId,
     editor.value.workDates,
     editor.value.hours,
+    editor.value.periodType,
   );
   if (!error.value) {
     editor.value = null;
   }
 }
 
-async function saveDates(userId: number, workDates: string[], hours: number) {
+async function saveDates(
+  userId: number,
+  workDates: string[],
+  hours: number,
+  periodType: WorkSchedulePeriodType = "work",
+) {
   saving.value = true;
   error.value = "";
   try {
     await updateWorkSchedule({
       user_id: userId,
       work_dates: workDates,
-      available_seconds: Math.round(hours * 3600),
+      available_seconds: periodType === "work" ? Math.round(hours * 3600) : 0,
+      period_type: periodType,
     });
     await loadCalendar();
   } catch (saveError) {
-    error.value = getErrorMessage(saveError, "Не удалось сохранить рабочие дни.");
+    error.value = getErrorMessage(saveError, "Не удалось сохранить период.");
   } finally {
     saving.value = false;
   }
@@ -200,19 +251,34 @@ async function deleteEditorDates() {
     editor.value = null;
     await loadCalendar();
   } catch (deleteError) {
-    error.value = getErrorMessage(deleteError, "Не удалось удалить рабочие дни.");
+    error.value = getErrorMessage(deleteError, "Не удалось удалить период.");
   } finally {
     saving.value = false;
   }
 }
 
 function getAvailableSeconds(userId: number, workDate: string): number | null {
-  return scheduleByWorker.value.get(userId)?.get(workDate) ?? null;
+  return getDay(userId, workDate)?.availableSeconds ?? null;
+}
+
+function getDay(userId: number, workDate: string): WorkScheduleDay | undefined {
+  return scheduleByWorker.value.get(userId)?.get(workDate);
+}
+
+function getDayLabel(userId: number, workDate: string): string {
+  const day = getDay(userId, workDate);
+  if (!day) return "Нет записи";
+  return day.periodType === "work"
+    ? `Работа: ${day.availableSeconds / 3600} ч`
+    : periodLabels[day.periodType];
 }
 
 function getHours(userId: number, workDate: string): string {
-  const seconds = getAvailableSeconds(userId, workDate);
-  return seconds === null ? "" : String(seconds / 3600);
+  const day = getDay(userId, workDate);
+  if (!day) return "";
+  return day.periodType === "work"
+    ? String(day.availableSeconds / 3600)
+    : periodMarks[day.periodType];
 }
 
 function formatDateHeader(workDate: string): string {
@@ -264,7 +330,7 @@ function getErrorMessage(value: unknown, fallback: string): string {
           ФИО {{ sortDirection === "asc" ? "А–Я" : "Я–А" }}
         </button>
         <p>
-          Выбрать начало и конец диапазона. Shift открывает ввод часов;
+          Выбрать начало и конец диапазона. Shift открывает выбор типа периода и часов для всего диапазона;
           обычный новый диапазон сохраняется по 8 часов.
         </p>
       </div>
@@ -280,7 +346,11 @@ function getErrorMessage(value: unknown, fallback: string): string {
               <th
                 v-for="workDate in monthDates"
                 :key="workDate"
-                :class="{ 'schedule-table__weekend': isWeekendDate(workDate) }"
+                :title="calendarDayLabel(workDate)"
+                :class="{
+                  'schedule-table__weekend': isCalendarDayOff(workDate),
+                  'schedule-table__holiday': productionDays.get(workDate)?.is_holiday,
+                }"
               >
                 {{ formatDateHeader(workDate) }}
               </th>
@@ -293,14 +363,19 @@ function getErrorMessage(value: unknown, fallback: string): string {
                 v-for="workDate in monthDates"
                 :key="workDate"
                 :class="{
-                  'schedule-table__weekend': isWeekendDate(workDate),
-                  'schedule-table__working': getAvailableSeconds(worker.userId, workDate) !== null,
+                  'schedule-table__weekend': isCalendarDayOff(workDate),
+                  'schedule-table__holiday': productionDays.get(workDate)?.is_holiday,
+                  'schedule-table__working': getDay(worker.userId, workDate)?.periodType === 'work',
+                  'schedule-table__sick': getDay(worker.userId, workDate)?.periodType === 'sick_leave',
+                  'schedule-table__vacation': getDay(worker.userId, workDate)?.periodType === 'vacation',
+                  'schedule-table__absence': getDay(worker.userId, workDate)?.periodType === 'absence',
                   'schedule-table__selected': isSelectedAnchor(worker.userId, workDate),
                 }"
               >
                 <button
                   type="button"
-                  :aria-label="`${worker.userName}, ${formatDateHeader(workDate)}`"
+                  :aria-label="`${worker.userName}, ${formatDateHeader(workDate)}, ${getDayLabel(worker.userId, workDate)}`"
+                  :title="`${getDayLabel(worker.userId, workDate)} · ${calendarDayLabel(workDate)}`"
                   :disabled="saving"
                   @click="selectDate(worker, workDate, $event)"
                 >
@@ -315,6 +390,23 @@ function getErrorMessage(value: unknown, fallback: string): string {
         </p>
       </div>
 
+      <p v-if="calendar && !calendar.productionCalendar" class="schedule-message">
+        Производственный календарь за {{ month.slice(0, 4) }} год не загружен.
+        Отображаются обычные субботы и воскресенья.
+      </p>
+      <p v-else-if="calendar?.productionCalendar" class="schedule-calendar-summary">
+        По производственному календарю: рабочих дней — {{ calendar.productionCalendar.summary.working_days }},
+        нерабочих — {{ calendar.productionCalendar.summary.non_working_days }},
+        сокращённых — {{ calendar.productionCalendar.summary.shortened_days }}.
+        Норма при 40-часовой неделе — {{ calendar.productionCalendar.summary.working_hours }} ч.
+      </p>
+      <div class="schedule-legend" aria-label="Обозначения графика">
+        <span class="schedule-legend__holiday">Праздничный день</span>
+        <span class="schedule-legend__sick">Б — больничный</span>
+        <span class="schedule-legend__vacation">О — отпуск</span>
+        <span class="schedule-legend__absence">П — прогул</span>
+      </div>
+
       <p v-if="selectionAnchor" class="schedule-selection-hint">
         Выбрано начало {{ formatDateHeader(selectionAnchor.workDate) }}.
         Выбрать окончание диапазона в строке того же сотрудника.
@@ -322,14 +414,34 @@ function getErrorMessage(value: unknown, fallback: string): string {
 
       <div v-if="editor" class="schedule-editor-backdrop">
         <section class="schedule-editor" role="dialog" aria-modal="true">
-          <h3>{{ editor.mode === "edit" ? "Изменить рабочие дни" : "Добавить рабочие дни" }}</h3>
+          <h3>{{ editor.mode === "edit" ? "Изменить период" : "Добавить период" }}</h3>
           <p>
             {{ editor.userName }} · выбрано дней: {{ editor.workDates.length }}
           </p>
           <label>
-            <span>Часов в каждый выбранный день</span>
-            <input v-model.number="editor.hours" type="number" min="1" max="16" step="0.25" />
+            <span>Тип периода</span>
+            <select v-model="editor.periodType">
+              <option v-for="(label, value) in periodLabels" :key="value" :value="value">
+                {{ label }}
+              </option>
+            </select>
           </label>
+          <label>
+            <span>Часов в каждый выбранный день</span>
+            <input
+              v-if="editor.periodType === 'work'"
+              v-model.number="editor.hours"
+              type="number"
+              min="1"
+              max="16"
+              step="0.25"
+            />
+            <input v-else type="number" :value="0" disabled />
+          </label>
+          <p v-if="editor.periodType !== 'work'">
+            Отсутствие на полный день. Доступность для планирования — 0 часов.
+          </p>
+          <p>Сохранение заменит записи выбранных дней.</p>
           <p v-if="editorError" class="schedule-message schedule-message--error">
             {{ editorError }}
           </p>
@@ -428,7 +540,8 @@ function getErrorMessage(value: unknown, fallback: string): string {
 }
 
 .schedule-toolbar input,
-.schedule-editor input {
+.schedule-editor input,
+.schedule-editor select {
   min-height: 44px;
   padding: 8px 10px;
   border: 1px solid #c7d1da;
@@ -532,6 +645,45 @@ function getErrorMessage(value: unknown, fallback: string): string {
   background: #fff;
 }
 
+.schedule-table .schedule-table__sick,
+.schedule-legend__sick {
+  background: #fee2e2;
+  color: #991b1b;
+}
+
+.schedule-table .schedule-table__vacation,
+.schedule-legend__vacation {
+  background: #dbeafe;
+  color: #1e40af;
+}
+
+.schedule-table .schedule-table__absence,
+.schedule-legend__absence {
+  background: #ffedd5;
+  color: #9a3412;
+}
+
+.schedule-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.schedule-legend span {
+  padding: 4px 8px;
+  border-radius: 4px;
+}
+
+.schedule-table .schedule-table__holiday,
+.schedule-legend__holiday {
+  box-shadow: inset 0 0 0 2px #7e22ce;
+}
+
+.schedule-calendar-summary {
+  color: #65727d;
+  font-size: 14px;
+}
+
 .schedule-table .schedule-table__selected {
   outline: 3px solid #2f6ea3;
   outline-offset: -3px;
@@ -542,7 +694,7 @@ function getErrorMessage(value: unknown, fallback: string): string {
   height: 100%;
   border: 0;
   background: transparent;
-  color: #1f2a33;
+  color: inherit;
   font: inherit;
   font-weight: 700;
   cursor: pointer;

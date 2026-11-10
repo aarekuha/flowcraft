@@ -15,10 +15,12 @@ from app.schemas.planning import (
     WorkScheduleBatchUpdate,
     WorkScheduleMonthRead,
 )
+from app.schemas.production_calendar import CalendarStatusRead
 from app.services.auth_service import AuthenticatedSession
 from app.services.planning_queue_service import PlanningQueueService
 from app.services.planning_results_service import PlanningResultsService
 from app.services.planning_service import PlanningService
+from app.services.production_calendar_service import ProductionCalendarService
 
 router = APIRouter()
 
@@ -187,3 +189,19 @@ def delete_work_schedule(
 ) -> Response:
     PlanningService(session).delete_work_schedule(payload)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.get("/calendar", response_model=CalendarStatusRead)
+def get_calendar_status(
+    _: object = Depends(require_any_role("admin")),
+    session: Session = Depends(get_session),
+) -> CalendarStatusRead:
+    return ProductionCalendarService(session).get_status()
+
+
+@router.post("/calendar/refresh", response_model=CalendarStatusRead)
+def refresh_calendar(
+    auth_session: AuthenticatedSession = Depends(require_any_role("admin")),
+    session: Session = Depends(get_session),
+) -> CalendarStatusRead:
+    return ProductionCalendarService(session).refresh(auth_session.user_id)

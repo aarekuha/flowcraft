@@ -18,6 +18,7 @@ from app.schemas.planning import (
     WorkScheduleWorkerRead,
 )
 from app.services.planning_revision_service import PlanningRevisionService
+from app.services.production_calendar_service import ProductionCalendarService
 
 
 class PlanningService:
@@ -77,13 +78,13 @@ class PlanningService:
         }
         for schedule_day in schedule_days:
             days_by_user_id[schedule_day.user_id].append(
-                WorkScheduleDayRead(
-                    work_date=schedule_day.work_date,
-                    available_seconds=schedule_day.available_seconds,
-                )
+                WorkScheduleDayRead.model_validate(schedule_day, from_attributes=True)
             )
 
         return WorkScheduleMonthRead(
+            production_calendar=ProductionCalendarService(self.session).get_month(
+                month_start.year, month_start.month
+            ),
             month=month,
             days_in_month=days_in_month,
             workers=[
@@ -117,11 +118,13 @@ class PlanningService:
                     user_id=payload.user_id,
                     work_date=work_date,
                     available_seconds=payload.available_seconds,
+                    period_type=payload.period_type,
                     updated_at=now,
                     updated_by_user_id=updated_by_user_id,
                 )
                 self.session.add(schedule_day)
                 continue
+            schedule_day.period_type = payload.period_type
             schedule_day.available_seconds = payload.available_seconds
             schedule_day.updated_at = now
             schedule_day.updated_by_user_id = updated_by_user_id

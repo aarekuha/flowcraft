@@ -51,12 +51,14 @@ export type TimelineRowEntry<T extends TimelineRowSource> = {
 export type TimelineRow<T extends TimelineRowSource> = {
   key: string;
   label: string;
+  order: { id: number; orderNumber: string } | null;
   entries: TimelineRowEntry<T>[];
 };
 
 type TimelineRowTarget = {
   key: string;
   label: string;
+  order: { id: number; orderNumber: string } | null;
   allocatedSeconds: number | null;
 };
 
@@ -94,11 +96,12 @@ export function buildTimelineRows<T extends TimelineRowSource>(
   for (const session of sessions) {
     const effectiveOrderLinks = getEffectiveOrderLinks(session);
     const targets: TimelineRowTarget[] = session.timerType !== "operation"
-      ? [{ key: "service", label: "Служебное время", allocatedSeconds: null }]
+      ? [{ key: "service", label: "Служебное время", order: null, allocatedSeconds: null }]
       : effectiveOrderLinks.length > 0
         ? effectiveOrderLinks.map((orderLink) => ({
             key: `order-${orderLink.orderId}`,
             label: `Заказ ${orderLink.orderNumber ?? "—"}`,
+            order: { id: orderLink.orderId, orderNumber: orderLink.orderNumber ?? "—" },
             allocatedSeconds: orderLink.allocatedSeconds,
           }))
         : [buildUnallocatedOperationTarget(session)];
@@ -106,6 +109,7 @@ export function buildTimelineRows<T extends TimelineRowSource>(
       const row = rows.get(target.key) ?? {
         key: target.key,
         label: target.label,
+        order: target.order,
         entries: [],
       };
       row.entries.push({
@@ -136,12 +140,14 @@ function buildUnallocatedOperationTarget(
       label: session.orderNumber === null
         ? "Операции без распределённого заказа"
         : `Заказ ${session.orderNumber} · без распределённого времени`,
+      order: session.orderId === null ? null : { id: session.orderId, orderNumber: session.orderNumber ?? "—" },
       allocatedSeconds: 0,
     };
   }
   return {
     key: "operation-without-order",
     label: "Операции без доступного заказа",
+    order: null,
     allocatedSeconds: null,
   };
 }

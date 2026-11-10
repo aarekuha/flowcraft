@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import UTC, date, datetime
 
 import pytest
 from fastapi import HTTPException
@@ -13,6 +13,7 @@ from app.schemas.order import WorkOrderQualityControlAccept, WorkOrderStatusUpda
 from app.schemas.planning import WorkScheduleBatchUpdate
 from app.services.order_service import OrderService
 from app.services.planning_service import PlanningService
+from app.services.production_planner_service import PlanningSnapshotBuilder
 
 
 def create_user(
@@ -202,9 +203,9 @@ def test_work_schedule_batch_create_update_and_delete(client: TestClient) -> Non
         "Анна Графикова"
     ]
     assert calendar["workers"][0]["days"] == [
-        {"work_date": "2026-11-02", "available_seconds": 28_800},
-        {"work_date": "2026-11-03", "available_seconds": 43_200},
-        {"work_date": "2026-11-06", "available_seconds": 28_800},
+        {"work_date": "2026-11-02", "available_seconds": 28_800, "period_type": "work"},
+        {"work_date": "2026-11-03", "available_seconds": 43_200, "period_type": "work"},
+        {"work_date": "2026-11-06", "available_seconds": 28_800, "period_type": "work"},
     ]
 
     delete_response = client.request(
@@ -222,7 +223,7 @@ def test_work_schedule_batch_create_update_and_delete(client: TestClient) -> Non
     )
     assert remaining_response.status_code == 200
     assert remaining_response.json()["workers"][0]["days"] == [
-        {"work_date": "2026-11-03", "available_seconds": 43_200}
+        {"work_date": "2026-11-03", "available_seconds": 43_200, "period_type": "work"}
     ]
 
 
@@ -558,7 +559,7 @@ def test_first_completion_permanently_excludes_order_from_planning(
     """
     Проверяем необратимое исключение после первого завершения:
     - установить флаг при приёмке ОТК
-    - не возвращать заказ в очередь после отмены завершения
+    - отклонить отмену завершения и не возвращать заказ в очередь
     - сохранить timestamp первого завершения
     """
     _, _, quality_control_id, _ = create_planning_queue_orders(db_session)
@@ -575,13 +576,15 @@ def test_first_completion_permanently_excludes_order_from_planning(
         assert completed.completed_at is not None
         assert excluded_at == completed.completed_at
 
-        returned = service.update_order_status(
-            quality_control_id,
-            WorkOrderStatusUpdate(is_completed=False),
-        )
+        with pytest.raises(HTTPException) as error:
+            service.update_order_status(
+                quality_control_id,
+                WorkOrderStatusUpdate(is_completed=False),
+            )
+        assert error.value.status_code == 422
         stored_order = session.get(WorkOrder, quality_control_id)
         assert stored_order is not None
-        assert returned.completed_at is None
+        assert stored_order.completed_at == completed.completed_at
         assert stored_order.planning_excluded_at == excluded_at
     finally:
         session.close()
@@ -592,3 +595,123 @@ def test_first_completion_permanently_excludes_order_from_planning(
     assert quality_control_id not in {
         item["order_id"] for item in queue_response.json()["items"]
     }
+
+
+@pytest.mark.parametrize("period_type", ["sick_leave", "vacation", "absence"])
+def test_work_schedule_absence_replaces_work_and_restores_availability(
+    client: TestClient,
+    db_session: sessionmaker[Session],
+    period_type: str,
+) -> None:
+    """
+    Проверяем замену рабочего графика периодом отсутствия:
+    - сохранить отсутствие на заполненном и пустом днях, включая выходной
+    - исключить отсутствие из доступности и запросить пересчёт
+    - восстановить рабочие часы и удалить запись отсутствия
+    """
+    worker = create_user(
+        client, name="Период отсутствия", phone="+79990000499", roles=["worker"]
+    )
+    url = "/api/planning/work-schedule"
+    dates = ["2026-11-06", "2026-11-07"]
+    payload = {
+        "user_id": worker["id"],
+        "work_dates": dates[:1],
+        "available_seconds": 28_800,
+    }
+    assert client.put(url, json=payload).status_code == 204
+    before = client.get("/api/planning/status").json()["input_revision"]
+    assert (
+        client.put(
+            url,
+            json={
+                **payload,
+                "work_dates": dates,
+                "period_type": period_type,
+                "available_seconds": 0,
+            },
+        ).status_code
+        == 204
+    )
+    days = client.get(url + "?month=2026-11").json()["workers"][0]["days"]
+    assert days == [
+        {"work_date": day, "available_seconds": 0, "period_type": period_type}
+        for day in dates
+    ]
+    assert client.get("/api/planning/status").json()["input_revision"] > before
+    with db_session() as session:
+        snapshot = PlanningSnapshotBuilder(session).build(
+            datetime(2026, 11, 6, tzinfo=UTC)
+        )
+        assert not snapshot.worker_availability
+    assert client.put(url, json={**payload, "period_type": "work"}).status_code == 204
+    with db_session() as session:
+        snapshot = PlanningSnapshotBuilder(session).build(
+            datetime(2026, 11, 6, tzinfo=UTC)
+        )
+        assert snapshot.worker_availability == {
+            (worker["id"], date(2026, 11, 6)): 28_800
+        }
+    assert (
+        client.request(
+            "DELETE", url, json={"user_id": worker["id"], "work_dates": dates[1:]}
+        ).status_code
+        == 204
+    )
+    assert client.get(url + "?month=2026-11").json()["workers"][0]["days"] == [
+        {"work_date": dates[0], "available_seconds": 28_800, "period_type": "work"}
+    ]
+
+
+@pytest.mark.parametrize(
+    ("period_type", "seconds"),
+    [
+        ("work", 0),
+        ("sick_leave", 3600),
+        ("vacation", 3600),
+        ("absence", 3600),
+        ("unknown", 0),
+    ],
+)
+def test_work_schedule_rejects_inconsistent_period_hours(
+    client: TestClient,
+    period_type: str,
+    seconds: int,
+) -> None:
+    """
+    Проверяем согласованность типа периода и часов:
+    - отклонить рабочий день без часов и отсутствие с рабочими часами
+    - отклонить неизвестный тип периода
+    """
+    response = client.put(
+        "/api/planning/work-schedule",
+        json={
+            "user_id": 1,
+            "work_dates": ["2026-11-06"],
+            "available_seconds": seconds,
+            "period_type": period_type,
+        },
+    )
+    assert response.status_code == 422
+
+
+def test_calendar_refresh_requires_admin(client: TestClient) -> None:
+    """
+    Проверяем права обновления производственного календаря:
+    - разрешить администратору читать дату актуализации
+    - запретить бригадиру загрузку и разрешить чтение графика
+    """
+    response = client.get("/api/planning/calendar")
+    assert response.status_code == 200
+    assert response.json() == {"imported_at": None, "years": []}
+    brigadier = create_user(
+        client, name="Бригадир календаря", phone="+79990000498", roles=["brigadier"]
+    )
+    assert client.post("/api/auth/setup-password", json={
+        "phone": brigadier["phone"], "new_password": "password123",
+    }).status_code == 200
+    assert client.get("/api/planning/calendar").status_code == 403
+    assert client.post("/api/planning/calendar/refresh").status_code == 403
+    response = client.get("/api/planning/work-schedule?month=2026-11")
+    assert response.status_code == 200
+    assert response.json()["production_calendar"] is None

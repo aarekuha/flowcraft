@@ -35,6 +35,10 @@ import {
 import { resolveWorkerListChange } from "@/shared/lib/adminWorkTimeSelection";
 import { resolveAdminWorkTimeFormPolicy } from "@/shared/lib/adminWorkTimePolicy";
 
+const emit = defineEmits<{
+  openOrderTime: [order: { id: number; orderNumber: string }];
+}>();
+
 type EditorMode = "create" | "edit" | null;
 
 type WorkTimeDraft = {
@@ -980,7 +984,17 @@ function errorMessage(error: unknown): string {
         <div class="timeline" :style="{ width: timelineWidth }">
           <div class="timeline__rows">
             <div v-for="row in timelineRows" :key="row.key" class="timeline__row">
-              <strong class="timeline__row-label">{{ row.label }}</strong>
+              <strong class="timeline__row-label">
+                <button
+                  v-if="row.order"
+                  type="button"
+                  class="order-time-link"
+                  @click="emit('openOrderTime', row.order)"
+                >
+                  {{ row.label }}
+                </button>
+                <template v-else>{{ row.label }}</template>
+              </strong>
               <div class="timeline__track">
                 <span
                   v-for="tick in timelineTicks"
@@ -1083,7 +1097,15 @@ function errorMessage(error: unknown): string {
         <template v-if="!isEditableServiceSession">
           <label class="field">
             <span>Номер заказа</span>
-            <input :value="draft.orderNumber" type="text" readonly />
+            <button
+              v-if="draft.orderId !== null"
+              type="button"
+              class="order-time-link"
+              @click="emit('openOrderTime', { id: draft.orderId, orderNumber: draft.orderNumber })"
+            >
+              {{ draft.orderNumber }}
+            </button>
+            <span v-else>{{ draft.orderNumber }}</span>
           </label>
 
           <div class="field operation-picker">
@@ -1169,7 +1191,15 @@ function errorMessage(error: unknown): string {
           <template v-else-if="replacesServiceWithOperation">
             <label class="field">
               <span>Номер заказа</span>
-              <input :value="draft.orderNumber" type="text" readonly />
+              <button
+                v-if="draft.orderId !== null"
+                type="button"
+                class="order-time-link"
+                @click="emit('openOrderTime', { id: draft.orderId, orderNumber: draft.orderNumber })"
+              >
+                {{ draft.orderNumber }}
+              </button>
+              <span v-else>{{ draft.orderNumber }}</span>
             </label>
 
             <div class="field operation-picker">
@@ -1270,6 +1300,17 @@ function errorMessage(error: unknown): string {
 </template>
 
 <style scoped>
+.order-time-link {
+  padding: 10px 0;
+  border: 0;
+  background: transparent;
+  color: #2563eb;
+  font: inherit;
+  text-align: left;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
 .work-time-panel {
   display: grid;
   gap: 20px;

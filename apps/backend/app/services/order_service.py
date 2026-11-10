@@ -1008,13 +1008,15 @@ class OrderService:
         self,
         order_id: int,
         payload: WorkOrderUpdateAssignments,
+        *,
+        is_admin: bool = False,
     ) -> WorkOrderDetail:
         order = self._get_order_or_404(order_id)
         self._validate_order_is_not_deleted(order)
         product = self._get_product_or_404(order.product_id)
         leather_type_id = self._resolve_update_leather_type_id(order, payload)
         if payload.quantity != order.quantity:
-            self._validate_order_quantity_can_be_changed(order)
+            self._validate_order_quantity_can_be_changed(order, is_admin=is_admin)
         attributes_changed = leather_type_id != order.leather_type_id
         queue_attributes_changed = (
             attributes_changed or payload.quantity != order.quantity
@@ -1066,28 +1068,17 @@ class OrderService:
         payload: WorkOrderStatusUpdate,
     ) -> WorkOrderDetail:
         order = self._get_order_or_404(order_id)
-        now = self._now_ts()
-        was_completed = order.completed_at is not None
         self._validate_order_is_not_deleted(order)
+        if order.completed_at is not None:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="Возврат выполненного заказа в ОТК недоступен.",
+            )
         if payload.is_completed:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail="Use quality control acceptance to complete order.",
             )
-        if not payload.is_completed and order.completed_at is not None:
-            order.quality_control_at = order.quality_control_at or now
-
-        order.completed_at = None
-        order.updated_at = now
-        if was_completed:
-            OperationTimeEstimateService(self.session).mark_product_dirty(
-                order.product_id,
-                dirty_at=now,
-            )
-            PlanningRevisionService(self.session).request_recalculation()
-
-        self.session.commit()
-        self.session.refresh(order)
         return self.get_order(order.id)
 
     def update_order_quality_control_status(
@@ -1097,8 +1088,12 @@ class OrderService:
     ) -> WorkOrderDetail:
         order = self._get_order_or_404(order_id)
         now = self._now_ts()
-        was_completed = order.completed_at is not None
         self._validate_order_is_not_deleted(order)
+        if order.completed_at is not None:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="Изменение статуса ОТК выполненного заказа недоступно.",
+            )
 
         if payload.is_in_quality_control:
             if order.production_stage != WorkOrderProductionStage.IN_WORK.value:
@@ -1106,12 +1101,6 @@ class OrderService:
                     status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                     detail="Only orders in work can be sent to quality control.",
                 )
-            if order.completed_at is not None:
-                raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-                    detail="Completed order cannot be sent to quality control.",
-                )
-
             queue_changed = order.quality_control_at is None
             order.quality_control_at = order.quality_control_at or now
         else:
@@ -1123,12 +1112,6 @@ class OrderService:
         order.updated_at = now
         if queue_changed and order.planning_excluded_at is None:
             PlanningQueueService(self.session).bump_revision()
-        if was_completed and order.completed_at is None:
-            OperationTimeEstimateService(self.session).mark_product_dirty(
-                order.product_id,
-                dirty_at=now,
-            )
-            PlanningRevisionService(self.session).request_recalculation()
         self.session.commit()
         self.session.refresh(order)
         return self.get_order(order.id)
@@ -1175,6 +1158,8 @@ class OrderService:
         self,
         order_id: int,
         payload: WorkOrderProductionStageUpdate,
+        *,
+        is_admin: bool = False,
     ) -> WorkOrderDetail:
         order = self._get_order_or_404(order_id)
         now = self._now_ts()
@@ -1189,6 +1174,16 @@ class OrderService:
         target_stage = payload.production_stage
         if current_stage == target_stage:
             return self.get_order(order.id)
+
+        if (
+            current_stage == WorkOrderProductionStage.IN_WORK
+            and target_stage == WorkOrderProductionStage.CUTTING
+            and not is_admin
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Возврат заказа в крой доступен только администратору.",
+            )
 
         allowed_transitions = {
             WorkOrderProductionStage.CREATED: {WorkOrderProductionStage.CUTTING},
@@ -1813,7 +1808,15 @@ class OrderService:
                 detail="Order cannot be changed after time has been spent.",
             )
 
-    def _validate_order_quantity_can_be_changed(self, order: WorkOrder) -> None:
+    def _validate_order_quantity_can_be_changed(
+        self, order: WorkOrder, *, is_admin: bool = False
+    ) -> None:
+        self._validate_order_assignments_can_be_changed(order)
+        if (
+            is_admin
+            and order.production_stage == WorkOrderProductionStage.IN_WORK.value
+        ):
+            return
         if order.production_stage != WorkOrderProductionStage.CUTTING.value:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
