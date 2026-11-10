@@ -920,7 +920,9 @@ const modalDescription = computed(() => {
   }
 
   if (modalMode.value === "view") {
-    return "Структура изделия и цены операций доступны для просмотра, стоимость материала, нормы времени и комментарий можно изменить.";
+    return canManagePlanningSettings.value
+      ? "Структура изделия доступна для просмотра, цены операций, стоимость материала, нормы времени и комментарий можно изменить."
+      : "Структура изделия и цены операций доступны для просмотра, стоимость материала, нормы времени и комментарий можно изменить.";
   }
 
   return "Заполните карточку изделия и задайте дерево производственных операций.";
@@ -4500,7 +4502,7 @@ function handleProductMaterialCostInput(event: Event) {
 function handleOperationPriceInput(operationId: number, event: Event) {
   const target = event.target;
 
-  if (isViewMode.value || !(target instanceof HTMLInputElement)) {
+  if ((isViewMode.value && !canManagePlanningSettings.value) || !(target instanceof HTMLInputElement)) {
     return;
   }
 
@@ -10700,7 +10702,7 @@ async function handleResetUserPassword(user: UserRecord) {
                         @blur="normalizeOperationStandardTimeInput(row.id, $event)"
                       />
                       <small
-                        v-if="!row.isGroup && row.standardTimeSeconds === null"
+                        v-if="!row.isGroup"
                         class="readonly-note"
                       >
                         {{ getOperationStatisticalTimeLabel(row) }}
@@ -10719,7 +10721,7 @@ async function handleResetUserPassword(user: UserRecord) {
                       <span v-if="row.isGroup" class="readonly-note">
                         Цена только у операций
                       </span>
-                      <span v-else-if="isViewMode" class="operation-text">
+                      <span v-else-if="isViewMode && !canManagePlanningSettings" class="operation-text">
                         {{ formatMoneyInput(row.priceCents) || "Не указана" }}
                       </span>
                       <input
@@ -10734,7 +10736,7 @@ async function handleResetUserPassword(user: UserRecord) {
                       />
                       <p
                         v-if="
-                          !isViewMode &&
+                          (!isViewMode || canManagePlanningSettings) &&
                           (operationErrors[row.id]?.startsWith('Цена') ||
                             operationErrors[row.id]?.startsWith('У группы'))
                         "

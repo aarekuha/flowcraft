@@ -620,6 +620,19 @@ async function runOrderSearch(query: string, requestId: number) {
   }
 }
 
+function clearSelectedOrder() {
+  invalidateOrderSearchRequest();
+  invalidateOperationsRequest();
+  draft.value.orderId = null;
+  draft.value.orderNumber = "";
+  draft.value.operationId = null;
+  draft.value.operationName = "";
+  operations.value = [];
+  operationQuery.value = "";
+  orderQuery.value = "";
+  orderResults.value = [];
+}
+
 async function selectOrder(order: AdminWorkTimeOrder) {
   invalidateOrderSearchRequest();
   invalidateOperationsRequest();
@@ -727,7 +740,8 @@ async function saveChanges() {
       });
     } else {
       saved = await updateAdminWorkTimeSession(selectedSession.value!.id, {
-        order_id: replacesServiceWithOperation.value ? draft.value.orderId : undefined,
+        order_id: replacesServiceWithOperation.value || !isEditableServiceSession.value
+          ? draft.value.orderId : undefined,
         operation_id: replacesServiceWithOperation.value || !isEditableServiceSession.value
           ? draft.value.operationId
           : null,
@@ -1067,7 +1081,7 @@ function errorMessage(error: unknown): string {
         </button>
       </header>
 
-      <div v-if="editorMode === 'create' && draft.orderId === null" class="order-search">
+      <div v-if="!isEditableServiceSession && draft.orderId === null" class="order-search">
         <label class="field">
           <span>Номер заказа</span>
           <input
@@ -1106,6 +1120,13 @@ function errorMessage(error: unknown): string {
               {{ draft.orderNumber }}
             </button>
             <span v-else>{{ draft.orderNumber }}</span>
+            <button
+              v-if="!selectedSession || selectedSession.editable"
+              type="button"
+              class="button button--ghost"
+              :disabled="saveLoading"
+              @click="clearSelectedOrder"
+            >Сменить заказ</button>
           </label>
 
           <div class="field operation-picker">

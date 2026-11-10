@@ -1,7 +1,11 @@
+# ruff: noqa: I001
+
 from fastapi import APIRouter, Depends, Response, status
 from sqlalchemy.orm import Session
 
-from app.api.dependencies import get_session, require_any_role
+from app.api.dependencies import (
+    get_session, require_any_role, get_authenticated_session,
+)
 from app.schemas.product import (
     ProductCostsUpdate,
     ProductCreate,
@@ -11,6 +15,7 @@ from app.schemas.product import (
     ProductStatusUpdate,
 )
 from app.services.product_service import ProductService
+from app.services.auth_service import AuthenticatedSession
 
 router = APIRouter()
 
@@ -50,8 +55,11 @@ def update_product_costs(
     product_id: int,
     payload: ProductCostsUpdate,
     session: Session = Depends(get_session),
+    auth: AuthenticatedSession = Depends(get_authenticated_session),
 ) -> ProductDetail:
-    return ProductService(session).update_product_costs(product_id, payload)
+    return ProductService(session).update_product_costs(
+        product_id, payload, can_change_prices="admin" in auth.user_roles
+    )
 
 
 @router.patch(

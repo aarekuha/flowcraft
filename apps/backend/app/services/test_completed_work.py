@@ -8,7 +8,7 @@ from xml.etree import ElementTree as ET
 from zipfile import ZipFile
 
 import pytest
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import Session
@@ -225,11 +225,12 @@ def test_current_prices_and_bonuses_are_recalculated(session: Session) -> None:
     assert report.payout_cents == 30144
 
 
-def test_missing_price_does_not_produce_partial_payout(session: Session) -> None:
+def test_missing_price_keeps_partial_totals_and_exports(session: Session) -> None:
     """
-    Проверяем отсутствие расценки:
-    - сохранить видимые количества без ложного итогового начисления
-    - запретить выгрузку неполного расчёта выплаты
+    Проверяем итоги при отсутствии расценки:
+    - сохранить количества и признак нерассчитанных строк
+    - сложить рассчитанные позиции и премии, учитывая остальные как ноль
+    - разрешить персональную и общую выгрузку XLSX
     """
     operation = session.get(Operation, 1)
     assert operation
@@ -238,10 +239,21 @@ def test_missing_price_does_not_produce_partial_payout(session: Session) -> None
     service = CompletedWorkService(session)
     report = service.calculate(1, 2026, 11)
     assert report.total_quantity == 110
-    assert report.piecework_cents is None and report.payout_cents is None
-    with pytest.raises(HTTPException) as error:
-        service.export(1, 2026, 11)
-    assert error.value.status_code == 409
+    assert any(row.amount_cents is None for row in report.items)
+    assert report.piecework_cents == 20000
+    assert report.payout_cents == 32345
+    summary = WorkSummaryService(session).calculate(2026, 11)
+    assert all(row.incomplete for row in summary.items)
+    assert [row.piecework_cents for row in summary.items] == [20000, 0]
+    for data in [
+        service.export(1, 2026, 11), WorkSummaryService(session).export(2026, 11)
+    ]:
+        with ZipFile(BytesIO(data)) as archive:
+            sheet = ET.fromstring(archive.read("xl/worksheets/sheet1.xml"))
+            ns = {"s": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
+            assert sheet.findall(".//s:f", ns)
+    with ZipFile(BytesIO(service.export(1, 2026, 11))) as archive:
+        assert "Не рассчитано" in archive.read("xl/worksheets/sheet1.xml").decode()
 
 
 def test_xlsx_contains_literal_totals_and_linked_payout_formula(

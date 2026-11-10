@@ -12,7 +12,7 @@ const loading = ref(false);
 const printing = ref(false);
 const error = ref("");
 let requestId = 0;
-const incomplete = computed(() => report.value?.items.some((item) => item.piecework_cents === null) ?? false);
+const incomplete = computed(() => report.value?.items.some((item) => item.incomplete) ?? false);
 async function load() {
   const current = ++requestId;
   report.value = null;
@@ -30,7 +30,7 @@ async function load() {
   } finally { if (current === requestId) loading.value = false; }
 }
 async function print() {
-  if (!report.value || printing.value || incomplete.value) return;
+  if (!report.value || printing.value) return;
   printing.value = true;
   error.value = "";
   try { await downloadWorkSummary(report.value.year, report.value.month); }
@@ -52,7 +52,7 @@ onUnmounted(() => { requestId += 1; });
         <label>Месяц <select v-model="month" :disabled="printing"><option v-for="(name, index) in months" :key="index" :value="index + 1">{{ name }}</option></select></label>
         <label>Год <input v-model.number="year" type="number" min="2000" max="9998" :disabled="printing" /></label>
         <button :disabled="loading || printing" @click="load">Пересчитать</button>
-        <button :disabled="!report || loading || printing || incomplete" @click="print">{{ printing ? 'Подготовка…' : 'Печать · XLSX' }}</button>
+        <button :disabled="!report || loading || printing" @click="print">{{ printing ? 'Подготовка…' : 'Печать · XLSX' }}</button>
       </div>
       <p v-if="error" role="alert">{{ error }}</p>
       <p v-if="loading">Расчёт…</p>

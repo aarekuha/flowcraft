@@ -210,11 +210,7 @@ class CompletedWorkService:
             for bonus in self.bonuses(user_id)
         ]
         bonuses_cents = sum(bonus.amount_cents for bonus in bonuses if bonus.selected)
-        piecework = (
-            sum(row.amount_cents or 0 for row in items)
-            if all(row.amount_cents is not None for row in items)
-            else None
-        )
+        piecework = sum(row.amount_cents or 0 for row in items)
         return CompletedWorkReport(
             user_id=user_id,
             user_name=user.name,
@@ -233,15 +229,11 @@ class CompletedWorkService:
             piecework_cents=piecework,
             bonuses=bonuses,
             bonuses_cents=bonuses_cents,
-            payout_cents=piecework + bonuses_cents if piecework is not None else None,
+            payout_cents=piecework + bonuses_cents,
         )
 
     def export(self, user_id: int, year: int, month: int) -> bytes:
         report = self.calculate(user_id, year, month)
-        if report.piecework_cents is None:
-            raise HTTPException(
-                409, "Для выгрузки указать расценки всех операций расчёта"
-            )
         rows: list[list] = [
             ["Расчёт выполненной работы"],
             ["ФИО", report.user_name],
@@ -272,8 +264,14 @@ class CompletedWorkService:
                     f"{row.product_name} · {row.product_version}",
                     row.operation_name,
                     float(row.quantity),
-                    (row.price_cents or 0) / 100,
-                    (row.amount_cents or 0) / 100,
+                    (
+                        row.price_cents / 100
+                        if row.price_cents is not None else "Не задана"
+                    ),
+                    (
+                        row.amount_cents / 100
+                        if row.amount_cents is not None else "Не рассчитано"
+                    ),
                 ]
             )
         rows.append(

@@ -298,6 +298,7 @@ class AdminWorkTimeService:
             payload.expected_updated_at,
         )
         before_payload = self._snapshot(timer_session)
+        previous_order_id = timer_session.order_id
         previous_operation_id = timer_session.operation_id
         timer_type = CODE_TO_TIMER_TYPE[timer_session.timer_type_code]
         target_order: WorkOrder | None = None
@@ -308,10 +309,7 @@ class AdminWorkTimeService:
                 payload.order_id is not None
                 and payload.order_id != target_order.id
             ):
-                raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-                    detail="Заказ существующей операции нельзя изменить.",
-                )
+                target_order = self._get_order_or_404(payload.order_id)
             if payload.operation_id is None:
                 raise HTTPException(
                     status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -367,6 +365,7 @@ class AdminWorkTimeService:
         timer_session.shift_id = shift.id
         if target_order is not None and operation is not None:
             timer_session.timer_type_code = TIMER_TYPE_TO_CODE[TimerType.OPERATION]
+            timer_session.order = target_order
             timer_session.order_id = target_order.id
             timer_session.operation_id = operation.id
         timer_session.started_at = payload.started_at
@@ -389,7 +388,11 @@ class AdminWorkTimeService:
         )
         if target_order is not None:
             WorkOrderTimeService(self.session).refresh_totals(
-                {target_order.id},
+                {
+                    order_id
+                    for order_id in (previous_order_id, target_order.id)
+                    if order_id is not None
+                },
                 set_initial_taken_at=False,
                 recalculate_taken_at=True,
                 recalculate_cutting_started_at=True,
