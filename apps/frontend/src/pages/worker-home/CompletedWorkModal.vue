@@ -44,7 +44,7 @@ const busy = ref(false);
 const printing = ref(false);
 const savingBonus = ref(false);
 const savingPiecework = ref(false);
-const pieceworkInput = ref("");
+const pieceworkInput = ref<string | number>("");
 const savedPieceworkInput = computed(() => report.value
   ? (report.value.payable_piecework_cents / 100).toFixed(2) : "");
 const pieceworkDirty = computed(() => pieceworkInput.value !== savedPieceworkInput.value);
@@ -52,7 +52,7 @@ watch(report, () => { pieceworkInput.value = savedPieceworkInput.value; });
 async function savePiecework(reset = false) {
   const current = adminReport.value;
   if (!current || savingPiecework.value || savingBonus.value || busy.value || printing.value) return;
-  const text = pieceworkInput.value.trim().replace(",", ".");
+  const text = String(pieceworkInput.value).trim().replace(",", ".");
   const cents = Math.round(Number(text) * 100);
   if (!reset && (!/^\d+(?:\.\d{1,2})?$/.test(text) || !Number.isSafeInteger(cents))) {
     error.value = "Указать неотрицательную сумму с точностью до копеек.";
