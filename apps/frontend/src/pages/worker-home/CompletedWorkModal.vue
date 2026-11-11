@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, watch, computed, onUnmounted } from "vue";
-import { downloadWorkReport, getWorkReport, money, setMonthlyBonusSelection, type WorkReport, getPersonalWorkReport, unlockPersonalWorkReport, type PersonalWorkReport } from "@/shared/api/completedWork";
+import { downloadWorkReport, getWorkReport, money, setMonthlyBonusSelection, type WorkReport, getPersonalWorkReport, unlockPersonalWorkReport, type PersonalWorkReport, setMonthlyPiecework } from "@/shared/api/completedWork";
 
 const props = defineProps<{ userId: number; personal?: boolean }>();
 defineEmits<{ close: [] }>();
@@ -43,6 +43,32 @@ onUnmounted(() => {
 const busy = ref(false);
 const printing = ref(false);
 const savingBonus = ref(false);
+const savingPiecework = ref(false);
+const pieceworkInput = ref("");
+const savedPieceworkInput = computed(() => report.value
+  ? (report.value.payable_piecework_cents / 100).toFixed(2) : "");
+const pieceworkDirty = computed(() => pieceworkInput.value !== savedPieceworkInput.value);
+watch(report, () => { pieceworkInput.value = savedPieceworkInput.value; });
+async function savePiecework(reset = false) {
+  const current = adminReport.value;
+  if (!current || savingPiecework.value || savingBonus.value || busy.value || printing.value) return;
+  const text = pieceworkInput.value.trim().replace(",", ".");
+  const cents = Math.round(Number(text) * 100);
+  if (!reset && (!/^\d+(?:\.\d{1,2})?$/.test(text) || !Number.isSafeInteger(cents))) {
+    error.value = "Указать неотрицательную сумму с точностью до копеек.";
+    return;
+  }
+  const request = generation;
+  savingPiecework.value = true;
+  error.value = "";
+  try {
+    const result = await setMonthlyPiecework(current.user_id, current.year, current.month, reset ? null : cents);
+    if (request === generation) report.value = result;
+  } catch (cause) {
+    if (request === generation) error.value = cause instanceof Error ? cause.message : "Не удалось сохранить сделку";
+  } finally { savingPiecework.value = false; }
+}
+
 const error = ref("");
 let generation = 0;
 async function load() {
@@ -70,7 +96,7 @@ async function load() {
 async function changeBonus(bonusId: number, event: Event) {
   const checkbox = event.target as HTMLInputElement;
   const current = adminReport.value;
-  if (props.personal || !current || savingBonus.value || busy.value || printing.value) return;
+  if (props.personal || !current || savingBonus.value || savingPiecework.value || pieceworkDirty.value || busy.value || printing.value) return;
   const selected = checkbox.checked;
   checkbox.checked = current.bonuses.find((bonus) => bonus.id === bonusId)?.selected ?? true;
   const request = generation;
@@ -89,7 +115,7 @@ async function changeBonus(bonusId: number, event: Event) {
   } finally { savingBonus.value = false; }
 }
 async function print() {
-  if (props.personal || !report.value) return;
+  if (props.personal || !report.value || savingPiecework.value || pieceworkDirty.value) return;
   printing.value = true;
   error.value = "";
   try { await downloadWorkReport(props.userId, report.value.year, report.value.month); }
@@ -111,10 +137,10 @@ watch([year, month, () => props.userId], load, { immediate: true });
         <button type="submit" :disabled="busy || !password">{{ busy ? 'Проверка…' : 'Открыть расчёт' }}</button>
       </form>
       <div v-else class="controls">
-        <label>Месяц <select v-model="month" :disabled="printing || savingBonus"><option v-for="(name, index) in months" :key="index" :value="index + 1">{{ name }}</option></select></label>
-        <label>Год <input v-model.number="year" type="number" min="2000" max="9998" :disabled="printing || savingBonus" /></label>
-        <button :disabled="busy || printing || savingBonus" @click="load">Пересчитать</button>
-        <button v-if="!personal" :disabled="!report || printing || busy || savingBonus" @click="print">{{ printing ? 'Подготовка…' : 'Распечатать · XLSX' }}</button>
+        <label>Месяц <select v-model="month" :disabled="printing || savingBonus || savingPiecework"><option v-for="(name, index) in months" :key="index" :value="index + 1">{{ name }}</option></select></label>
+        <label>Год <input v-model.number="year" type="number" min="2000" max="9998" :disabled="printing || savingBonus || savingPiecework" /></label>
+        <button :disabled="busy || printing || savingBonus || savingPiecework" @click="load">Пересчитать</button>
+        <button v-if="!personal" :disabled="!report || printing || busy || savingBonus || savingPiecework || pieceworkDirty" @click="print">{{ printing ? 'Подготовка…' : 'Распечатать · XLSX' }}</button>
       </div>
       <p v-if="error" role="alert">{{ error }}</p><p v-if="busy">Расчёт…</p>
       <template v-if="report">
@@ -136,17 +162,27 @@ watch([year, month, () => props.userId], load, { immediate: true });
           <thead><tr><th>Учитывать</th><th>Наименование</th><th>Сумма, ₽</th></tr></thead>
           <tbody>
             <tr v-for="bonus in adminReport.bonuses" :key="bonus.id" :class="{ 'bonus-excluded': !bonus.selected }">
-              <td><input type="checkbox" :checked="bonus.selected" :disabled="busy || printing || savingBonus" :aria-label="`Учитывать премию ${bonus.name}`" @change="changeBonus(bonus.id, $event)" /></td>
+              <td><input type="checkbox" :checked="bonus.selected" :disabled="busy || printing || savingBonus || savingPiecework || pieceworkDirty" :aria-label="`Учитывать премию ${bonus.name}`" @change="changeBonus(bonus.id, $event)" /></td>
               <td>{{ bonus.name }}</td><td>{{ money(bonus.amount_cents) }}</td>
             </tr>
           </tbody>
           <tfoot><tr><th colspan="2">Итого премий</th><th>{{ money(adminReport.bonuses_cents) }}</th></tr></tfoot>
         </table>
         <p v-if="!adminReport.bonuses.length">Премии не назначены.</p>
-        <p>Сделка: <b>{{ money(report.piecework_cents) }} ₽</b></p>
+        <p>Системный расчёт сделки: <b>{{ money(report.piecework_cents) }} ₽</b></p>
+        <form class="controls" @submit.prevent="savePiecework()">
+          <label>Сделка к выплате, ₽
+            <input v-model="pieceworkInput" type="number" min="0" step="0.01" required
+              :disabled="busy || printing || savingBonus || savingPiecework" />
+          </label>
+          <button type="submit" :disabled="busy || printing || savingBonus || savingPiecework || !pieceworkDirty">{{ savingPiecework ? 'Сохранение…' : 'Сохранить сделку' }}</button>
+          <button type="button" :disabled="busy || printing || savingBonus || savingPiecework || report.manual_piecework_cents === null" @click="savePiecework(true)">Использовать системный расчёт</button>
+          <button v-if="pieceworkDirty" type="button" :disabled="savingPiecework" @click="pieceworkInput = savedPieceworkInput">Отменить ввод</button>
+        </form>
+        <p class="hint">{{ report.manual_piecework_cents === null ? 'Используется системный расчёт.' : 'Сохранена ручная сумма за выбранный месяц.' }}{{ pieceworkDirty ? ' Изменения суммы ещё не сохранены.' : '' }}</p>
         <p class="payout">Итого к выплате: <b>{{ money(adminReport.payout_cents) }} ₽</b></p>
         </template>
-        <p v-if="personal">Сделка: <b>{{ money(report.piecework_cents) }} ₽</b></p>
+        <p v-if="personal">Сделка: <b>{{ money(report.payable_piecework_cents) }} ₽</b></p>
       </template>
     </section>
   </div>

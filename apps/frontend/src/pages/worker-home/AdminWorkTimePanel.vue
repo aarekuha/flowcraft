@@ -634,6 +634,7 @@ function clearSelectedOrder() {
 }
 
 async function selectOrder(order: AdminWorkTimeOrder) {
+  editorError.value = "";
   invalidateOrderSearchRequest();
   invalidateOperationsRequest();
   draft.value.orderId = order.id;
@@ -651,7 +652,11 @@ async function loadOperations(orderId: number) {
   operationsRequestId = requestId;
   operationsLoading.value = true;
   try {
-    const loadedOperations = await fetchAdminWorkTimeOperations(orderId);
+    const loadedOperations = await fetchAdminWorkTimeOperations(
+      orderId,
+      editorMode.value === "edit" && orderId !== selectedSession.value?.orderId
+        ? selectedWorkerId.value ?? undefined : undefined,
+    );
     if (
       requestId !== operationsRequestId
       || draft.value.orderId !== orderId
@@ -659,6 +664,10 @@ async function loadOperations(orderId: number) {
       return;
     }
     operations.value = loadedOperations;
+    if (loadedOperations.length === 0 && editorMode.value === "edit"
+      && orderId !== selectedSession.value?.orderId) {
+      editorError.value = "В выбранном заказе сотруднику не назначены операции.";
+    }
   } catch (error) {
     if (requestId === operationsRequestId) {
       editorError.value = errorMessage(error);

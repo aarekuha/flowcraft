@@ -24,12 +24,31 @@ from app.schemas.completed_work import (
 from app.services.effective_order_time import build_effective_operation_time_subquery
 from app.services.xlsx_writer import SheetRows, XlsxFormula, XlsxTotal, build_xlsx
 
+from app.models.monthly_piecework import MonthlyPiecework
+
 MOSCOW = ZoneInfo("Europe/Moscow")
 
 
 class CompletedWorkService:
     def __init__(self, session: Session) -> None:
         self.session = session
+
+    def set_piecework(
+        self, user_id: int, year: int, month: int, amount_cents: int | None,
+    ) -> CompletedWorkReport:
+        self.get_user(user_id)
+        record = self.session.get(MonthlyPiecework, (user_id, year, month))
+        if amount_cents is None:
+            if record is not None:
+                self.session.delete(record)
+        elif record is None:
+            self.session.add(MonthlyPiecework(
+                user_id=user_id, year=year, month=month, amount_cents=amount_cents,
+            ))
+        else:
+            record.amount_cents = amount_cents
+        self.session.commit()
+        return self.calculate(user_id, year, month)
 
     def get_user(self, user_id: int) -> User:
         user = self.session.get(User, user_id)
@@ -211,6 +230,8 @@ class CompletedWorkService:
         ]
         bonuses_cents = sum(bonus.amount_cents for bonus in bonuses if bonus.selected)
         piecework = sum(row.amount_cents or 0 for row in items)
+        manual = self.session.get(MonthlyPiecework, (user_id, year, month))
+        payable = manual.amount_cents if manual is not None else piecework
         return CompletedWorkReport(
             user_id=user_id,
             user_name=user.name,
@@ -227,9 +248,11 @@ class CompletedWorkService:
             items=items,
             total_quantity=sum(max_quantities.values(), Decimal(0)),
             piecework_cents=piecework,
+            manual_piecework_cents=manual.amount_cents if manual is not None else None,
+            payable_piecework_cents=payable,
             bonuses=bonuses,
             bonuses_cents=bonuses_cents,
-            payout_cents=piecework + bonuses_cents,
+            payout_cents=payable + bonuses_cents,
         )
 
     def export(self, user_id: int, year: int, month: int) -> bytes:
@@ -286,7 +309,10 @@ class CompletedWorkService:
             ]
         )
         rows.append(
-            [None, None, None, None, None, "Сделка", report.piecework_cents / 100]
+            [
+                None, None, None, None, None, "Сделка",
+                report.payable_piecework_cents / 100,
+            ]
         )
         piecework_cell = f"G{len(rows)}"
         rows.extend([[], ["Премии", "Сумма, ₽"]])
