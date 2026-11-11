@@ -7,22 +7,25 @@ from sqlalchemy.orm import Session
 from app.models.operation import Operation
 from app.models.product import Product
 from app.models.timer_session import TimerSession
-from app.models.work_order import WorkOrder
+from app.models.work_order import WorkOrder, WorkOrderAssignment
 from app.schemas.admin_work_time import AdminWorkTimeSessionUpdate
 from app.services.admin_work_time_service import AdminWorkTimeService
 from app.services.test_completed_work import session  # noqa: F401
 from app.services.work_order_time_service import WorkOrderTimeService
 
 
-@pytest.mark.parametrize("valid_operation", [True, False])
+@pytest.mark.parametrize(
+    "valid_operation, assigned", [(True, True), (False, True), (True, False)]
+)
 def test_transfer_updates_both_orders_and_validates_operation(
     session: Session,
     valid_operation: bool,
+    assigned: bool,
 ) -> None:
     """
     Проверяем перенос завершённого интервала на другое изделие:
     - создать новый заказ с собственной операцией
-    - отклонить операцию исходного изделия без переноса времени
+    - отклонить чужую или неназначенную операцию без переноса времени
     - перенести допустимую запись и пересчитать оба заказа
     """
     session.add(
@@ -40,6 +43,11 @@ def test_transfer_updates_both_orders_and_validates_operation(
             updated_at=1,
         )
     )
+    session.flush()
+    if assigned:
+        session.add(WorkOrderAssignment(
+            work_order_id=5, operation_id=3, worker_user_id=1,
+        ))
     session.commit()
     WorkOrderTimeService(session).refresh_totals({1, 5}, set_initial_taken_at=False)
     session.commit()
@@ -57,7 +65,7 @@ def test_transfer_updates_both_orders_and_validates_operation(
         expected_updated_at=timer.updated_at,
     )
     service = AdminWorkTimeService(session)
-    if not valid_operation:
+    if not valid_operation or not assigned:
         with pytest.raises(HTTPException) as error:
             service.update_session(session_id=1, admin_user_id=1, payload=payload)
         assert error.value.status_code == 422
@@ -72,3 +80,23 @@ def test_transfer_updates_both_orders_and_validates_operation(
     session.expire_all()
     assert source.total_spent_seconds == previous_total - 1
     assert target.total_spent_seconds == 1
+
+
+def test_operation_choices_only_include_worker_assignments(session: Session) -> None:
+    """
+    Проверяем список операций нового заказа:
+    - назначить одну операцию выбранному сотруднику, другую другому
+    - исключить операции без персонального назначения
+    - вернуть только назначения выбранного сотрудника этого заказа
+    """
+    session.add_all([
+        WorkOrderAssignment(work_order_id=1, operation_id=1, worker_user_id=1),
+        WorkOrderAssignment(work_order_id=1, operation_id=2, worker_user_id=2),
+        WorkOrderAssignment(work_order_id=2, operation_id=2, worker_user_id=1),
+        WorkOrderAssignment(work_order_id=1, operation_id=2, worker_user_id=None),
+    ])
+    session.commit()
+    service = AdminWorkTimeService(session)
+    assert [item.id for item in service.list_order_operations(1, 1)] == [1]
+    assert [item.id for item in service.list_order_operations(1, 2)] == [2]
+    assert service.list_order_operations(3, 1) == []

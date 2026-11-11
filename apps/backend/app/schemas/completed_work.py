@@ -59,6 +59,8 @@ class PersonalWorkReport(BaseModel):
     items: list[CompletedWorkRow]
     total_quantity: Decimal
     piecework_cents: int
+    manual_piecework_cents: int | None = None
+    payable_piecework_cents: int
 
 
 class CompletedWorkReport(PersonalWorkReport):
@@ -90,3 +92,7 @@ class WorkSummary(BaseModel):
     year: int
     month: int
     items: list[WorkSummaryRow]
+
+
+class MonthlyPieceworkInput(BaseModel):
+    amount_cents: int | None = Field(ge=0, strict=True)

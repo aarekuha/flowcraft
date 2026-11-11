@@ -28,7 +28,7 @@ class WorkSummaryService:
                     user_name=user.name,
                     sick_days=report.sick_days,
                     vacation_days=report.vacation_days,
-                    piecework_cents=report.piecework_cents,
+                    piecework_cents=report.payable_piecework_cents,
                     bonuses_cents=report.bonuses_cents,
                 )
             )

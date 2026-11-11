@@ -98,10 +98,11 @@ def search_orders(
 )
 def list_order_operations(
     order_id: int,
+    worker_user_id: int | None = Query(default=None, gt=0),
     _auth_session: AuthenticatedSession = Depends(require_any_role("admin")),
     session: Session = Depends(get_session),
 ) -> list[AdminWorkTimeOperationRead]:
-    return AdminWorkTimeService(session).list_order_operations(order_id)
+    return AdminWorkTimeService(session).list_order_operations(order_id, worker_user_id)
 
 
 @router.post(

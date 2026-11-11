@@ -1,3 +1,5 @@
+# ruff: noqa: I001
+
 from datetime import UTC, datetime
 
 from fastapi import HTTPException, status
@@ -8,7 +10,9 @@ from app.models.operation import Operation
 from app.models.timer_session import TimerSession
 from app.models.timer_session_audit import TimerSessionAuditLog
 from app.models.user import User
-from app.models.work_order import WorkOrder, WorkOrderTimeAllocation
+from app.models.work_order import (
+    WorkOrder, WorkOrderTimeAllocation, WorkOrderAssignment,
+)
 from app.models.work_shift import WorkShift
 from app.schemas.admin_work_time import (
     AdminWorkTimeAllocationRead,
@@ -182,9 +186,21 @@ class AdminWorkTimeService:
     def list_order_operations(
         self,
         order_id: int,
+        worker_user_id: int | None = None,
     ) -> list[AdminWorkTimeOperationRead]:
         order = self._get_order_or_404(order_id)
         operations = self._get_leaf_operations(order.product_id)
+        if worker_user_id is not None:
+            self._get_worker_or_404(worker_user_id)
+            assigned = set(self.session.scalars(
+                select(WorkOrderAssignment.operation_id).where(
+                    WorkOrderAssignment.work_order_id == order_id,
+                    WorkOrderAssignment.worker_user_id == worker_user_id,
+                )
+            ))
+            operations = [
+                operation for operation in operations if operation.id in assigned
+            ]
         result = [
             AdminWorkTimeOperationRead(
                 id=operation.id,
@@ -333,6 +349,23 @@ class AdminWorkTimeService:
                 order=target_order,
                 operation_id=payload.operation_id,
             )
+        if (
+            timer_type == TimerType.OPERATION
+            and target_order is not None and operation is not None
+            and target_order.id != previous_order_id
+        ):
+            assignment = self.session.scalar(
+                select(WorkOrderAssignment.id).where(
+                    WorkOrderAssignment.work_order_id == target_order.id,
+                    WorkOrderAssignment.operation_id == operation.id,
+                    WorkOrderAssignment.worker_user_id == timer_session.user_id,
+                ).limit(1)
+            )
+            if assignment is None:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                    detail="Операция нового заказа не назначена сотруднику.",
+                )
         shift = self._resolve_shift(
             worker_user_id=timer_session.user_id,
             started_at=payload.started_at,

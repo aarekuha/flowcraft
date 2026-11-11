@@ -376,6 +376,10 @@ def test_non_admin_cannot_access_bonus_or_calculation(
             "/users/1/completed-work/bonuses/1?year=2026&month=11",
             {"selected": False},
         ),
+        (
+            "PUT", "/users/1/completed-work/piecework?year=2026&month=11",
+            {"amount_cents": 0},
+        ),
         ("GET", "/users/1/completed-work?year=2026&month=11", None),
         ("GET", "/users/1/completed-work.xlsx?year=2026&month=11", None),
     ]
@@ -636,3 +640,74 @@ def test_empty_summary_exports_zero_formulas_without_self_reference(
             "SUM(0)",
             "SUM(0)",
         ]
+
+
+def test_manual_piecework_persistence_scope_reset_and_exports(
+    api: tuple[TestClient, FastAPI], session: Session,
+) -> None:
+    """
+    Проверяем ручную сделку сотрудника за месяц:
+    - сохранить округлённую сумму независимо от системного расчёта и других месяцев
+    - использовать её в выплате и обеих выгрузках, сохранив итог таблицы
+    - сохранить ноль и вернуть актуальный системный расчёт после сброса
+    """
+    client, _ = api
+    url = "/api/admin/users/1/completed-work/piecework?year=2026&month=11"
+    response = client.put(url, json={"amount_cents": 21000})
+    assert response.status_code == 200
+    assert response.json()["piecework_cents"] == 20044
+    assert response.json()["payable_piecework_cents"] == 21000
+    assert response.json()["payout_cents"] == 33345
+    service = CompletedWorkService(session)
+    session.expire_all()
+    assert service.calculate(1, 2026, 11).manual_piecework_cents == 21000
+    assert service.calculate(1, 2026, 10).manual_piecework_cents is None
+    assert service.calculate(2, 2026, 11).manual_piecework_cents is None
+    operation = session.get(Operation, 2)
+    assert operation is not None
+    operation.price_cents = 300
+    session.commit()
+    report = service.calculate(1, 2026, 11)
+    assert report.piecework_cents == 30044
+    assert report.payable_piecework_cents == 21000
+    ns = {"s": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
+    for data, expected in [
+        (service.export(1, 2026, 11), 333.45),
+        (WorkSummaryService(session).export(2026, 11), 210.67),
+    ]:
+        with ZipFile(BytesIO(data)) as archive:
+            sheet = ET.fromstring(archive.read("xl/worksheets/sheet1.xml"))
+            calculated = []
+            for cell in sheet.findall(".//s:c", ns):
+                if cell.find("s:f", ns) is not None:
+                    value = cell.findtext("s:v", namespaces=ns)
+                    assert value is not None
+                    calculated.append(float(value))
+            assert expected in calculated
+    zero = client.put(url, json={"amount_cents": 0}).json()
+    assert zero["manual_piecework_cents"] == 0
+    assert zero["payable_piecework_cents"] == 0
+    assert zero["payout_cents"] == 12345
+    reset = client.put(url, json={"amount_cents": None}).json()
+    assert reset["manual_piecework_cents"] is None
+    assert reset["payable_piecework_cents"] == 30044
+    assert reset["payout_cents"] == 42389
+
+
+@pytest.mark.parametrize("amount", [-1, 1.5, True, "100"])
+def test_manual_piecework_rejects_invalid_amount(
+    api: tuple[TestClient, FastAPI], amount: Any,
+) -> None:
+    """
+    Проверяем валидацию ручной суммы:
+    - отклонить отрицательные и нецелые копейки, строки и логические значения
+    - сохранить системный расчёт без ручного переопределения
+    """
+    client, _ = api
+    response = client.put(
+        "/api/admin/users/1/completed-work/piecework?year=2026&month=11",
+        json={"amount_cents": amount},
+    )
+    assert response.status_code == 422
+    report = client.get("/api/admin/users/1/completed-work?year=2026&month=11").json()
+    assert report["manual_piecework_cents"] is None

@@ -200,9 +200,10 @@ export async function searchAdminWorkTimeOrders(
 
 export async function fetchAdminWorkTimeOperations(
   orderId: number,
+  workerUserId?: number,
 ): Promise<AdminWorkTimeOperation[]> {
   const response = await apiFetch(
-    `/api/admin/work-time/orders/${orderId}/operations`,
+    `/api/admin/work-time/orders/${orderId}/operations${workerUserId === undefined ? "" : `?worker_user_id=${workerUserId}`}`,
   );
   return handleJsonResponse<AdminWorkTimeOperationApi[]>(response).then((items) =>
     items.map((item) => ({ id: item.id, name: item.name })),

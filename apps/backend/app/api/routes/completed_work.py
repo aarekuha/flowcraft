@@ -13,6 +13,7 @@ from app.schemas.completed_work import (
     UserBonusesInput,
     MonthlyBonusSelection,
     WorkSummary,
+    MonthlyPieceworkInput,
 )
 from app.services.completed_work_service import CompletedWorkService
 
@@ -157,4 +158,20 @@ def export_work_summary(
         content,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.put(
+    "/users/{user_id}/completed-work/piecework",
+    response_model=CompletedWorkReport,
+)
+def set_monthly_piecework(
+    user_id: int,
+    payload: MonthlyPieceworkInput,
+    year: int = Query(ge=2000, le=9998),
+    month: int = Query(ge=1, le=12),
+    session: Session = Depends(get_session),
+) -> CompletedWorkReport:
+    return CompletedWorkService(session).set_piecework(
+        user_id, year, month, payload.amount_cents,
     )

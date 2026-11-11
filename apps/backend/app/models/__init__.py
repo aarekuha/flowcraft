@@ -71,5 +71,8 @@ __all__ = [
     "Bonus",
     "UserBonus",
     "MonthlyBonusExclusion",
+    "MonthlyPiecework",
 ]
 from app.models.bonus import Bonus, UserBonus, MonthlyBonusExclusion
+
+from app.models.monthly_piecework import MonthlyPiecework

@@ -12,6 +12,7 @@ export type WorkReport = {
     amount_cents: number | null;
   }>;
   total_quantity: string; piecework_cents: number;
+  manual_piecework_cents: number | null; payable_piecework_cents: number;
   bonuses: Array<Bonus & { selected: boolean }>; bonuses_cents: number; payout_cents: number;
 };
 
@@ -97,4 +98,14 @@ export async function downloadWorkSummary(year: number, month: number): Promise<
   anchor.download = `completed-work-summary-${year}-${String(month).padStart(2, "0")}.xlsx`;
   anchor.click();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+export async function setMonthlyPiecework(
+  userId: number, year: number, month: number, amountCents: number | null,
+): Promise<WorkReport> {
+  return handleJsonResponse(await apiFetch(
+    `/api/admin/users/${userId}/completed-work/piecework?year=${year}&month=${month}`,
+    { method: "PUT", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ amount_cents: amountCents }) },
+  ));
 }
