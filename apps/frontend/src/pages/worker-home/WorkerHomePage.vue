@@ -135,6 +135,9 @@ import {
 } from "@/shared/lib/assignmentSkills";
 import { getPlanningForecastLabel, getPlanningForecastHint } from "@/shared/lib/productionPlanning";
 
+import { acknowledgeDiagnosticReport, diagnosticUser, prepareDiagnosticReport, recordDiagnostic, setDiagnosticUser } from "@/shared/lib/diagnostics";
+import { apiFetch as diagnosticFetch } from "@/shared/api/http";
+
 type TabId =
   | "worker"
   | "brigadier"
@@ -385,6 +388,48 @@ const constructorDirectoryTab = ref<ConstructorDirectoryTabId>(
 const modalMode = ref<ModalMode>(null);
 const modalProductId = ref<number | null>(null);
 const currentSession = ref<AuthSession | null>(null);
+const diagnosticSending = ref(false);
+const diagnosticMessage = ref("");
+watch(() => currentSession.value?.userId ?? null, (userId) => {
+  setDiagnosticUser(userId);
+  diagnosticMessage.value = "";
+}, { flush: "sync" });
+onBeforeUnmount(() => setDiagnosticUser(null));
+
+async function sendDiagnosticReport() {
+  const owner = currentSession.value?.userId;
+  if (!owner || diagnosticSending.value) return;
+  diagnosticSending.value = true;
+  diagnosticMessage.value = "Подготовка диагностики за 24 часа…";
+  try {
+    const report = await prepareDiagnosticReport(owner);
+    if (diagnosticUser() !== owner) return;
+    const json = JSON.stringify(report);
+    const compressed = typeof CompressionStream !== "undefined";
+    const body = compressed
+      ? await new Response(new Blob([json]).stream().pipeThrough(new CompressionStream("gzip"))).blob()
+      : json;
+    if (diagnosticUser() !== owner) return;
+    const response = await diagnosticFetch("/api/diagnostics/reports", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...(compressed ? { "Content-Encoding": "gzip" } : {}) },
+      body,
+    });
+    if (!response.ok) throw new Error(response.status === 401
+      ? "Для отправки требуется повторный вход. Отчёт сохранён на устройстве."
+      : "Не удалось отправить отчёт. Данные сохранены — можно повторить отправку.");
+    const result = await response.json();
+    if (!Number.isInteger(result.id)) throw new Error("Сервер не подтвердил отправку. Отчёт сохранён на устройстве.");
+    await acknowledgeDiagnosticReport(owner, report.report_key);
+    if (diagnosticUser() === owner) diagnosticMessage.value = `Отчёт №${result.id} отправлен.`;
+  } catch (error) {
+    if (diagnosticUser() === owner) diagnosticMessage.value = error instanceof Error && !(error instanceof TypeError)
+      ? error.message : "Не удалось отправить отчёт. Повторить отправку после восстановления связи.";
+  } finally {
+    diagnosticSending.value = false;
+  }
+}
+
 const products = ref<ProductSummary[]>([]);
 const busyProductIds = ref<number[]>([]);
 const users = ref<UserRecord[]>([]);
@@ -3261,6 +3306,12 @@ function getTimerIdForApiTarget(target: {
 }
 
 function applyWorkerTimerApiState(state: WorkerTimerApiState) {
+  recordDiagnostic({ kind: "timer_state",
+    timer_type: state.activeTimer?.timerType,
+    order_id: state.activeTimer?.orderId ?? undefined,
+    operation_id: state.activeTimer?.operationId ?? undefined,
+    timer_started_at: state.activeTimer?.startedAtTs,
+  });
   const now = Date.now();
   const nextTimers: Record<string, WorkerTimerState> = {};
 
@@ -3511,6 +3562,12 @@ async function endWorkerDay() {
 }
 
 async function activateWorkerTimer(timerId: string) {
+  recordDiagnostic({ kind: "timer_click",
+    order_id: parseOrderIdFromTimerId(timerId) ?? undefined,
+    operation_id: parseOperationIdFromTimerId(timerId) ?? undefined,
+    timer_type: workerTimers.value[timerId]?.kind,
+    blocked: workerDayStartedAt.value === null || workerTimerSubmitting.value || activeWorkerTimerId.value === timerId,
+  });
   if (workerDayStartedAt.value === null || workerTimerSubmitting.value) {
     return;
   }
@@ -6822,6 +6879,12 @@ async function handleResetUserPassword(user: UserRecord) {
                 <span class="current-user-card__action-label">Изменить пароль</span>
               </span>
             </button>
+            <button type="button" class="ghost-button" title="Отправить диагностику" aria-label="Отправить диагностику" :disabled="diagnosticSending" @click="sendDiagnosticReport">
+              <span class="button-content">
+                <svg class="button-icon" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 16V3m-5 5 5-5 5 5M4 15v6h16v-6" /></svg>
+                <span class="current-user-card__action-label">{{ diagnosticSending ? "Отправка…" : "Отправить диагностику" }}</span>
+              </span>
+            </button>
             <button type="button" class="ghost-button" @click="void handleLogout()">
               <span class="button-content">
                 <span class="button-icon button-icon--logout" aria-hidden="true" />
@@ -6829,6 +6892,7 @@ async function handleResetUserPassword(user: UserRecord) {
               </span>
             </button>
           </div>
+          <span v-if="diagnosticMessage" class="diagnostic-message" role="status">{{ diagnosticMessage }}</span>
         </div>
 
         <div class="brand-block">
@@ -11408,6 +11472,7 @@ async function handleResetUserPassword(user: UserRecord) {
 </template>
 
 <style scoped>
+.diagnostic-message { max-width: 320px; font-size: 0.85rem; overflow-wrap: anywhere; }
 .user-management-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
 .bonus-dialog-overlay { position: fixed; inset: 0; z-index: 120; display: grid; place-items: center; padding: 20px; background: #0f172a88; }
 .bonus-dialog { width: min(900px, 100%); max-height: 90vh; overflow: auto; padding: 24px; border-radius: 18px; background: white; color: #0f172a; }
