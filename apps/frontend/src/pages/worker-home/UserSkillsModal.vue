@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from "vue";
+import { vEscapeClose } from "./escapeClose";
 
 import {
   fetchAllOperationCatalogEntries,
@@ -178,8 +179,8 @@ function getErrorMessage(value: unknown, fallback: string): string {
 
 <template>
   <div class="skills-backdrop" @click.self="close">
-    <section class="skills-modal" role="dialog" aria-modal="true">
-      <header class="skills-modal__head">
+    <section v-escape-close="close" class="skills-modal card-shell" role="dialog" aria-modal="true">
+      <header class="skills-modal__head card-heading">
         <div>
           <p class="skills-modal__eyebrow">Пользователь</p>
           <h2>Навыки · {{ targetUser.name }}</h2>
@@ -188,99 +189,106 @@ function getErrorMessage(value: unknown, fallback: string): string {
           Закрыть
         </button>
       </header>
+      <div class="card-scroll">
 
-      <p v-if="error" class="skills-message skills-message--error">{{ error }}</p>
-      <p v-if="loading" class="skills-message">Загрузка навыков...</p>
+        <p v-if="error" class="skills-message skills-message--error">{{ error }}</p>
+        <p v-if="loading" class="skills-message">Загрузка навыков...</p>
 
-      <template v-else-if="skills">
-        <section class="skills-section">
-          <div class="skills-section__head">
-            <div>
-              <h3>Назначенные навыки</h3>
-              <p v-if="skills.hiddenInactiveCount > 0">
+        <template v-else-if="skills">
+          <section class="skills-section">
+            <div class="skills-section__head">
+              <div>
+                <h3>Назначенные навыки</h3>
+                <p v-if="skills.hiddenInactiveCount > 0">
                 Скрыто деактивированных навыков: {{ skills.hiddenInactiveCount }}
-              </p>
+                </p>
+              </div>
+              <strong>{{ skills.totalCount }}</strong>
             </div>
-            <strong>{{ skills.totalCount }}</strong>
-          </div>
 
-          <div v-if="skills.skills.length" class="skills-list">
-            <div
-              v-for="skill in skills.skills"
-              :key="skill.operationCatalogEntryId"
-              class="skills-list__item"
-            >
-              <span>{{ skill.operationName }}</span>
-              <button
-                type="button"
-                class="skills-button skills-button--danger"
-                :disabled="saving"
-                @click="removeSkill(skill.operationCatalogEntryId)"
+            <div v-if="skills.skills.length" class="skills-list">
+              <div
+                v-for="skill in skills.skills"
+                :key="skill.operationCatalogEntryId"
+                class="skills-list__item"
               >
+                <span>{{ skill.operationName }}</span>
+                <button
+                  type="button"
+                  class="skills-button skills-button--danger"
+                  :disabled="saving"
+                  @click="removeSkill(skill.operationCatalogEntryId)"
+                >
                 Удалить
+                </button>
+              </div>
+            </div>
+            <p v-else class="skills-empty">Активные навыки не назначены.</p>
+          </section>
+
+          <section class="skills-section">
+            <h3>Добавить навык</h3>
+            <input
+              v-model="search"
+              type="search"
+              class="skills-input"
+              placeholder="Поиск операции"
+            />
+            <div v-if="availableOperations.length" class="skills-options">
+              <button
+                v-for="operation in availableOperations"
+                :key="operation.id"
+                type="button"
+                class="skills-option"
+                :disabled="saving"
+                @click="addSkill(operation.id)"
+              >
+                <span>{{ operation.name }}</span>
+                <span aria-hidden="true">+</span>
               </button>
             </div>
-          </div>
-          <p v-else class="skills-empty">Активные навыки не назначены.</p>
-        </section>
+            <p v-else class="skills-empty">Подходящие активные операции не найдены.</p>
+          </section>
 
-        <section class="skills-section">
-          <h3>Добавить навык</h3>
-          <input
-            v-model="search"
-            type="search"
-            class="skills-input"
-            placeholder="Поиск операции"
-          />
-          <div v-if="availableOperations.length" class="skills-options">
-            <button
-              v-for="operation in availableOperations"
-              :key="operation.id"
-              type="button"
-              class="skills-option"
-              :disabled="saving"
-              @click="addSkill(operation.id)"
-            >
-              <span>{{ operation.name }}</span>
-              <span aria-hidden="true">+</span>
-            </button>
-          </div>
-          <p v-else class="skills-empty">Подходящие активные операции не найдены.</p>
-        </section>
-
-        <section class="skills-section">
-          <h3>Скопировать из другого пользователя</h3>
-          <div class="skills-copy-row">
-            <select v-model="sourceUserId" class="skills-input">
-              <option value="">Выбрать пользователя</option>
-              <option
-                v-for="user in copySourceUsers"
-                :key="user.id"
-                :value="String(user.id)"
-              >
+          <section class="skills-section">
+            <h3>Скопировать из другого пользователя</h3>
+            <div class="skills-copy-row">
+              <select v-model="sourceUserId" class="skills-input">
+                <option value="">Выбрать пользователя</option>
+                <option
+                  v-for="user in copySourceUsers"
+                  :key="user.id"
+                  :value="String(user.id)"
+                >
                 {{ user.name }}
-              </option>
-            </select>
-            <button
-              type="button"
-              class="skills-button skills-button--primary"
-              :disabled="!sourceUserId || saving"
-              @click="requestCopy"
-            >
+                </option>
+              </select>
+              <button
+                type="button"
+                class="skills-button skills-button--primary"
+                :disabled="!sourceUserId || saving"
+                @click="requestCopy"
+              >
               Скопировать
-            </button>
-          </div>
-        </section>
-      </template>
+              </button>
+            </div>
+          </section>
+        </template>
+
+      </div>
 
       <div v-if="pendingCopySource" class="skills-confirm-backdrop">
-        <section class="skills-confirm" role="alertdialog" aria-modal="true">
-          <h3>Заменить все навыки?</h3>
-          <p>
+        <section v-escape-close="cancelCopy" class="skills-confirm card-shell" role="alertdialog" aria-modal="true">
+          <h3 class="card-heading">Заменить все навыки?</h3>
+          <div class="card-scroll">
+            <p>
             Текущие навыки пользователя будут удалены и заменены навыками
             пользователя «{{ pendingCopySource.name }}».
-          </p>
-          <div class="skills-confirm__actions">
+            </p>
+
+          </div>
+
+          <div class="skills-confirm__actions card-actions">
             <button
               type="button"
               class="skills-button skills-button--primary"

@@ -91,7 +91,7 @@ class PlanningQueueService:
         state.revision += 1
         state.updated_at = now
         state.updated_by_user_id = updated_by_user_id
-        PlanningRevisionService(self.session).request_recalculation()
+        PlanningRevisionService(self.session).invalidate_without_recalculation()
         self.session.commit()
         return self._serialize_queue(state.revision)
 

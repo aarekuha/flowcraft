@@ -362,3 +362,22 @@ function getDownloadFilename(contentDisposition: string | null): string {
   const match = /filename="?(?<filename>[^";]+)"?/i.exec(contentDisposition);
   return match?.groups?.filename ?? "flowcraft-report.xlsx";
 }
+
+export type OperationWorkerReport = {
+  batches: Array<{ order_id: number; order_number: string; submitted_quantity: number;
+    product_name: string; product_version: string }>;
+  rows: Array<{ key: string; operation_name: string; worker_user_name: string;
+    average_ms: Array<number | null> }>;
+  total: number;
+  page: number;
+  pages: number;
+};
+
+export async function fetchOperationWorkerReport(filters: ReportFilters): Promise<OperationWorkerReport> {
+  const response = await apiFetch(`/api/reports/operation-workers?${buildReportQuery(filters)}`);
+  return handleJsonResponse<OperationWorkerReport>(response);
+}
+
+export async function downloadOperationWorkerReport(filters: ReportFilters): Promise<{ blob: Blob; filename: string }> {
+  return downloadReport(`/api/reports/operation-workers/export.xlsx?${buildReportQuery(filters)}`);
+}

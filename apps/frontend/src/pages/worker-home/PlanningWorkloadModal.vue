@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { onMounted, ref, watch } from "vue";
+import { vEscapeClose } from "./escapeClose";
 
 import {
   fetchPlanningWorkload,
@@ -55,13 +56,13 @@ function getErrorMessage(value: unknown, fallback: string): string {
 
 <template>
   <div class="workload-backdrop" @click.self="close">
-    <section
-      class="workload-modal"
+    <section v-escape-close="close"
+      class="workload-modal card-shell"
       role="dialog"
       aria-modal="true"
       aria-labelledby="workload-modal-title"
     >
-      <header class="workload-head">
+      <header class="workload-head card-heading">
         <div>
           <p>Планирование производства</p>
           <h2 id="workload-modal-title">Загрузка по операциям</h2>
@@ -70,71 +71,75 @@ function getErrorMessage(value: unknown, fallback: string): string {
           Закрыть
         </button>
       </header>
+      <div class="card-scroll">
 
-      <div class="workload-toolbar">
-        <label>
-          <span>Месяц распределения</span>
-          <input v-model="month" type="month" />
-        </label>
-        <button
-          type="button"
-          class="workload-button"
-          :disabled="loading"
-          @click="loadWorkload"
-        >
+        <div class="workload-toolbar">
+          <label>
+            <span>Месяц распределения</span>
+            <input v-model="month" type="month" />
+          </label>
+          <button
+            type="button"
+            class="workload-button"
+            :disabled="loading"
+            @click="loadWorkload"
+          >
           Обновить
-        </button>
-      </div>
+          </button>
+        </div>
 
-      <p v-if="error" class="workload-message workload-message--error">
+        <p v-if="error" class="workload-message workload-message--error">
         {{ error }}
-      </p>
-      <p v-else-if="loading" class="workload-message">
+        </p>
+        <p v-else-if="loading" class="workload-message">
         Загрузка распределения...
-      </p>
-      <p
-        v-else-if="!workload || workload.activeRunId === null"
-        class="workload-message"
-      >
+        </p>
+        <p
+          v-else-if="!workload || workload.activeRunId === null"
+          class="workload-message"
+        >
         Успешный расчёт ещё не опубликован.
-      </p>
-      <p
-        v-else-if="workload.items.length === 0"
-        class="workload-message"
-      >
+        </p>
+        <p
+          v-else-if="workload.items.length === 0"
+          class="workload-message"
+        >
         В опубликованном расчёте нет операций.
-      </p>
+        </p>
 
-      <div v-else class="workload-table-wrap">
-        <table class="workload-table">
-          <thead>
-            <tr>
-              <th>Операция</th>
-              <th>Запланировано в месяце</th>
-              <th>Общий остаток</th>
-              <th>Заказов</th>
-              <th>Дефицит ресурса</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="item in workload.items" :key="`${item.operationCatalogEntryId}-${item.operationName}`">
-              <td>{{ item.operationName }}</td>
-              <td>{{ formatPlanningDuration(item.plannedSeconds) }}</td>
-              <td>{{ formatPlanningDuration(item.remainingSeconds) }}</td>
-              <td>{{ item.ordersCount }}</td>
-              <td :class="{ 'workload-deficit': item.deficitSeconds > 0 }">
+        <div v-else class="workload-table-wrap">
+          <table class="workload-table">
+            <thead>
+              <tr>
+                <th>Операция</th>
+                <th>Запланировано в месяце</th>
+                <th>Общий остаток</th>
+                <th>Заказов</th>
+                <th>Дефицит ресурса</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="item in workload.items" :key="`${item.operationCatalogEntryId}-${item.operationName}`">
+                <td>{{ item.operationName }}</td>
+                <td>{{ formatPlanningDuration(item.plannedSeconds) }}</td>
+                <td>{{ formatPlanningDuration(item.remainingSeconds) }}</td>
+                <td>{{ item.ordersCount }}</td>
+                <td :class="{ 'workload-deficit': item.deficitSeconds > 0 }">
                 {{ formatPlanningDuration(item.deficitSeconds) }}
-              </td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
 
-      <p class="workload-note">
+        <p class="workload-note">
         Общий остаток относится ко всем текущим заказам. Запланированные часы
         показывают распределение выбранного месяца, а дефицит — объём, который
         не удалось разместить в установленном горизонте.
-      </p>
+        </p>
+
+      </div>
+
     </section>
   </div>
 </template>

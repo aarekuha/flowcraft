@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from "vue";
+import { vEscapeClose } from "./escapeClose";
 
 import {
   fetchPlanningOrderForecastDetail,
@@ -85,13 +86,13 @@ function getErrorMessage(value: unknown, fallback: string): string {
 
 <template>
   <div class="forecast-backdrop" @click.self="close">
-    <section
-      class="forecast-modal"
+    <section v-escape-close="close"
+      class="forecast-modal card-shell"
       role="dialog"
       aria-modal="true"
       aria-labelledby="forecast-modal-title"
     >
-      <header class="forecast-head">
+      <header class="forecast-head card-heading">
         <div>
           <p>Планирование производства</p>
           <h2 id="forecast-modal-title">
@@ -102,121 +103,125 @@ function getErrorMessage(value: unknown, fallback: string): string {
           Закрыть
         </button>
       </header>
+      <div class="card-scroll">
 
-      <p v-if="error" class="forecast-message forecast-message--error">
+        <p v-if="error" class="forecast-message forecast-message--error">
         {{ error }}
-      </p>
-      <p v-if="loading" class="forecast-message">Загрузка расчёта...</p>
+        </p>
+        <p v-if="loading" class="forecast-message">Загрузка расчёта...</p>
 
-      <template v-else-if="detail">
-        <div class="forecast-summary">
-          <article>
-            <span>Изделие</span>
-            <strong>{{ detail.productName }}</strong>
-          </article>
-          <article>
-            <span>Плановая дата сдачи</span>
-            <strong>{{ formatPlanningDate(detail.manualCompletionDate) }}</strong>
-          </article>
-          <article>
-            <span>Ресурсное завершение</span>
-            <strong>{{ formatPlanningDate(detail.resourceFinishDate) }}</strong>
-          </article>
-          <article>
-            <span>Расчётная дата готовности</span>
-            <strong>{{ formatPlanningDate(detail.calculatedFinishDate) }}</strong>
-          </article>
-        </div>
+        <template v-else-if="detail">
+          <div class="forecast-summary">
+            <article>
+              <span>Изделие</span>
+              <strong>{{ detail.productName }}</strong>
+            </article>
+            <article>
+              <span>Плановая дата сдачи</span>
+              <strong>{{ formatPlanningDate(detail.manualCompletionDate) }}</strong>
+            </article>
+            <article>
+              <span>Ресурсное завершение</span>
+              <strong>{{ formatPlanningDate(detail.resourceFinishDate) }}</strong>
+            </article>
+            <article>
+              <span>Расчётная дата готовности</span>
+              <strong>{{ formatPlanningDate(detail.calculatedFinishDate) }}</strong>
+            </article>
+          </div>
 
-        <div v-if="detail.issueCodes.length > 0" class="forecast-issues">
-          <strong>Причины отсутствия прогноза</strong>
-          <ul>
-            <li v-for="issueCode in detail.issueCodes" :key="issueCode">
+          <div v-if="detail.issueCodes.length > 0" class="forecast-issues">
+            <strong>Причины отсутствия прогноза</strong>
+            <ul>
+              <li v-for="issueCode in detail.issueCodes" :key="issueCode">
               {{ getPlanningIssueLabel(issueCode) }}
-            </li>
-          </ul>
-        </div>
+              </li>
+            </ul>
+          </div>
 
-        <section class="forecast-section">
-          <h3>Операции</h3>
-          <p v-if="detail.operations.length === 0" class="forecast-message">
+          <section class="forecast-section">
+            <h3>Операции</h3>
+            <p v-if="detail.operations.length === 0" class="forecast-message">
             Производственные операции для этого заказа не планируются.
-          </p>
-          <div v-else class="forecast-table-wrap">
-            <table class="forecast-table">
-              <thead>
-                <tr>
-                  <th>Операция</th>
-                  <th>Этап</th>
-                  <th>Норматив</th>
-                  <th>Факт</th>
-                  <th>Остаток</th>
-                  <th>Подготовка</th>
-                  <th>Начало</th>
-                  <th>Завершение</th>
-                  <th>Статус</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr v-for="operation in detail.operations" :key="operation.operationId">
-                  <td>
-                    <strong>{{ operation.operationName }}</strong>
-                    <small v-for="issueCode in operation.issueCodes" :key="issueCode">
+            </p>
+            <div v-else class="forecast-table-wrap">
+              <table class="forecast-table">
+                <thead>
+                  <tr>
+                    <th>Операция</th>
+                    <th>Этап</th>
+                    <th>Норматив</th>
+                    <th>Факт</th>
+                    <th>Остаток</th>
+                    <th>Подготовка</th>
+                    <th>Начало</th>
+                    <th>Завершение</th>
+                    <th>Статус</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="operation in detail.operations" :key="operation.operationId">
+                    <td>
+                      <strong>{{ operation.operationName }}</strong>
+                      <small v-for="issueCode in operation.issueCodes" :key="issueCode">
                       {{ getPlanningIssueLabel(issueCode) }}
-                    </small>
-                  </td>
-                  <td>{{ getStageLabel(operation.stageStart, operation.stageEnd) }}</td>
-                  <td>
-                    <span>{{ formatPlanningDuration(operation.workloadSeconds) }}</span>
-                    <small v-if="operation.standardTimeSeconds !== null">
+                      </small>
+                    </td>
+                    <td>{{ getStageLabel(operation.stageStart, operation.stageEnd) }}</td>
+                    <td>
+                      <span>{{ formatPlanningDuration(operation.workloadSeconds) }}</span>
+                      <small v-if="operation.standardTimeSeconds !== null">
                       {{ formatPlanningDuration(operation.standardTimeSeconds) }} на изделие ·
                       {{ getStandardTimeSourceLabel(operation.standardTimeSource) }}
-                    </small>
-                    <small v-else>
+                      </small>
+                      <small v-else>
                       {{ getStandardTimeSourceLabel(operation.standardTimeSource) }}
-                    </small>
-                  </td>
-                  <td>{{ formatPlanningDuration(operation.actualSeconds) }}</td>
-                  <td>{{ formatPlanningDuration(operation.remainingSeconds) }}</td>
-                  <td>{{ formatPlanningDuration(operation.preparationSeconds) }}</td>
-                  <td>{{ formatPlanningDate(operation.firstPlannedDate) }}</td>
-                  <td>{{ formatPlanningDate(operation.lastPlannedDate) }}</td>
-                  <td>{{ getStatusLabel(operation.status) }}</td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-        </section>
+                      </small>
+                    </td>
+                    <td>{{ formatPlanningDuration(operation.actualSeconds) }}</td>
+                    <td>{{ formatPlanningDuration(operation.remainingSeconds) }}</td>
+                    <td>{{ formatPlanningDuration(operation.preparationSeconds) }}</td>
+                    <td>{{ formatPlanningDate(operation.firstPlannedDate) }}</td>
+                    <td>{{ formatPlanningDate(operation.lastPlannedDate) }}</td>
+                    <td>{{ getStatusLabel(operation.status) }}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </section>
 
-        <section v-if="detail.allocations.length > 0" class="forecast-section">
-          <h3>Распределение по сотрудникам и дням</h3>
-          <div class="forecast-table-wrap">
-            <table class="forecast-table">
-              <thead>
-                <tr>
-                  <th>Дата</th>
-                  <th>Исполнитель</th>
-                  <th>Операция</th>
-                  <th>Работа</th>
-                  <th>Подготовка</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr
-                  v-for="(allocation, index) in detail.allocations"
-                  :key="`${allocation.workDate}-${allocation.userId}-${allocation.operationId}-${index}`"
-                >
-                  <td>{{ formatPlanningDate(allocation.workDate) }}</td>
-                  <td>{{ allocation.userName }}</td>
-                  <td>{{ operationNameById.get(allocation.operationId) ?? "—" }}</td>
-                  <td>{{ formatPlanningDuration(allocation.workSeconds) }}</td>
-                  <td>{{ formatPlanningDuration(allocation.preparationSeconds) }}</td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-        </section>
-      </template>
+          <section v-if="detail.allocations.length > 0" class="forecast-section">
+            <h3>Распределение по сотрудникам и дням</h3>
+            <div class="forecast-table-wrap">
+              <table class="forecast-table">
+                <thead>
+                  <tr>
+                    <th>Дата</th>
+                    <th>Исполнитель</th>
+                    <th>Операция</th>
+                    <th>Работа</th>
+                    <th>Подготовка</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr
+                    v-for="(allocation, index) in detail.allocations"
+                    :key="`${allocation.workDate}-${allocation.userId}-${allocation.operationId}-${index}`"
+                  >
+                    <td>{{ formatPlanningDate(allocation.workDate) }}</td>
+                    <td>{{ allocation.userName }}</td>
+                    <td>{{ operationNameById.get(allocation.operationId) ?? "—" }}</td>
+                    <td>{{ formatPlanningDuration(allocation.workSeconds) }}</td>
+                    <td>{{ formatPlanningDuration(allocation.preparationSeconds) }}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </section>
+        </template>
+
+      </div>
+
     </section>
   </div>
 </template>

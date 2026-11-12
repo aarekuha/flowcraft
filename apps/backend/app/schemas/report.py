@@ -100,3 +100,18 @@ class OrderBatchReport(BaseModel):
     page: int
     page_size: int
     pages: int
+
+
+class OperationWorkerRow(BaseModel):
+    key: str
+    operation_name: str
+    worker_user_name: str
+    average_ms: list[int | None]
+
+
+class OperationWorkerReport(BaseModel):
+    batches: list[OrderBatchReportItem]
+    rows: list[OperationWorkerRow]
+    total: int
+    page: int
+    pages: int

@@ -3,7 +3,7 @@ from collections import defaultdict
 from datetime import UTC, date, datetime, time
 
 from sqlalchemy import select
-from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.orm import Session
 
 from app.domain.production_planning import (
     PlanningInput,
@@ -27,7 +27,6 @@ from app.models.user import User
 from app.models.user_operation_skill import UserOperationSkill
 from app.models.work_order import (
     WorkOrder,
-    WorkOrderAssignment,
 )
 from app.schemas.operation_catalog import OperationCatalogEntryKind
 from app.schemas.order import WorkOrderProductionStage
@@ -40,7 +39,7 @@ from app.services.operation_time_estimate_service import (
 )
 from app.services.planning_revision_service import PlanningRevisionService
 
-ALGORITHM_VERSION = "resource-v1"
+ALGORITHM_VERSION = "resource-v2"
 WORKER_STALE_AFTER_MS = 5 * 60 * 1000
 
 
@@ -61,11 +60,6 @@ class PlanningSnapshotBuilder:
         orders = list(
             self.session.scalars(
                 select(WorkOrder)
-                .options(
-                    selectinload(WorkOrder.assignments).selectinload(
-                        WorkOrderAssignment.worker_states
-                    )
-                )
                 .where(
                     WorkOrder.planning_excluded_at.is_(None),
                     WorkOrder.completed_at.is_(None),
@@ -128,11 +122,6 @@ class PlanningSnapshotBuilder:
         planning_orders: list[PlanningOrderInput] = []
         for order in orders:
             tasks: list[PlanningTaskInput] = []
-            assignments_by_operation: dict[int, list[WorkOrderAssignment]] = (
-                defaultdict(list)
-            )
-            for assignment in order.assignments:
-                assignments_by_operation[assignment.operation_id].append(assignment)
             for operation in leaf_operations_by_product.get(order.product_id, []):
                 statistical_time_seconds = (
                     operation.time_estimate.seconds_per_item
@@ -163,23 +152,11 @@ class PlanningSnapshotBuilder:
                     and operation_kind == OperationCatalogEntryKind.CUTTING.value
                 ):
                     continue
-                assignments = assignments_by_operation.get(operation.id, [])
-                assigned_worker_ids = tuple(
-                    sorted(
-                        {
-                            assignment.worker_user_id
-                            for assignment in assignments
-                            if assignment.worker_user_id is not None
-                            and self._assignment_is_available(assignment)
-                        }
-                    )
-                )
                 catalog_entry_id = operation.operation_catalog_entry_id
                 eligible_worker_ids = tuple(
                     worker_id
-                    for worker_id in assigned_worker_ids
-                    if worker_id in active_worker_ids
-                    and catalog_entry_id is not None
+                    for worker_id in sorted(active_worker_ids)
+                    if catalog_entry_id is not None
                     and (worker_id, catalog_entry_id) in skill_keys
                 )
                 tasks.append(
@@ -197,7 +174,6 @@ class PlanningSnapshotBuilder:
                             (order.id, operation.id),
                             0,
                         ),
-                        assigned_worker_ids=assigned_worker_ids,
                         eligible_worker_ids=eligible_worker_ids,
                         standard_time_seconds=standard_time_seconds,
                         standard_time_source=standard_time_source,
@@ -327,13 +303,6 @@ class PlanningSnapshotBuilder:
             )
         return availability
 
-    def _assignment_is_available(self, assignment: WorkOrderAssignment) -> bool:
-        for state in assignment.worker_states:
-            if state.worker_user_id != assignment.worker_user_id:
-                continue
-            return state.hidden_at is None and state.completed_at is None
-        return True
-
     def _add_months(self, value: date, months: int) -> date:
         month_index = value.month - 1 + months
         year = value.year + month_index // 12
@@ -374,9 +343,19 @@ class ProductionPlannerService:
 
     def _request_outdated_estimate_recalculation(self) -> None:
         state = self.session.get(ProductionPlanningState, 1)
-        if state is None or state.calculation_status != "idle":
+        if (
+            state is None or state.calculation_status != "idle"
+            or state.requested_revision < state.input_revision
+        ):
             return
-        if not OperationTimeEstimateService(
+        active_run = (
+            self.session.get(PlanningRun, state.active_run_id)
+            if state.active_run_id is not None else None
+        )
+        outdated_algorithm = (
+            active_run is not None and active_run.algorithm_version != ALGORITHM_VERSION
+        )
+        if not outdated_algorithm and not OperationTimeEstimateService(
             self.session
         ).has_outdated_estimates():
             return
@@ -402,6 +381,9 @@ class ProductionPlannerService:
             )
             self.session.add(state)
             self.session.flush()
+        if state.requested_revision < state.input_revision:
+            self.session.rollback()
+            return None
         if state.calculation_status == "error":
             failed_revision = self.session.scalar(
                 select(PlanningRun.input_revision)
@@ -504,7 +486,10 @@ class ProductionPlannerService:
         if state.input_revision != input_revision:
             run.status = "stale"
             run.completed_at = now
-            state.calculation_status = "pending"
+            state.calculation_status = (
+                "pending"
+                if state.requested_revision >= state.input_revision else "idle"
+            )
             state.running_revision = None
             state.worker_heartbeat_at = None
             state.updated_at = now

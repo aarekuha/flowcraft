@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from "vue";
+import { vEscapeClose } from "./escapeClose";
 
 import {
   deleteWorkSchedule,
@@ -312,140 +313,147 @@ function getErrorMessage(value: unknown, fallback: string): string {
 
 <template>
   <div class="schedule-backdrop" @click.self="close">
-    <section class="schedule-modal" role="dialog" aria-modal="true">
-      <header class="schedule-modal__head">
+    <section v-escape-close="close" class="schedule-modal card-shell" role="dialog" aria-modal="true">
+      <header class="schedule-modal__head card-heading">
         <div>
           <p>Планирование производства</p>
           <h2>График работы сотрудников</h2>
         </div>
         <button type="button" class="schedule-button" @click="close">Закрыть</button>
       </header>
+      <div class="card-scroll">
 
-      <div class="schedule-toolbar">
-        <label>
-          <span>Месяц</span>
-          <input v-model="month" type="month" />
-        </label>
-        <button type="button" class="schedule-button" @click="toggleSort">
+        <div class="schedule-toolbar">
+          <label>
+            <span>Месяц</span>
+            <input v-model="month" type="month" />
+          </label>
+          <button type="button" class="schedule-button" @click="toggleSort">
           ФИО {{ sortDirection === "asc" ? "А–Я" : "Я–А" }}
-        </button>
-        <p>
+          </button>
+          <p>
           Выбрать начало и конец диапазона. Shift открывает выбор типа периода и часов для всего диапазона;
           обычный новый диапазон сохраняется по 8 часов.
-        </p>
-      </div>
+          </p>
+        </div>
 
-      <p v-if="error" class="schedule-message schedule-message--error">{{ error }}</p>
-      <p v-if="loading" class="schedule-message">Загрузка графика...</p>
+        <p v-if="error" class="schedule-message schedule-message--error">{{ error }}</p>
+        <p v-if="loading" class="schedule-message">Загрузка графика...</p>
 
-      <div v-else class="schedule-table-wrap">
-        <table class="schedule-table">
-          <thead>
-            <tr>
-              <th class="schedule-table__name">ФИО</th>
-              <th
-                v-for="workDate in monthDates"
-                :key="workDate"
-                :title="calendarDayLabel(workDate)"
-                :class="{
-                  'schedule-table__weekend': isCalendarDayOff(workDate),
-                  'schedule-table__holiday': productionDays.get(workDate)?.is_holiday,
-                }"
-              >
-                {{ formatDateHeader(workDate) }}
-              </th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="worker in sortedWorkers" :key="worker.userId">
-              <th class="schedule-table__name">{{ worker.userName }}</th>
-              <td
-                v-for="workDate in monthDates"
-                :key="workDate"
-                :class="{
-                  'schedule-table__weekend': isCalendarDayOff(workDate),
-                  'schedule-table__holiday': productionDays.get(workDate)?.is_holiday,
-                  'schedule-table__working': getDay(worker.userId, workDate)?.periodType === 'work',
-                  'schedule-table__sick': getDay(worker.userId, workDate)?.periodType === 'sick_leave',
-                  'schedule-table__vacation': getDay(worker.userId, workDate)?.periodType === 'vacation',
-                  'schedule-table__absence': getDay(worker.userId, workDate)?.periodType === 'absence',
-                  'schedule-table__selected': isSelectedAnchor(worker.userId, workDate),
-                }"
-              >
-                <button
-                  type="button"
-                  :aria-label="`${worker.userName}, ${formatDateHeader(workDate)}, ${getDayLabel(worker.userId, workDate)}`"
-                  :title="`${getDayLabel(worker.userId, workDate)} · ${calendarDayLabel(workDate)}`"
-                  :disabled="saving"
-                  @click="selectDate(worker, workDate, $event)"
+        <div v-else class="schedule-table-wrap">
+          <table class="schedule-table">
+            <thead>
+              <tr>
+                <th class="schedule-table__name">ФИО</th>
+                <th
+                  v-for="workDate in monthDates"
+                  :key="workDate"
+                  :title="calendarDayLabel(workDate)"
+                  :class="{
+                    'schedule-table__weekend': isCalendarDayOff(workDate),
+                    'schedule-table__holiday': productionDays.get(workDate)?.is_holiday,
+                  }"
                 >
+                {{ formatDateHeader(workDate) }}
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="worker in sortedWorkers" :key="worker.userId">
+                <th class="schedule-table__name">{{ worker.userName }}</th>
+                <td
+                  v-for="workDate in monthDates"
+                  :key="workDate"
+                  :class="{
+                    'schedule-table__weekend': isCalendarDayOff(workDate),
+                    'schedule-table__holiday': productionDays.get(workDate)?.is_holiday,
+                    'schedule-table__working': getDay(worker.userId, workDate)?.periodType === 'work',
+                    'schedule-table__sick': getDay(worker.userId, workDate)?.periodType === 'sick_leave',
+                    'schedule-table__vacation': getDay(worker.userId, workDate)?.periodType === 'vacation',
+                    'schedule-table__absence': getDay(worker.userId, workDate)?.periodType === 'absence',
+                    'schedule-table__selected': isSelectedAnchor(worker.userId, workDate),
+                  }"
+                >
+                  <button
+                    type="button"
+                    :aria-label="`${worker.userName}, ${formatDateHeader(workDate)}, ${getDayLabel(worker.userId, workDate)}`"
+                    :title="`${getDayLabel(worker.userId, workDate)} · ${calendarDayLabel(workDate)}`"
+                    :disabled="saving"
+                    @click="selectDate(worker, workDate, $event)"
+                  >
                   {{ getHours(worker.userId, workDate) }}
-                </button>
-              </td>
-            </tr>
-          </tbody>
-        </table>
-        <p v-if="sortedWorkers.length === 0" class="schedule-message">
+                  </button>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+          <p v-if="sortedWorkers.length === 0" class="schedule-message">
           Активные исполнители не найдены.
-        </p>
-      </div>
+          </p>
+        </div>
 
-      <p v-if="calendar && !calendar.productionCalendar" class="schedule-message">
+        <p v-if="calendar && !calendar.productionCalendar" class="schedule-message">
         Производственный календарь за {{ month.slice(0, 4) }} год не загружен.
         Отображаются обычные субботы и воскресенья.
-      </p>
-      <p v-else-if="calendar?.productionCalendar" class="schedule-calendar-summary">
+        </p>
+        <p v-else-if="calendar?.productionCalendar" class="schedule-calendar-summary">
         По производственному календарю: рабочих дней — {{ calendar.productionCalendar.summary.working_days }},
         нерабочих — {{ calendar.productionCalendar.summary.non_working_days }},
         сокращённых — {{ calendar.productionCalendar.summary.shortened_days }}.
         Норма при 40-часовой неделе — {{ calendar.productionCalendar.summary.working_hours }} ч.
-      </p>
-      <div class="schedule-legend" aria-label="Обозначения графика">
-        <span class="schedule-legend__holiday">Праздничный день</span>
-        <span class="schedule-legend__sick">Б — больничный</span>
-        <span class="schedule-legend__vacation">О — отпуск</span>
-        <span class="schedule-legend__absence">П — прогул</span>
-      </div>
+        </p>
+        <div class="schedule-legend" aria-label="Обозначения графика">
+          <span class="schedule-legend__holiday">Праздничный день</span>
+          <span class="schedule-legend__sick">Б — больничный</span>
+          <span class="schedule-legend__vacation">О — отпуск</span>
+          <span class="schedule-legend__absence">П — прогул</span>
+        </div>
 
-      <p v-if="selectionAnchor" class="schedule-selection-hint">
+        <p v-if="selectionAnchor" class="schedule-selection-hint">
         Выбрано начало {{ formatDateHeader(selectionAnchor.workDate) }}.
         Выбрать окончание диапазона в строке того же сотрудника.
-      </p>
+        </p>
+
+      </div>
 
       <div v-if="editor" class="schedule-editor-backdrop">
-        <section class="schedule-editor" role="dialog" aria-modal="true">
-          <h3>{{ editor.mode === "edit" ? "Изменить период" : "Добавить период" }}</h3>
-          <p>
+        <section v-escape-close="() => { if (!saving) editor = null }" class="schedule-editor card-shell" role="dialog" aria-modal="true">
+          <h3 class="card-heading">{{ editor.mode === "edit" ? "Изменить период" : "Добавить период" }}</h3>
+          <div class="card-scroll">
+            <p>
             {{ editor.userName }} · выбрано дней: {{ editor.workDates.length }}
-          </p>
-          <label>
-            <span>Тип периода</span>
-            <select v-model="editor.periodType">
-              <option v-for="(label, value) in periodLabels" :key="value" :value="value">
+            </p>
+            <label>
+              <span>Тип периода</span>
+              <select v-model="editor.periodType">
+                <option v-for="(label, value) in periodLabels" :key="value" :value="value">
                 {{ label }}
-              </option>
-            </select>
-          </label>
-          <label>
-            <span>Часов в каждый выбранный день</span>
-            <input
-              v-if="editor.periodType === 'work'"
-              v-model.number="editor.hours"
-              type="number"
-              min="1"
-              max="16"
-              step="0.25"
-            />
-            <input v-else type="number" :value="0" disabled />
-          </label>
-          <p v-if="editor.periodType !== 'work'">
+                </option>
+              </select>
+            </label>
+            <label>
+              <span>Часов в каждый выбранный день</span>
+              <input
+                v-if="editor.periodType === 'work'"
+                v-model.number="editor.hours"
+                type="number"
+                min="1"
+                max="16"
+                step="0.25"
+              />
+              <input v-else type="number" :value="0" disabled />
+            </label>
+            <p v-if="editor.periodType !== 'work'">
             Отсутствие на полный день. Доступность для планирования — 0 часов.
-          </p>
-          <p>Сохранение заменит записи выбранных дней.</p>
-          <p v-if="editorError" class="schedule-message schedule-message--error">
+            </p>
+            <p>Сохранение заменит записи выбранных дней.</p>
+            <p v-if="editorError" class="schedule-message schedule-message--error">
             {{ editorError }}
-          </p>
-          <div class="schedule-editor__actions">
+            </p>
+
+          </div>
+
+          <div class="schedule-editor__actions card-actions">
             <button
               type="button"
               class="schedule-button schedule-button--primary"

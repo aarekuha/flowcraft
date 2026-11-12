@@ -1,6 +1,7 @@
 import type { PlanningOrderForecast } from "@/shared/api/planning";
 
 const ISSUE_LABELS: Record<string, string> = {
+  no_skilled_worker: "Нет активных исполнителей с требуемым навыком",
   no_assignment: "Нет назначения исполнителя",
   no_skilled_assignee: "У назначенных исполнителей нет требуемого навыка",
   no_schedule: "Нет графика работы исполнителя",

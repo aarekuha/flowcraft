@@ -33,3 +33,72 @@ select {
 a {
   color: inherit;
 }
+
+/* Общая компоновка карточек: заголовок, прокручиваемое содержимое, действия */
+html body .card-shell[role] {
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+  min-height: 0;
+  max-height: calc(100dvh - 48px);
+  overflow: hidden;
+}
+
+.card-shell > .card-heading,
+.card-shell > .card-actions,
+.card-frame > .card-actions {
+  flex: 0 0 auto;
+}
+
+.card-shell > .card-scroll,
+.card-frame > .card-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  padding: 2px;
+}
+
+html body .card-shell .card-content-form {
+  display: grid;
+  grid-template-rows: auto;
+  gap: 18px;
+  overflow: visible;
+}
+
+.card-shell .card-content-form > .operations-section,
+.card-shell .card-content-form > .order-assignments {
+  overflow: visible;
+  min-height: auto;
+}
+
+.card-shell .card-scroll > .schedule-table-wrap,
+.card-shell .card-scroll .stages-grid-wrap {
+  flex: none;
+  max-height: none;
+}
+
+html body .card-shell > .card-frame {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+}
+
+@media (max-width: 640px), (max-height: 600px) {
+  html body .card-shell[role] {
+    max-height: calc(100dvh - 48px);
+    padding: 12px;
+  }
+
+  .card-shell > .card-heading {
+    margin-bottom: 10px;
+  }
+
+  .card-shell > .card-actions {
+    margin-top: 10px;
+  }
+}
