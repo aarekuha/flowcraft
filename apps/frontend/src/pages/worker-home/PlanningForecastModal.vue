@@ -10,6 +10,7 @@ import {
   formatPlanningDate,
   formatPlanningDuration,
   getPlanningIssueLabel,
+  getPlanningIssueHint,
 } from "@/shared/lib/productionPlanning";
 
 const props = defineProps<{
@@ -133,7 +134,7 @@ function getErrorMessage(value: unknown, fallback: string): string {
           <div v-if="detail.issueCodes.length > 0" class="forecast-issues">
             <strong>Причины отсутствия прогноза</strong>
             <ul>
-              <li v-for="issueCode in detail.issueCodes" :key="issueCode">
+              <li v-for="issueCode in detail.issueCodes" :key="issueCode" :title="getPlanningIssueHint(issueCode)">
               {{ getPlanningIssueLabel(issueCode) }}
               </li>
             </ul>
@@ -163,7 +164,7 @@ function getErrorMessage(value: unknown, fallback: string): string {
                   <tr v-for="operation in detail.operations" :key="operation.operationId">
                     <td>
                       <strong>{{ operation.operationName }}</strong>
-                      <small v-for="issueCode in operation.issueCodes" :key="issueCode">
+                      <small v-for="issueCode in operation.issueCodes" :key="issueCode" :title="getPlanningIssueHint(issueCode)">
                       {{ getPlanningIssueLabel(issueCode) }}
                       </small>
                     </td>

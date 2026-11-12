@@ -133,7 +133,7 @@ import {
   canSelectWorkerForOperation,
   workerHasOperationSkill,
 } from "@/shared/lib/assignmentSkills";
-import { getPlanningForecastLabel } from "@/shared/lib/productionPlanning";
+import { getPlanningForecastLabel, getPlanningForecastHint } from "@/shared/lib/productionPlanning";
 
 type TabId =
   | "worker"
@@ -7621,6 +7621,7 @@ async function handleResetUserPassword(user: UserRecord) {
                             v-if="getWorkOrderPlanningForecast(order)"
                             type="button"
                             class="planning-date-button"
+                            :title="getPlanningForecastHint(getWorkOrderPlanningForecast(order))"
                             :class="{
                               'planning-date-button--warning':
                                 isWorkOrderPlanningForecastUnavailable(order),
@@ -7658,6 +7659,7 @@ async function handleResetUserPassword(user: UserRecord) {
                             v-if="getWorkOrderPlanningForecast(order)"
                             type="button"
                             class="planning-date-button"
+                            :title="getPlanningForecastHint(getWorkOrderPlanningForecast(order))"
                             :class="{
                               'planning-date-button--warning':
                                 isWorkOrderPlanningForecastUnavailable(order),
@@ -7924,6 +7926,7 @@ async function handleResetUserPassword(user: UserRecord) {
                         v-if="getWorkOrderPlanningForecast(order)"
                         type="button"
                         class="planning-date-button"
+                            :title="getPlanningForecastHint(getWorkOrderPlanningForecast(order))"
                         :class="{
                           'planning-date-button--warning':
                             isWorkOrderPlanningForecastUnavailable(order),
