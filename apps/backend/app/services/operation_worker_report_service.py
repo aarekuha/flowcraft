@@ -4,7 +4,11 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models.operation import Operation
-from app.schemas.report import OperationWorkerReport, OperationWorkerRow
+from app.schemas.report import (
+    OperationWorkerProductSection,
+    OperationWorkerReport,
+    OperationWorkerRow,
+)
 from app.services.report_service import ReportService
 from app.services.xlsx_writer import CellValue, XlsxDuration, build_xlsx
 
@@ -83,7 +87,36 @@ class OperationWorkerReportService:
                     if batch.submitted_quantity > 0
                     else 0
                 )
+        product_indices: dict[int, list[int]] = {}
+        for index, batch in enumerate(report.items):
+            product_indices.setdefault(batch.product_id, []).append(index)
+        products = []
+        for product_id, indices in product_indices.items():
+            batch = report.items[indices[0]]
+            product_rows = [
+                row.model_copy(update={
+                    "average_ms": [row.average_ms[index] for index in indices],
+                })
+                for row in rows.values()
+                if any(row.average_ms[index] is not None for index in indices)
+            ]
+            product_rows.sort(key=lambda row: (
+                row.operation_name.casefold(), row.worker_user_name.casefold(), row.key,
+            ))
+            products.append(OperationWorkerProductSection(
+                product_id=product_id,
+                product_name=batch.product_name,
+                product_version=batch.product_version,
+                batches=[report.items[index] for index in indices],
+                rows=product_rows,
+            ))
+        products.sort(key=lambda product: (
+            product.product_name.casefold(),
+            product.product_version,
+            product.product_id,
+        ))
         return OperationWorkerReport(
+            products=products,
             batches=report.items,
             rows=sorted(
                 rows.values(),
@@ -119,30 +152,30 @@ class OperationWorkerReportService:
         )
         # Разбить широкую таблицу на листы в пределах лимита столбцов Excel
         sheets: list[tuple[str, list[list[CellValue]]]] = []
-        for offset in range(0, max(len(report.batches), 1), 16382):
-            batches = report.batches[offset : offset + 16382]
-            rows: list[list[CellValue]] = [
-                [
-                    "Операция",
-                    "Исполнитель",
-                    *(
-                        f"{batch.order_number} / {batch.submitted_quantity}"
-                        for batch in batches
-                    ),
+        for product in report.products:
+            for offset in range(0, len(product.batches), 16382):
+                batches = product.batches[offset : offset + 16382]
+                rows: list[list[CellValue]] = [
+                    [
+                        f"Операция — {product.product_name} "
+                        f"({product.product_version})",
+                        "Исполнитель",
+                        *(f"{batch.order_number} / {batch.submitted_quantity}"
+                          for batch in batches),
+                    ]
                 ]
-            ]
-            rows.extend(
-                [
-                    row.operation_name,
-                    row.worker_user_name,
-                    *(
-                        XlsxDuration(value) if value is not None else None
-                        for value in row.average_ms[offset : offset + 16382]
-                    ),
-                ]
-                for row in report.rows
-            )
-            sheets.append((f"Операции и исполнители {len(sheets) + 1}", rows))
+                rows.extend(
+                    [
+                        row.operation_name,
+                        row.worker_user_name,
+                        *(XlsxDuration(value) if value is not None else None
+                          for value in row.average_ms[offset : offset + 16382]),
+                    ]
+                    for row in product.rows
+                )
+                sheets.append((f"{len(sheets) + 1} {product.product_name}", rows))
+        if not sheets:
+            sheets.append(("Операции и исполнители", [["Операция", "Исполнитель"]]))
         return (
             build_xlsx(sheets, auto_width=True, freeze_header=True),
             f"flowcraft-operation-workers-{date_from}_{date_to}.xlsx",

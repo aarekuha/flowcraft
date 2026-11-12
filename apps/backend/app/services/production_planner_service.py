@@ -496,6 +496,21 @@ class ProductionPlannerService:
             self.session.commit()
             return
 
+        active_orders = {
+            order.id: order
+            for order in self.session.scalars(
+                select(WorkOrder).where(
+                    WorkOrder.completed_at.is_(None),
+                    WorkOrder.deleted_at.is_(None),
+                    WorkOrder.planning_excluded_at.is_(None),
+                )
+            ).unique().all()
+        }
+        for result in output.orders:
+            order = active_orders.get(result.order_id)
+            if order is not None:
+                order.calculated_finish_date = result.calculated_finish_date
+
         self.session.add_all(
             [
                 PlanningOrderResult(

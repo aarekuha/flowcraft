@@ -100,6 +100,7 @@ class WorkOrder(Base):
     )
     quantity: Mapped[int] = mapped_column(Integer, nullable=False)
     planned_completion_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    calculated_finish_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     estimated_minutes: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     total_spent_seconds: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     cutting_spent_seconds: Mapped[int] = mapped_column(

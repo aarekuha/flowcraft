@@ -79,6 +79,24 @@ class OrderService:
         page: int,
         page_size: int,
     ) -> WorkOrderPage:
+        priority_positions = (
+            select(
+                WorkOrder.id.label("order_id"),
+                func.row_number()
+                .over(
+                    order_by=(
+                        WorkOrder.planning_priority_rank.asc(), WorkOrder.id.asc(),
+                    )
+                )
+                .label("priority_position"),
+            )
+            .where(
+                WorkOrder.planning_excluded_at.is_(None),
+                WorkOrder.completed_at.is_(None),
+                WorkOrder.deleted_at.is_(None),
+            )
+            .subquery()
+        )
         assignments_count = (
             select(
                 WorkOrderAssignment.work_order_id,
@@ -97,6 +115,7 @@ class OrderService:
             select(
                 WorkOrder.id,
                 WorkOrder.order_number,
+                priority_positions.c.priority_position,
                 WorkOrder.family_id,
                 WorkOrder.part_number,
                 WorkOrderFamily.base_order_number.label("family_base_order_number"),
@@ -107,6 +126,7 @@ class OrderService:
                 LeatherType.name.label("leather_type_name"),
                 WorkOrder.quantity,
                 WorkOrder.planned_completion_date,
+                WorkOrder.calculated_finish_date,
                 WorkOrder.estimated_minutes,
                 WorkOrder.total_spent_seconds,
                 WorkOrder.cutting_spent_seconds,
@@ -125,6 +145,9 @@ class OrderService:
                 func.coalesce(spent_time.c.spent_sessions_count, 0).label(
                     "spent_sessions_count"
                 ),
+            )
+            .outerjoin(
+                priority_positions, priority_positions.c.order_id == WorkOrder.id,
             )
             .join(Product, Product.id == WorkOrder.product_id)
             .outerjoin(WorkOrderFamily, WorkOrderFamily.id == WorkOrder.family_id)
@@ -146,6 +169,7 @@ class OrderService:
             *self._build_order_list_sort(
                 sort_by=sort_by,
                 sort_direction=sort_direction,
+                priority_position=priority_positions.c.priority_position,
             )
         )
 
@@ -180,6 +204,7 @@ class OrderService:
                 leather_type_name=row.leather_type_name,
                 quantity=row.quantity,
                 planned_completion_date=row.planned_completion_date,
+                calculated_finish_date=row.calculated_finish_date,
                 estimated_minutes=row.estimated_minutes,
                 total_spent_seconds=row.total_spent_seconds,
                 cutting_spent_seconds=row.cutting_spent_seconds,
@@ -188,6 +213,7 @@ class OrderService:
                 split_block_reason=split_eligibility[1],
                 can_merge=self._merge_receiver_is_eligible(row.id),
                 assignments_count=row.assignments_count,
+                priority_position=row.priority_position,
                 created_at=row.created_at,
                 updated_at=row.updated_at,
                 production_stage=WorkOrderProductionStage(row.production_stage),
@@ -341,8 +367,16 @@ class OrderService:
         *,
         sort_by: WorkOrderSortField,
         sort_direction: SortDirection,
+        priority_position: ColumnElement[Any],
     ) -> list[ColumnElement[Any]]:
         is_desc = sort_direction == SortDirection.DESC
+
+        if sort_by == WorkOrderSortField.PRIORITY:
+            return [
+                priority_position.is_(None).asc(),
+                priority_position.desc() if is_desc else priority_position.asc(),
+                WorkOrder.id.asc(),
+            ]
 
         if sort_by == WorkOrderSortField.ORDER_NUMBER:
             order_number_sort = (
@@ -2282,6 +2316,7 @@ class OrderService:
             else None,
             quantity=order.quantity,
             planned_completion_date=order.planned_completion_date,
+            calculated_finish_date=order.calculated_finish_date,
             estimated_minutes=order.estimated_minutes,
             total_spent_seconds=order.total_spent_seconds,
             cutting_spent_seconds=order.cutting_spent_seconds,
