@@ -14,7 +14,7 @@ import {
   movePlanningQueueItem,
 } from "@/shared/lib/planningQueue";
 
-import { getPlanningForecastLabel } from "@/shared/lib/productionPlanning";
+import { getPlanningForecastLabel, getPlanningForecastHint } from "@/shared/lib/productionPlanning";
 
 const props = defineProps<{ forecasts: PlanningOrderForecast[] }>();
 const emit = defineEmits<{ reordered: [] }>();
@@ -298,7 +298,7 @@ function getErrorMessage(value: unknown, fallback: string): string {
             <td>
               <span class="priority-stage">{{ getStageLabel(item.stage) }}</span>
             </td>
-            <td>{{ forecastLabel(item.orderId) }}</td>
+            <td :title="getPlanningForecastHint(forecastsByOrderId.get(item.orderId))">{{ forecastLabel(item.orderId) }}</td>
           </tr>
         </tbody>
       </table>
