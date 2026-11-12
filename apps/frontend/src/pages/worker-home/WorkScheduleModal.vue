@@ -14,6 +14,7 @@ import {
 import {
   getMonthDates,
   getScheduleSelection,
+  getScheduleWorkerRange,
   isWeekendDate,
 } from "@/shared/lib/workSchedule";
 
@@ -24,10 +25,13 @@ type SelectionAnchor = {
   customHours: boolean;
 };
 
-type ScheduleEditor = {
-  userId: number;
-  userName: string;
+type ScheduleSelection = {
+  worker: WorkScheduleWorker;
   workDates: string[];
+};
+
+type ScheduleEditor = {
+  selections: ScheduleSelection[];
   mode: "create" | "edit";
   hours: number;
   periodType: WorkSchedulePeriodType;
@@ -136,12 +140,12 @@ async function selectDate(
   workDate: string,
   event: MouseEvent,
 ) {
-  if (saving.value) {
+  if (saving.value || loading.value) {
     return;
   }
   const availableSeconds = getAvailableSeconds(worker.userId, workDate);
   const anchor = selectionAnchor.value;
-  if (anchor === null || anchor.userId !== worker.userId) {
+  if (anchor === null) {
     selectionAnchor.value = {
       userId: worker.userId,
       workDate,
@@ -151,52 +155,51 @@ async function selectDate(
     return;
   }
 
-  const existingDates = new Set(worker.days.map((day) => day.workDate));
-  const selectedDates = getScheduleSelection(
-    anchor.workDate,
-    workDate,
-    existingDates,
-    anchor.editExistingOnly,
-    anchor.customHours || event.shiftKey,
+  const selectedWorkers = getScheduleWorkerRange(
+    sortedWorkers.value, anchor.userId, worker.userId,
   );
+  const selections = selectedWorkers.map((selectedWorker) => ({
+    worker: selectedWorker,
+    workDates: getScheduleSelection(
+      anchor.workDate,
+      workDate,
+      new Set(selectedWorker.days.map((day) => day.workDate)),
+      anchor.editExistingOnly,
+      anchor.customHours || event.shiftKey,
+    ),
+  })).filter((selection) => selection.workDates.length > 0);
   selectionAnchor.value = null;
-  if (selectedDates.length === 0) {
+  if (selections.length === 0) {
     return;
   }
-  if (anchor.editExistingOnly || anchor.customHours || event.shiftKey) {
+  if (anchor.editExistingOnly || anchor.customHours || event.shiftKey || selectedWorkers.length > 1) {
     editor.value = {
-      userId: worker.userId,
-      userName: worker.userName,
-      workDates: selectedDates,
+      selections,
       mode: anchor.editExistingOnly ? "edit" : "create",
-      hours: getCommonHours(worker, selectedDates) || 8,
-      periodType: getCommonPeriodType(worker, selectedDates),
+      hours: getCommonHours(selections) || 8,
+      periodType: getCommonPeriodType(selections),
     };
     return;
   }
-  await saveDates(worker.userId, selectedDates, 8);
+  await saveDates(selections, 8);
 }
 
-function getCommonPeriodType(
-  worker: WorkScheduleWorker,
-  workDates: string[],
-): WorkSchedulePeriodType {
-  const values = new Set(workDates.map((workDate) =>
-    worker.days.find((day) => day.workDate === workDate)?.periodType ?? "work",
+function getCommonPeriodType(selections: ScheduleSelection[]): WorkSchedulePeriodType {
+  const values = new Set(selections.flatMap(({ worker, workDates }) =>
+    workDates.map((workDate) =>
+      worker.days.find((day) => day.workDate === workDate)?.periodType ?? "work",
+    ),
   ));
   return values.size === 1 ? [...values][0] : "work";
 }
 
-function getCommonHours(
-  worker: WorkScheduleWorker,
-  workDates: string[],
-): number | null {
-  const values = new Set(
+function getCommonHours(selections: ScheduleSelection[]): number | null {
+  const values = new Set(selections.flatMap(({ worker, workDates }) =>
     workDates.flatMap((workDate) => {
       const day = worker.days.find((item) => item.workDate === workDate);
       return day ? [day.availableSeconds / 3600] : [];
     }),
-  );
+  ));
   return values.size === 1 ? [...values][0] : null;
 }
 
@@ -205,8 +208,7 @@ async function saveEditor() {
     return;
   }
   await saveDates(
-    editor.value.userId,
-    editor.value.workDates,
+    editor.value.selections,
     editor.value.hours,
     editor.value.periodType,
   );
@@ -216,20 +218,19 @@ async function saveEditor() {
 }
 
 async function saveDates(
-  userId: number,
-  workDates: string[],
+  selections: ScheduleSelection[],
   hours: number,
   periodType: WorkSchedulePeriodType = "work",
 ) {
   saving.value = true;
   error.value = "";
   try {
-    await updateWorkSchedule({
-      user_id: userId,
+    await updateWorkSchedule(selections.map(({ worker, workDates }) => ({
+      user_id: worker.userId,
       work_dates: workDates,
       available_seconds: periodType === "work" ? Math.round(hours * 3600) : 0,
       period_type: periodType,
-    });
+    })));
     await loadCalendar();
   } catch (saveError) {
     error.value = getErrorMessage(saveError, "Не удалось сохранить период.");
@@ -245,10 +246,10 @@ async function deleteEditorDates() {
   saving.value = true;
   error.value = "";
   try {
-    await deleteWorkSchedule({
-      user_id: editor.value.userId,
-      work_dates: editor.value.workDates,
-    });
+    await deleteWorkSchedule(editor.value.selections.map(({ worker, workDates }) => ({
+      user_id: worker.userId,
+      work_dates: workDates,
+    })));
     editor.value = null;
     await loadCalendar();
   } catch (deleteError) {
@@ -292,6 +293,7 @@ function isSelectedAnchor(userId: number, workDate: string): boolean {
 }
 
 function toggleSort() {
+  selectionAnchor.value = null;
   sortDirection.value = sortDirection.value === "asc" ? "desc" : "asc";
 }
 
@@ -333,7 +335,8 @@ function getErrorMessage(value: unknown, fallback: string): string {
           </button>
           <p>
           Выбрать начало и конец диапазона. Shift открывает выбор типа периода и часов для всего диапазона;
-          обычный новый диапазон сохраняется по 8 часов.
+          новый диапазон в одной строке без Shift сохраняется по 8 часов.
+          Выбор границ на разных строках открывает редактирование для всех сотрудников между ними.
           </p>
         </div>
 
@@ -411,7 +414,7 @@ function getErrorMessage(value: unknown, fallback: string): string {
 
         <p v-if="selectionAnchor" class="schedule-selection-hint">
         Выбрано начало {{ formatDateHeader(selectionAnchor.workDate) }}.
-        Выбрать окончание диапазона в строке того же сотрудника.
+        Выбрать окончание диапазона. При выборе другой строки включить всех сотрудников между строками.
         </p>
 
       </div>
@@ -420,8 +423,11 @@ function getErrorMessage(value: unknown, fallback: string): string {
         <section v-escape-close="() => { if (!saving) editor = null }" class="schedule-editor card-shell" role="dialog" aria-modal="true">
           <h3 class="card-heading">{{ editor.mode === "edit" ? "Изменить период" : "Добавить период" }}</h3>
           <div class="card-scroll">
-            <p>
-            {{ editor.userName }} · выбрано дней: {{ editor.workDates.length }}
+            <p>Выбрано сотрудников: {{ editor.selections.length }}</p>
+            <p v-for="selection in editor.selections" :key="selection.worker.userId">
+              {{ selection.worker.userName }} ·
+              {{ formatDateHeader(selection.workDates[0]) }}–{{ formatDateHeader(selection.workDates[selection.workDates.length - 1]) }} ·
+              дней: {{ selection.workDates.length }}
             </p>
             <label>
               <span>Тип периода</span>
@@ -684,7 +690,7 @@ function getErrorMessage(value: unknown, fallback: string): string {
 
 .schedule-table .schedule-table__holiday,
 .schedule-legend__holiday {
-  box-shadow: inset 0 0 0 2px #7e22ce;
+  box-shadow: inset 0 0 0 2px #dbeafe;
 }
 
 .schedule-calendar-summary {

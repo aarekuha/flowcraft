@@ -389,7 +389,7 @@ function getErrorMessage(value: unknown, fallback: string): string {
 .priority-table th {
   color: #6f6558;
   font-size: 0.82rem;
-  text-transform: uppercase;
+  text-transform: none;
 }
 
 .priority-table tbody tr:last-child td {

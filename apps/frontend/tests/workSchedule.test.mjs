@@ -5,6 +5,7 @@ import {
   getDateRange,
   getMonthDates,
   getScheduleSelection,
+  getScheduleWorkerRange,
   isWeekendDate,
 } from "../src/shared/lib/workSchedule.ts";
 
@@ -101,4 +102,20 @@ test("selects the entire period with Shift including gaps and weekends", functio
     getScheduleSelection("2026-11-09", "2026-11-06", existingDates, true, true),
     expected,
   );
+});
+
+
+test("selects employee rows in visible order in both directions", function workerRange() {
+  `
+  Проверяем диапазон сотрудников:
+  - учитывать порядок строк, а не идентификаторы сотрудников
+  - включить обе границы и промежуточные строки в любом направлении
+  - не выбирать строки при отсутствии границы
+  `;
+  const workers = [9, 2, 7, 1].map((userId) => ({ userId }));
+  assert.deepEqual(getScheduleWorkerRange(workers, 2, 1), workers.slice(1));
+  assert.deepEqual(getScheduleWorkerRange(workers, 1, 2), workers.slice(1));
+  assert.deepEqual(getScheduleWorkerRange(workers, 7, 7), [workers[2]]);
+  assert.deepEqual(getScheduleWorkerRange([...workers].reverse(), 9, 7), [workers[2], workers[1], workers[0]]);
+  assert.deepEqual(getScheduleWorkerRange(workers, 999, 2), []);
 });

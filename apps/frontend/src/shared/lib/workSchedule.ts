@@ -38,3 +38,15 @@ export function isWeekendDate(workDate: string): boolean {
   const weekday = new Date(year, month - 1, day).getDay();
   return weekday === 0 || weekday === 6;
 }
+
+export function getScheduleWorkerRange<T extends { userId: number }>(
+  workers: T[],
+  startUserId: number,
+  endUserId: number,
+): T[] {
+  const start = workers.findIndex((worker) => worker.userId === startUserId);
+  const end = workers.findIndex((worker) => worker.userId === endUserId);
+  return start < 0 || end < 0
+    ? []
+    : workers.slice(Math.min(start, end), Math.max(start, end) + 1);
+}

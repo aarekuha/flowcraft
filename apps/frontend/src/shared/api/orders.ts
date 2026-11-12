@@ -105,7 +105,8 @@ export type WorkOrderSortBy =
   | "planned_completion"
   | "quality_control"
   | "taken"
-  | "priority";
+  | "priority"
+  | "calculated_finish";
 export type WorkOrderSortDirection = "asc" | "desc";
 export type WorkOrderStatusFilter =
   | "all"

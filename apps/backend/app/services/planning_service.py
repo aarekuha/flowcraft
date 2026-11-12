@@ -99,35 +99,40 @@ class PlanningService:
 
     def update_work_schedule(
         self,
-        payload: WorkScheduleBatchUpdate,
+        payload: WorkScheduleBatchUpdate | list[WorkScheduleBatchUpdate],
         updated_by_user_id: int,
     ) -> None:
-        self._get_active_worker_or_422(payload.user_id)
-        existing_days = self.session.scalars(
-            select(UserWorkScheduleDay).where(
-                UserWorkScheduleDay.user_id == payload.user_id,
-                UserWorkScheduleDay.work_date.in_(payload.work_dates),
-            )
-        ).all()
-        existing_by_date = {day.work_date: day for day in existing_days}
-        now = self._now_ts()
-        for work_date in payload.work_dates:
-            schedule_day = existing_by_date.get(work_date)
-            if schedule_day is None:
-                schedule_day = UserWorkScheduleDay(
-                    user_id=payload.user_id,
-                    work_date=work_date,
-                    available_seconds=payload.available_seconds,
-                    period_type=payload.period_type,
-                    updated_at=now,
-                    updated_by_user_id=updated_by_user_id,
+        updates = payload if isinstance(payload, list) else [payload]
+        if not updates:
+            raise HTTPException(status_code=422, detail="Не выбран диапазон графика.")
+        for item in updates:
+            self._get_active_worker_or_422(item.user_id)
+        for item in updates:
+            existing_days = self.session.scalars(
+                select(UserWorkScheduleDay).where(
+                    UserWorkScheduleDay.user_id == item.user_id,
+                    UserWorkScheduleDay.work_date.in_(item.work_dates),
                 )
-                self.session.add(schedule_day)
-                continue
-            schedule_day.period_type = payload.period_type
-            schedule_day.available_seconds = payload.available_seconds
-            schedule_day.updated_at = now
-            schedule_day.updated_by_user_id = updated_by_user_id
+            ).all()
+            existing_by_date = {day.work_date: day for day in existing_days}
+            now = self._now_ts()
+            for work_date in item.work_dates:
+                schedule_day = existing_by_date.get(work_date)
+                if schedule_day is None:
+                    schedule_day = UserWorkScheduleDay(
+                        user_id=item.user_id,
+                        work_date=work_date,
+                        available_seconds=item.available_seconds,
+                        period_type=item.period_type,
+                        updated_at=now,
+                        updated_by_user_id=updated_by_user_id,
+                    )
+                    self.session.add(schedule_day)
+                    continue
+                schedule_day.period_type = item.period_type
+                schedule_day.available_seconds = item.available_seconds
+                schedule_day.updated_at = now
+                schedule_day.updated_by_user_id = updated_by_user_id
 
         PlanningRevisionService(self.session).request_recalculation()
         try:
@@ -144,17 +149,22 @@ class PlanningService:
 
     def delete_work_schedule(
         self,
-        payload: WorkScheduleBatchDelete,
+        payload: WorkScheduleBatchDelete | list[WorkScheduleBatchDelete],
     ) -> None:
-        self._get_active_worker_or_422(payload.user_id)
-        schedule_days = self.session.scalars(
-            select(UserWorkScheduleDay).where(
-                UserWorkScheduleDay.user_id == payload.user_id,
-                UserWorkScheduleDay.work_date.in_(payload.work_dates),
-            )
-        ).all()
-        for schedule_day in schedule_days:
-            self.session.delete(schedule_day)
+        selections = payload if isinstance(payload, list) else [payload]
+        if not selections:
+            raise HTTPException(status_code=422, detail="Не выбран диапазон графика.")
+        for item in selections:
+            self._get_active_worker_or_422(item.user_id)
+        for item in selections:
+            schedule_days = self.session.scalars(
+                select(UserWorkScheduleDay).where(
+                    UserWorkScheduleDay.user_id == item.user_id,
+                    UserWorkScheduleDay.work_date.in_(item.work_dates),
+                )
+            ).all()
+            for schedule_day in schedule_days:
+                self.session.delete(schedule_day)
         PlanningRevisionService(self.session).request_recalculation()
         self.session.commit()
 
