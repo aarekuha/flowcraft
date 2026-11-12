@@ -1,17 +1,30 @@
 <script setup lang="ts">
-import { onMounted, ref } from "vue";
+import { onMounted, ref, computed } from "vue";
 
 import {
   fetchPlanningQueue,
   reorderPlanningQueue,
   type PlanningQueueItem,
   type PlanningQueueStage,
+  type PlanningOrderForecast,
 } from "@/shared/api/planning";
 import { ApiRequestError } from "@/shared/api/http";
 import {
   getPlanningQueueNeighbors,
   movePlanningQueueItem,
 } from "@/shared/lib/planningQueue";
+
+import { getPlanningForecastLabel } from "@/shared/lib/productionPlanning";
+
+const props = defineProps<{ forecasts: PlanningOrderForecast[] }>();
+const emit = defineEmits<{ reordered: [] }>();
+const forecastsByOrderId = computed(() => new Map(
+  props.forecasts.map((forecast) => [forecast.orderId, forecast]),
+));
+function forecastLabel(orderId: number): string {
+  const forecast = forecastsByOrderId.value.get(orderId);
+  return forecast ? getPlanningForecastLabel(forecast) : "Не рассчитано";
+}
 
 const items = ref<PlanningQueueItem[]>([]);
 const revision = ref(0);
@@ -156,6 +169,8 @@ async function saveReorder(payload: {
   notice.value = "";
   try {
     applyQueue(await reorderPlanningQueue(payload));
+    notice.value = "Приоритеты сохранены. Для обновления прогноза нажать «Пересчитать».";
+    emit("reordered");
   } catch (saveError) {
     if (saveError instanceof ApiRequestError && saveError.status === 409) {
       notice.value =
@@ -235,6 +250,7 @@ function getErrorMessage(value: unknown, fallback: string): string {
             <th>Вид кожи</th>
             <th>Количество изделий</th>
             <th>Стадия</th>
+            <th>Расчётная дата готовности</th>
           </tr>
         </thead>
         <tbody>
@@ -282,6 +298,7 @@ function getErrorMessage(value: unknown, fallback: string): string {
             <td>
               <span class="priority-stage">{{ getStageLabel(item.stage) }}</span>
             </td>
+            <td>{{ forecastLabel(item.orderId) }}</td>
           </tr>
         </tbody>
       </table>

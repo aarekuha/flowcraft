@@ -38,6 +38,10 @@ test("explains unavailable planning forecasts", function planningIssues() {
     "У назначенных исполнителей нет требуемого навыка",
   );
   assert.equal(
+    getPlanningIssueLabel("no_skilled_worker"),
+    "Нет активных исполнителей с требуемым навыком",
+  );
+  assert.equal(
     getPlanningIssueLabel("unexpected_issue"),
     "Ошибка данных: unexpected_issue",
   );

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, watch, computed, onUnmounted } from "vue";
+import { vEscapeClose } from "./escapeClose";
 import { downloadWorkReport, getWorkReport, money, setMonthlyBonusSelection, type WorkReport, getPersonalWorkReport, unlockPersonalWorkReport, type PersonalWorkReport, setMonthlyPiecework } from "@/shared/api/completedWork";
 
 const props = defineProps<{ userId: number; personal?: boolean }>();
@@ -128,62 +129,70 @@ watch([year, month, () => props.userId], load, { immediate: true });
 </script>
 
 <template>
-  <div class="work-overlay" @click.self="$emit('close')" @keydown.esc="$emit('close')">
-    <section class="work-dialog" role="dialog" aria-modal="true" aria-label="Расчёт выполненной работы" tabindex="-1">
-      <header><h2>Расчёт выполненной работы</h2><button type="button" @click="$emit('close')">Закрыть</button></header>
-      <form v-if="personal && !accessToken" class="password-gate" @submit.prevent="unlock">
-        <p>Для просмотра личного расчёта требуется пароль текущего пользователя.</p>
-        <label>Пароль <input v-model="password" type="password" autocomplete="current-password" maxlength="255" required :disabled="busy" autofocus /></label>
-        <button type="submit" :disabled="busy || !password">{{ busy ? 'Проверка…' : 'Открыть расчёт' }}</button>
-      </form>
-      <div v-else class="controls">
-        <label>Месяц <select v-model="month" :disabled="printing || savingBonus || savingPiecework"><option v-for="(name, index) in months" :key="index" :value="index + 1">{{ name }}</option></select></label>
-        <label>Год <input v-model.number="year" type="number" min="2000" max="9998" :disabled="printing || savingBonus || savingPiecework" /></label>
-        <button :disabled="busy || printing || savingBonus || savingPiecework" @click="load">Пересчитать</button>
-        <button v-if="!personal" :disabled="!report || printing || busy || savingBonus || savingPiecework || pieceworkDirty" @click="print">{{ printing ? 'Подготовка…' : 'Распечатать · XLSX' }}</button>
-      </div>
-      <p v-if="error" role="alert">{{ error }}</p><p v-if="busy">Расчёт…</p>
-      <template v-if="report">
-        <h3>{{ report.user_name }}</h3>
-        <div class="summary"><span>Рабочих дней по графику: <b>{{ report.work_days }}</b></span><span>Часов по графику: <b>{{ report.work_hours }}</b></span><span>Больничных дней: <b>{{ report.sick_days }}</b></span><span>Дней отпуска: <b>{{ report.vacation_days }}</b></span><span>Дней прогулов: <b>{{ report.absence_days }}</b></span></div>
-        <p v-if="report.items.some((item) => item.amount_cents === null)" role="alert">Расчёт неполный: отсутствуют расценки операций. Для полного расчёта требуется указать расценки.</p>
-        <div class="table-scroll"><table>
+  <div class="work-overlay" @click.self="$emit('close')">
+    <section v-escape-close="() => $emit('close')" class="work-dialog card-shell" role="dialog" aria-modal="true" aria-label="Расчёт выполненной работы" tabindex="-1">
+      <header class="card-heading"><h2>Расчёт выполненной работы</h2><button type="button" @click="$emit('close')">Закрыть</button></header>
+      <div class="card-scroll">
+        <form v-if="personal && !accessToken" class="password-gate" @submit.prevent="unlock">
+          <p>Для просмотра личного расчёта требуется пароль текущего пользователя.</p>
+          <label>Пароль <input v-model="password" type="password" autocomplete="current-password" maxlength="255" required :disabled="busy" autofocus /></label>
+          <button type="submit" :disabled="busy || !password">{{ busy ? 'Проверка…' : 'Открыть расчёт' }}</button>
+        </form>
+        <div v-else class="controls">
+          <label>Месяц <select v-model="month" :disabled="printing || savingBonus || savingPiecework"><option v-for="(name, index) in months" :key="index" :value="index + 1">{{ name }}</option></select></label>
+          <label>Год <input v-model.number="year" type="number" min="2000" max="9998" :disabled="printing || savingBonus || savingPiecework" /></label>
+        </div>
+        <p v-if="error" role="alert">{{ error }}</p><p v-if="busy">Расчёт…</p>
+        <template v-if="report">
+          <h3>{{ report.user_name }}</h3>
+          <div class="summary"><span>Рабочих дней по графику: <b>{{ report.work_days }}</b></span><span>Часов по графику: <b>{{ report.work_hours }}</b></span><span>Больничных дней: <b>{{ report.sick_days }}</b></span><span>Дней отпуска: <b>{{ report.vacation_days }}</b></span><span>Дней прогулов: <b>{{ report.absence_days }}</b></span></div>
+          <p v-if="report.items.some((item) => item.amount_cents === null)" role="alert">Расчёт неполный: отсутствуют расценки операций. Для полного расчёта требуется указать расценки.</p>
+          <div class="table-scroll"><table>
           <thead><tr><th>Номер заказа</th><th>Дата сдачи</th><th>Изделие и версия</th><th>Операция</th><th>Количество изделий</th><th>Расценка, ₽</th><th>Начисление, ₽</th></tr></thead>
           <tbody><tr v-for="item in report.items" :key="`${item.order_id}-${item.operation_id}`"><td>{{ item.order_number }}</td><td>{{ day(item.completed_at) }}</td><td>{{ item.product_name }} · {{ item.product_version }}</td><td>{{ item.operation_name }}</td><td>{{ quantity(item.quantity) }}</td><td>{{ item.price_cents === null ? 'Не задана' : money(item.price_cents) }}</td><td>{{ money(item.amount_cents) }}</td></tr></tbody>
           <tfoot><tr><th colspan="4">Итого</th><th>{{ quantity(report.total_quantity) }}</th><td></td><th>{{ money(report.piecework_cents) }}</th></tr></tfoot>
-        </table></div>
-        <p v-if="!report.items.length">За выбранный месяц нет выполненных заказов с учтённым временем сотрудника.</p>
-        <p class="hint">В итоговом количестве каждый заказ учтён один раз — по наибольшему количеству изделий среди операций сотрудника.</p>
-        <template v-if="!personal && adminReport">
-        <h3>Премии</h3>
-        <p class="hint">В расчёт и XLSX входят только отмеченные премии. Выбор сохраняется для сотрудника за выбранный месяц.</p>
-        <p v-if="savingBonus" role="status">Сохранение выбора премии…</p>
-        <table class="bonuses">
-          <thead><tr><th>Учитывать</th><th>Наименование</th><th>Сумма, ₽</th></tr></thead>
-          <tbody>
-            <tr v-for="bonus in adminReport.bonuses" :key="bonus.id" :class="{ 'bonus-excluded': !bonus.selected }">
-              <td><input type="checkbox" :checked="bonus.selected" :disabled="busy || printing || savingBonus || savingPiecework || pieceworkDirty" :aria-label="`Учитывать премию ${bonus.name}`" @change="changeBonus(bonus.id, $event)" /></td>
-              <td>{{ bonus.name }}</td><td>{{ money(bonus.amount_cents) }}</td>
-            </tr>
-          </tbody>
-          <tfoot><tr><th colspan="2">Итого премий</th><th>{{ money(adminReport.bonuses_cents) }}</th></tr></tfoot>
-        </table>
-        <p v-if="!adminReport.bonuses.length">Премии не назначены.</p>
-        <p>Системный расчёт сделки: <b>{{ money(report.piecework_cents) }} ₽</b></p>
-        <form class="controls" @submit.prevent="savePiecework()">
-          <label>Сделка к выплате, ₽
-            <input v-model="pieceworkInput" type="number" min="0" step="0.01" required
-              :disabled="busy || printing || savingBonus || savingPiecework" />
-          </label>
-          <button type="submit" :disabled="busy || printing || savingBonus || savingPiecework || !pieceworkDirty">{{ savingPiecework ? 'Сохранение…' : 'Сохранить сделку' }}</button>
+          </table></div>
+          <p v-if="!report.items.length">За выбранный месяц нет выполненных заказов с учтённым временем сотрудника.</p>
+          <p class="hint">В итоговом количестве каждый заказ учтён один раз — по наибольшему количеству изделий среди операций сотрудника.</p>
+          <template v-if="!personal && adminReport">
+            <h3>Премии</h3>
+            <p class="hint">В расчёт и XLSX входят только отмеченные премии. Выбор сохраняется для сотрудника за выбранный месяц.</p>
+            <p v-if="savingBonus" role="status">Сохранение выбора премии…</p>
+            <table class="bonuses">
+              <thead><tr><th>Учитывать</th><th>Наименование</th><th>Сумма, ₽</th></tr></thead>
+              <tbody>
+                <tr v-for="bonus in adminReport.bonuses" :key="bonus.id" :class="{ 'bonus-excluded': !bonus.selected }">
+                  <td><input type="checkbox" :checked="bonus.selected" :disabled="busy || printing || savingBonus || savingPiecework || pieceworkDirty" :aria-label="`Учитывать премию ${bonus.name}`" @change="changeBonus(bonus.id, $event)" /></td>
+                  <td>{{ bonus.name }}</td><td>{{ money(bonus.amount_cents) }}</td>
+                </tr>
+              </tbody>
+              <tfoot><tr><th colspan="2">Итого премий</th><th>{{ money(adminReport.bonuses_cents) }}</th></tr></tfoot>
+            </table>
+            <p v-if="!adminReport.bonuses.length">Премии не назначены.</p>
+            <p>Системный расчёт сделки: <b>{{ money(report.piecework_cents) }} ₽</b></p>
+            <form id="piecework-dialog-form" class="controls" @submit.prevent="savePiecework()">
+              <label>Сделка к выплате, ₽
+                <input v-model="pieceworkInput" type="number" min="0" step="0.01" required
+                  :disabled="busy || printing || savingBonus || savingPiecework" />
+              </label>
+            </form>
+            <p class="hint">{{ report.manual_piecework_cents === null ? 'Используется системный расчёт.' : 'Сохранена ручная сумма за выбранный месяц.' }}{{ pieceworkDirty ? ' Изменения суммы ещё не сохранены.' : '' }}</p>
+            <p class="payout">Итого к выплате: <b>{{ money(adminReport.payout_cents) }} ₽</b></p>
+          </template>
+          <p v-if="personal">Сделка: <b>{{ money(report.payable_piecework_cents) }} ₽</b></p>
+        </template>
+
+      </div>
+
+      <footer v-if="!personal || accessToken" class="controls card-actions">
+        <template v-if="report && !personal && adminReport">
+          <button type="submit" form="piecework-dialog-form" :disabled="busy || printing || savingBonus || savingPiecework || !pieceworkDirty">{{ savingPiecework ? 'Сохранение…' : 'Сохранить сделку' }}</button>
           <button type="button" :disabled="busy || printing || savingBonus || savingPiecework || report.manual_piecework_cents === null" @click="savePiecework(true)">Использовать системный расчёт</button>
           <button v-if="pieceworkDirty" type="button" :disabled="savingPiecework" @click="pieceworkInput = savedPieceworkInput">Отменить ввод</button>
-        </form>
-        <p class="hint">{{ report.manual_piecework_cents === null ? 'Используется системный расчёт.' : 'Сохранена ручная сумма за выбранный месяц.' }}{{ pieceworkDirty ? ' Изменения суммы ещё не сохранены.' : '' }}</p>
-        <p class="payout">Итого к выплате: <b>{{ money(adminReport.payout_cents) }} ₽</b></p>
         </template>
-        <p v-if="personal">Сделка: <b>{{ money(report.payable_piecework_cents) }} ₽</b></p>
-      </template>
+        <button :disabled="busy || printing || savingBonus || savingPiecework" @click="load">Пересчитать</button>
+        <button v-if="!personal" :disabled="!report || printing || busy || savingBonus || savingPiecework || pieceworkDirty" @click="print">{{ printing ? 'Подготовка…' : 'Распечатать · XLSX' }}</button>
+      </footer>
     </section>
   </div>
 </template>
@@ -196,6 +205,7 @@ header { justify-content: space-between; }
 .summary { padding: 16px; background: #f1f5f9; border-radius: 10px; }
 input, select, button { padding: 8px 12px; border: 1px solid #cbd5e1; border-radius: 8px; font: inherit; }
 input { width: 100px; } button { cursor: pointer; } button:disabled { opacity: .5; cursor: default; }
+.card-actions { padding-top: 12px; }
 .table-scroll { overflow-x: auto; margin-top: 20px; }
 table { width: 100%; border-collapse: collapse; }
 th, td { padding: 10px 8px; text-align: left; border-bottom: 1px solid #e2e8f0; }

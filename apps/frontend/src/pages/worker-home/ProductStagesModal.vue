@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
+import { vEscapeClose } from "./escapeClose";
 
 import {
   fetchProduct,
@@ -364,8 +365,8 @@ function getErrorMessage(value: unknown, fallback: string): string {
 
 <template>
   <div class="stages-backdrop" @click.self="requestClose">
-    <section class="stages-modal" role="dialog" aria-modal="true">
-      <header class="stages-modal__head">
+    <section v-escape-close="requestClose" class="stages-modal card-shell" role="dialog" aria-modal="true">
+      <header class="stages-modal__head card-heading">
         <div>
           <p class="stages-modal__eyebrow">Технологическая схема</p>
           <h2>Этапы · {{ productName }}</h2>
@@ -374,124 +375,130 @@ function getErrorMessage(value: unknown, fallback: string): string {
           Закрыть
         </button>
       </header>
+      <div class="card-scroll">
 
-      <p v-if="error" class="stages-message stages-message--error">{{ error }}</p>
-      <p v-if="loading" class="stages-message">Загрузка схемы этапов...</p>
+        <p v-if="error" class="stages-message stages-message--error">{{ error }}</p>
+        <p v-if="loading" class="stages-message">Загрузка схемы этапов...</p>
 
-      <template v-else>
-        <div class="stages-toolbar">
-          <p>
+        <template v-else>
+          <div class="stages-toolbar">
+            <p>
             Перетаскивание перемещает операцию между этапами. Боковые маркеры
             растягивают смежную операцию на несколько этапов.
-          </p>
-          <button
-            type="button"
-            class="stages-button stages-button--primary"
-            @click="addStage"
-          >
+            </p>
+            <button
+              type="button"
+              class="stages-button stages-button--primary"
+              @click="addStage"
+            >
             + Добавить этап
-          </button>
-        </div>
+            </button>
+          </div>
 
-        <div class="stages-grid-wrap">
-          <div class="stages-grid__head" :style="getGridStyle()">
-            <strong class="stages-grid__operation-title" style="grid-column: 1">
+          <div class="stages-grid-wrap">
+            <div class="stages-grid__head" :style="getGridStyle()">
+              <strong class="stages-grid__operation-title" style="grid-column: 1">
               Операция
-            </strong>
-            <div
-              v-for="stage in stages"
-              :key="stage"
-              class="stages-grid__stage-title"
-              :style="{ gridColumn: String(stage + 1) }"
-            >
-              <strong>Этап {{ stage }}</strong>
-              <button
-                type="button"
-                class="stages-grid__delete-stage"
-                :disabled="stageCount === 1"
-                :aria-label="`Удалить этап ${stage}`"
-                @click="requestRemoveStage(stage)"
+              </strong>
+              <div
+                v-for="stage in stages"
+                :key="stage"
+                class="stages-grid__stage-title"
+                :style="{ gridColumn: String(stage + 1) }"
               >
+                <strong>Этап {{ stage }}</strong>
+                <button
+                  type="button"
+                  class="stages-grid__delete-stage"
+                  :disabled="stageCount === 1"
+                  :aria-label="`Удалить этап ${stage}`"
+                  @click="requestRemoveStage(stage)"
+                >
                 ×
-              </button>
+                </button>
+              </div>
             </div>
-          </div>
 
-          <div
-            v-for="operation in operations"
-            :key="operation.id"
-            class="stages-grid__row"
-            :style="getGridStyle()"
-            :data-operation-id="operation.id"
-            @dragover.prevent
-            @drop="dropOperation"
-          >
             <div
-              class="stages-grid__operation-name"
-              style="grid-column: 1"
-              :title="operation.name"
+              v-for="operation in operations"
+              :key="operation.id"
+              class="stages-grid__row"
+              :style="getGridStyle()"
+              :data-operation-id="operation.id"
+              @dragover.prevent
+              @drop="dropOperation"
             >
+              <div
+                class="stages-grid__operation-name"
+                style="grid-column: 1"
+                :title="operation.name"
+              >
               {{ operation.name }}
-            </div>
-            <div
-              v-for="stage in stages"
-              :key="stage"
-              class="stages-grid__cell"
-              :data-stage-cell="stage"
-              :style="{ gridColumn: String(stage + 1) }"
-            />
-            <div
-              class="stages-grid__operation"
-              :class="{
-                'stages-grid__operation--adjacent': operation.operationKind === 'adjacent',
-                'stages-grid__operation--dragged': draggedOperationId === operation.id,
-              }"
-              :style="getOperationStyle(operation)"
-              :draggable="resizeState === null"
-              @dragstart="startDrag(operation.id, $event)"
-              @dragend="stopDrag"
-            >
-              <button
-                v-if="operation.operationKind === 'adjacent'"
-                type="button"
-                class="stages-grid__resize stages-grid__resize--start"
-                aria-label="Изменить начало смежной операции"
-                @pointerdown="startResize(operation, 'start', $event)"
+              </div>
+              <div
+                v-for="stage in stages"
+                :key="stage"
+                class="stages-grid__cell"
+                :data-stage-cell="stage"
+                :style="{ gridColumn: String(stage + 1) }"
               />
-              <span>{{ operation.name.split(" / ").at(-1) }}</span>
-              <button
-                v-if="operation.operationKind === 'adjacent'"
-                type="button"
-                class="stages-grid__resize stages-grid__resize--end"
-                aria-label="Изменить окончание смежной операции"
-                @pointerdown="startResize(operation, 'end', $event)"
-              />
+              <div
+                class="stages-grid__operation"
+                :class="{
+                  'stages-grid__operation--adjacent': operation.operationKind === 'adjacent',
+                  'stages-grid__operation--dragged': draggedOperationId === operation.id,
+                }"
+                :style="getOperationStyle(operation)"
+                :draggable="resizeState === null"
+                @dragstart="startDrag(operation.id, $event)"
+                @dragend="stopDrag"
+              >
+                <button
+                  v-if="operation.operationKind === 'adjacent'"
+                  type="button"
+                  class="stages-grid__resize stages-grid__resize--start"
+                  aria-label="Изменить начало смежной операции"
+                  @pointerdown="startResize(operation, 'start', $event)"
+                />
+                <span>{{ operation.name.split(" / ").at(-1) }}</span>
+                <button
+                  v-if="operation.operationKind === 'adjacent'"
+                  type="button"
+                  class="stages-grid__resize stages-grid__resize--end"
+                  aria-label="Изменить окончание смежной операции"
+                  @pointerdown="startResize(operation, 'end', $event)"
+                />
+              </div>
             </div>
+
+            <p v-if="operations.length === 0" class="stages-message">
+            В изделии нет конечных операций.
+            </p>
           </div>
 
-          <p v-if="operations.length === 0" class="stages-message">
-            В изделии нет конечных операций.
-          </p>
-        </div>
+        </template>
 
-        <footer class="stages-modal__actions">
-          <span v-if="hasChanges">Есть несохранённые изменения</span>
-          <button
-            type="button"
-            class="stages-button stages-button--primary"
-            :disabled="!hasChanges || saving"
-            @click="save"
-          >
+      </div>
+      <footer class="stages-modal__actions card-actions" v-if="!loading">
+        <span v-if="hasChanges">Есть несохранённые изменения</span>
+        <button
+          type="button"
+          class="stages-button stages-button--primary"
+          :disabled="!hasChanges || saving"
+          @click="save"
+        >
             {{ saving ? "Сохранение..." : "Сохранить изменения" }}
-          </button>
-        </footer>
-      </template>
-
+        </button>
+      </footer>
       <div v-if="closeConfirmationOpen" class="stages-confirm-backdrop">
-        <section class="stages-confirm" role="alertdialog" aria-modal="true">
-          <h3>Закрыть без сохранения?</h3>
-          <p>Изменения технологических этапов будут потеряны.</p>
-          <div class="stages-confirm__actions">
+        <section v-escape-close="() => { closeConfirmationOpen = false }" class="stages-confirm card-shell" role="alertdialog" aria-modal="true">
+          <h3 class="card-heading">Закрыть без сохранения?</h3>
+          <div class="card-scroll">
+            <p>Изменения технологических этапов будут потеряны.</p>
+
+          </div>
+
+          <div class="stages-confirm__actions card-actions">
             <button
               type="button"
               class="stages-button stages-button--danger"
@@ -511,20 +518,24 @@ function getErrorMessage(value: unknown, fallback: string): string {
       </div>
 
       <div v-if="pendingRemovedStage !== null" class="stages-confirm-backdrop">
-        <section class="stages-confirm" role="alertdialog" aria-modal="true">
-          <h3>Удалить этап {{ pendingRemovedStage }}?</h3>
-          <p>
+        <section v-escape-close="cancelRemoveStage" class="stages-confirm card-shell" role="alertdialog" aria-modal="true">
+          <h3 class="card-heading">Удалить этап {{ pendingRemovedStage }}?</h3>
+          <div class="card-scroll">
+            <p>
             После удаления останется {{ stageCount - 1 }} этапов. Операции справа
             и пересекающие удаляемый этап будут сдвинуты влево.
-          </p>
-          <ul v-if="stageRemovalPreview.length" class="stages-confirm__preview">
-            <li v-for="item in stageRemovalPreview" :key="item.id">
-              <strong>{{ item.name }}</strong>
-              <span>{{ item.before }} → {{ item.after }}</span>
-            </li>
-          </ul>
-          <p v-else>Расположение операций не изменится.</p>
-          <div class="stages-confirm__actions">
+            </p>
+            <ul v-if="stageRemovalPreview.length" class="stages-confirm__preview">
+              <li v-for="item in stageRemovalPreview" :key="item.id">
+                <strong>{{ item.name }}</strong>
+                <span>{{ item.before }} → {{ item.after }}</span>
+              </li>
+            </ul>
+            <p v-else>Расположение операций не изменится.</p>
+
+          </div>
+
+          <div class="stages-confirm__actions card-actions">
             <button
               type="button"
               class="stages-button stages-button--danger"

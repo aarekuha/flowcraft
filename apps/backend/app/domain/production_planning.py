@@ -11,7 +11,6 @@ class PlanningTaskInput:
     stage_end: int
     workload_seconds: int | None
     actual_seconds: int
-    assigned_worker_ids: tuple[int, ...]
     eligible_worker_ids: tuple[int, ...]
     standard_time_seconds: int | None = None
     standard_time_source: str = "missing"
@@ -314,13 +313,9 @@ class ProductionPlanningCalculator:
         initial_availability: dict[tuple[int, date], int],
     ) -> list[PlannedAllocation]:
         task = result.input
-        if not task.assigned_worker_ids:
-            result.status = "unplanned"
-            result.issue_codes.append("no_assignment")
-            return []
         if not task.eligible_worker_ids:
             result.status = "unplanned"
-            result.issue_codes.append("no_skilled_assignee")
+            result.issue_codes.append("no_skilled_worker")
             return []
 
         allocations: list[PlannedAllocation] = []

@@ -49,7 +49,6 @@ def test_planner_subtracts_actual_time_without_repeating_preparation() -> None:
         operation_id=1,
         workload_seconds=1000,
         actual_seconds=300,
-        assigned_worker_ids=(1,),
         eligible_worker_ids=(1,),
     )
     output = calculate(
@@ -74,13 +73,11 @@ def test_planner_runs_parallel_stage_operations_on_different_workers() -> None:
         create_task(
             operation_id=1,
             workload_seconds=3600,
-            assigned_worker_ids=(1,),
             eligible_worker_ids=(1,),
         ),
         create_task(
             operation_id=2,
             workload_seconds=3600,
-            assigned_worker_ids=(2,),
             eligible_worker_ids=(2,),
         ),
         create_task(
@@ -88,7 +85,6 @@ def test_planner_runs_parallel_stage_operations_on_different_workers() -> None:
             workload_seconds=3600,
             stage_start=2,
             stage_end=2,
-            assigned_worker_ids=(1,),
             eligible_worker_ids=(1,),
         ),
     )
@@ -105,9 +101,9 @@ def test_planner_runs_parallel_stage_operations_on_different_workers() -> None:
     assert output.orders[0].resource_finish_date == TODAY
 
 
-def test_planner_uses_only_one_assignee_for_operation_per_day() -> None:
+def test_planner_uses_only_one_worker_for_operation_per_day() -> None:
     """
-    Проверяем резервные назначения:
+    Проверяем последовательное выполнение операции доступными сотрудниками:
     - не складывать доступность двух исполнителей в один день
     - перенести незавершённую операцию на следующий день
     - разрешить замену исполнителя на следующий день без новой подготовки
@@ -116,7 +112,6 @@ def test_planner_uses_only_one_assignee_for_operation_per_day() -> None:
     task = create_task(
         operation_id=1,
         workload_seconds=36_000,
-        assigned_worker_ids=(1, 2),
         eligible_worker_ids=(1, 2),
     )
     output = calculate(
@@ -155,7 +150,6 @@ def test_planner_respects_global_order_priority_for_shared_worker() -> None:
             create_task(
                 operation_id=1,
                 workload_seconds=25_200,
-                assigned_worker_ids=(1,),
                 eligible_worker_ids=(1,),
             ),
         ),
@@ -167,7 +161,6 @@ def test_planner_respects_global_order_priority_for_shared_worker() -> None:
             create_task(
                 operation_id=2,
                 workload_seconds=25_200,
-                assigned_worker_ids=(1,),
                 eligible_worker_ids=(1,),
             ),
         ),
@@ -198,7 +191,6 @@ def test_adjacent_operation_blocks_only_its_final_stage_barrier() -> None:
             workload_seconds=54_000,
             stage_start=1,
             stage_end=3,
-            assigned_worker_ids=(1,),
             eligible_worker_ids=(1,),
         ),
         create_task(
@@ -206,7 +198,6 @@ def test_adjacent_operation_blocks_only_its_final_stage_barrier() -> None:
             workload_seconds=3600,
             stage_start=2,
             stage_end=2,
-            assigned_worker_ids=(2,),
             eligible_worker_ids=(2,),
         ),
         create_task(
@@ -214,7 +205,6 @@ def test_adjacent_operation_blocks_only_its_final_stage_barrier() -> None:
             workload_seconds=3600,
             stage_start=3,
             stage_end=3,
-            assigned_worker_ids=(2,),
             eligible_worker_ids=(2,),
         ),
         create_task(
@@ -222,7 +212,6 @@ def test_adjacent_operation_blocks_only_its_final_stage_barrier() -> None:
             workload_seconds=3600,
             stage_start=4,
             stage_end=4,
-            assigned_worker_ids=(2,),
             eligible_worker_ids=(2,),
         ),
     )
@@ -256,7 +245,6 @@ def test_planner_reports_missing_schedule() -> None:
     task = create_task(
         operation_id=1,
         workload_seconds=3600,
-        assigned_worker_ids=(1,),
         eligible_worker_ids=(1,),
     )
     output = calculate(
@@ -986,7 +974,6 @@ def create_task(
     actual_seconds: int = 0,
     stage_start: int = 1,
     stage_end: int = 1,
-    assigned_worker_ids: tuple[int, ...],
     eligible_worker_ids: tuple[int, ...],
 ) -> PlanningTaskInput:
     return PlanningTaskInput(
@@ -996,6 +983,5 @@ def create_task(
         stage_end=stage_end,
         workload_seconds=workload_seconds,
         actual_seconds=actual_seconds,
-        assigned_worker_ids=assigned_worker_ids,
         eligible_worker_ids=eligible_worker_ids,
     )

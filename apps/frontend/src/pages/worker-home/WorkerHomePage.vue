@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { vEscapeClose } from "./escapeClose";
 import QRCode from "qrcode";
 import type { IScannerControls } from "@zxing/browser";
 import { useRoute, useRouter } from "vue-router";
@@ -413,7 +414,7 @@ const operationCatalogPage = ref(1);
 const operationCatalogPages = ref(1);
 
 const productFilter = ref("");
-const productVisibility = ref<ProductVisibilityFilter>("all");
+const productVisibility = ref<ProductVisibilityFilter>("active");
 const productSort = ref<ProductSort>("name-asc");
 const workOrderFilter = ref("");
 const workOrderSearchDraft = ref("");
@@ -690,6 +691,9 @@ const productionPlanningStatusMessage = computed(() => {
     return status.activeRunId === null
       ? "Выполняется первый расчёт производственного плана."
       : "Расчёт обновляется. Показан предыдущий успешный прогноз.";
+  }
+  if (status.requestedRevision < status.inputRevision) {
+    return "Приоритеты изменены. Для обновления прогноза нажать «Пересчитать».";
   }
   if (status.activeRunId === null) {
     return "Успешный расчёт ещё не опубликован.";
@@ -3289,7 +3293,7 @@ function applyWorkerTimerApiState(state: WorkerTimerApiState) {
 }
 
 function handleWindowKeydown(event: KeyboardEvent) {
-  if (event.key !== "Escape") {
+  if (event.key !== "Escape" || event.defaultPrevented || event.repeat) {
     return;
   }
 
@@ -7331,7 +7335,11 @@ async function handleResetUserPassword(user: UserRecord) {
             </div>
           </template>
 
-          <PlanningPriorityPanel v-else-if="brigadierTab === 'prioritization'" />
+          <PlanningPriorityPanel
+            v-else-if="brigadierTab === 'prioritization'"
+            :forecasts="planningOrderForecasts"
+            @reordered="void loadProductionPlanning({ silent: true })"
+          />
 
           <template v-else-if="brigadierTab !== 'orders'">
             <div v-if="brigadierOrdersError" class="banner banner--error">
@@ -9588,10 +9596,12 @@ async function handleResetUserPassword(user: UserRecord) {
       class="modal-backdrop"
       @click.self="closeChangePasswordModal"
     >
-      <section class="confirm-modal" role="dialog" aria-modal="true">
-        <div class="confirm-modal__content">
+      <section v-escape-close="closeChangePasswordModal" class="confirm-modal card-shell" role="dialog" aria-modal="true">
+        <div class="card-heading">
           <p class="confirm-modal__eyebrow">Пароль пользователя</p>
           <h2>Изменить пароль</h2>
+        </div>
+        <div class="confirm-modal__content card-scroll">
 
           <label class="field">
             <span class="field__label">Текущий пароль</span>
@@ -9629,7 +9639,7 @@ async function handleResetUserPassword(user: UserRecord) {
           <p v-if="changePasswordError" class="field-error">{{ changePasswordError }}</p>
         </div>
 
-        <div class="confirm-modal__actions">
+        <div class="confirm-modal__actions card-actions">
           <button type="button" class="ghost-button" @click="closeChangePasswordModal">
             <span class="button-content">
               <span class="button-icon button-icon--close" aria-hidden="true" />
@@ -9656,11 +9666,11 @@ async function handleResetUserPassword(user: UserRecord) {
       class="modal-backdrop"
       @click.self="closeBrigadierOrderModal"
     >
-      <section class="modal brigadier-modal" role="dialog" aria-modal="true">
-        <div class="modal__head">
+      <section v-escape-close="closeBrigadierOrderModal" class="modal brigadier-modal card-shell" role="dialog" aria-modal="true">
+        <div class="modal__head card-heading">
           <div>
             <h2>{{ brigadierModalTitle }}</h2>
-            <p class="modal__description">{{ brigadierModalDescription }}</p>
+
           </div>
 
           <button
@@ -9674,348 +9684,352 @@ async function handleResetUserPassword(user: UserRecord) {
             </span>
           </button>
         </div>
+        <div class="card-scroll">
+          <p class="modal__description">{{ brigadierModalDescription }}</p>
 
-        <div v-if="brigadierModalError" class="banner banner--error">
-          <p>{{ brigadierModalError }}</p>
-        </div>
+          <div v-if="brigadierModalError" class="banner banner--error">
+            <p>{{ brigadierModalError }}</p>
+          </div>
 
-        <div v-if="brigadierModalLoading" class="banner">
-          <p>Загрузка заказа...</p>
-        </div>
+          <div v-if="brigadierModalLoading" class="banner">
+            <p>Загрузка заказа...</p>
+          </div>
 
-        <form
-          v-else-if="brigadierModalProduct"
-          class="order-form"
-          @submit.prevent="requestBrigadierOrderSave"
-        >
-          <div class="order-form__header">
-            <div class="order-form__summary">
-              <div class="summary-card">
-                <span class="section-label">Изделие</span>
-                <strong>
+          <form id="order-form-dialog"
+            v-else-if="brigadierModalProduct"
+            class="order-form card-content-form"
+            @submit.prevent="requestBrigadierOrderSave"
+          >
+            <div class="order-form__header">
+              <div class="order-form__summary">
+                <div class="summary-card">
+                  <span class="section-label">Изделие</span>
+                  <strong>
                   {{ brigadierModalProduct.name }} · {{ brigadierModalProduct.version }}
-                </strong>
-                <label class="field summary-card__field">
-                  <span class="field__label">Вид кожи</span>
-                  <div class="assignment-input-wrap">
-                    <div
-                      v-if="!isBrigadierLeatherTypeEditable"
-                      class="operation-text"
-                    >
+                  </strong>
+                  <label class="field summary-card__field">
+                    <span class="field__label">Вид кожи</span>
+                    <div class="assignment-input-wrap">
+                      <div
+                        v-if="!isBrigadierLeatherTypeEditable"
+                        class="operation-text"
+                      >
                       {{ brigadierModalLeatherTypeName ?? "вид кожи не указан" }}
-                    </div>
-                    <input
-                      v-else
-                      :value="brigadierModalLeatherTypeNameDraft"
-                      type="text"
-                      class="text-input text-input--with-clear"
-                      autocomplete="off"
-                      placeholder="Не выбран"
-                      data-field="brigadier-leather-type"
-                      @input="handleBrigadierLeatherTypeInput"
-                      @focus="openBrigadierLeatherTypeDropdown"
-                      @click="openBrigadierLeatherTypeDropdown"
-                      @blur="scheduleBrigadierLeatherTypeDropdownClose"
-                    />
-                    <button
-                      v-if="
-                        (brigadierModalLeatherTypeId ||
-                          brigadierModalLeatherTypeNameDraft) &&
-                        isBrigadierLeatherTypeEditable
-                      "
-                      type="button"
-                      class="field-action field-action--right"
-                      aria-label="Очистить вид кожи"
-                      title="Очистить вид кожи"
-                      @mousedown.prevent
-                      @click="clearBrigadierLeatherType"
-                    >
-                      <span class="field-action__icon" aria-hidden="true" />
-                    </button>
-                    <div
-                      v-if="isBrigadierLeatherTypeDropdownOpen && isBrigadierLeatherTypeEditable"
-                      class="assignment-dropdown"
-                    >
+                      </div>
+                      <input
+                        v-else
+                        :value="brigadierModalLeatherTypeNameDraft"
+                        type="text"
+                        class="text-input text-input--with-clear"
+                        autocomplete="off"
+                        placeholder="Не выбран"
+                        data-field="brigadier-leather-type"
+                        @input="handleBrigadierLeatherTypeInput"
+                        @focus="openBrigadierLeatherTypeDropdown"
+                        @click="openBrigadierLeatherTypeDropdown"
+                        @blur="scheduleBrigadierLeatherTypeDropdownClose"
+                      />
                       <button
+                        v-if="
+                          (brigadierModalLeatherTypeId ||
+                            brigadierModalLeatherTypeNameDraft) &&
+                          isBrigadierLeatherTypeEditable
+                        "
                         type="button"
-                        class="assignment-dropdown__option"
-                        :class="{
-                          'assignment-dropdown__option--selected':
-                            !brigadierModalLeatherTypeId,
-                        }"
+                        class="field-action field-action--right"
+                        aria-label="Очистить вид кожи"
+                        title="Очистить вид кожи"
                         @mousedown.prevent
-                        @click="selectBrigadierLeatherType(null)"
+                        @click="clearBrigadierLeatherType"
                       >
-                        <span>Не выбран</span>
-                      </button>
-                      <button
-                        v-for="leatherType in getBrigadierLeatherTypeOptions()"
-                        :key="leatherType.id"
-                        type="button"
-                        class="assignment-dropdown__option"
-                        :class="{
-                          'assignment-dropdown__option--selected':
-                            brigadierModalLeatherTypeId === String(leatherType.id),
-                        }"
-                        @mousedown.prevent
-                        @click="selectBrigadierLeatherType(leatherType.id)"
-                      >
-                        <span>{{ leatherType.name }}</span>
+                        <span class="field-action__icon" aria-hidden="true" />
                       </button>
                       <div
-                        v-if="getBrigadierLeatherTypeOptions().length === 0"
-                        class="assignment-dropdown__empty"
+                        v-if="isBrigadierLeatherTypeDropdownOpen && isBrigadierLeatherTypeEditable"
+                        class="assignment-dropdown"
                       >
+                        <button
+                          type="button"
+                          class="assignment-dropdown__option"
+                          :class="{
+                            'assignment-dropdown__option--selected':
+                              !brigadierModalLeatherTypeId,
+                          }"
+                          @mousedown.prevent
+                          @click="selectBrigadierLeatherType(null)"
+                        >
+                          <span>Не выбран</span>
+                        </button>
+                        <button
+                          v-for="leatherType in getBrigadierLeatherTypeOptions()"
+                          :key="leatherType.id"
+                          type="button"
+                          class="assignment-dropdown__option"
+                          :class="{
+                            'assignment-dropdown__option--selected':
+                              brigadierModalLeatherTypeId === String(leatherType.id),
+                          }"
+                          @mousedown.prevent
+                          @click="selectBrigadierLeatherType(leatherType.id)"
+                        >
+                          <span>{{ leatherType.name }}</span>
+                        </button>
+                        <div
+                          v-if="getBrigadierLeatherTypeOptions().length === 0"
+                          class="assignment-dropdown__empty"
+                        >
                         Справочник видов кожи пуст.
+                        </div>
                       </div>
-                    </div>
-                    <p v-if="brigadierLeatherTypeError" class="field-error">
+                      <p v-if="brigadierLeatherTypeError" class="field-error">
                       {{ brigadierLeatherTypeError }}
+                      </p>
+                    </div>
+                  </label>
+                  <label
+                    v-if="isQualityControlOrderModal"
+                    class="field summary-card__field"
+                  >
+                    <span class="field__label">Количество брака</span>
+                    <input
+                      :value="brigadierModalDefectQuantity"
+                      type="number"
+                      min="0"
+                      step="1"
+                      :max="brigadierModalQuantity"
+                      inputmode="numeric"
+                      class="text-input"
+                      data-field="brigadier-defect-quantity"
+                      placeholder="0"
+                      @input="handleBrigadierDefectQuantityInput"
+                    />
+                    <p v-if="brigadierDefectQuantityError" class="field-error">
+                    {{ brigadierDefectQuantityError }}
                     </p>
-                  </div>
-                </label>
-                <label
-                  v-if="isQualityControlOrderModal"
-                  class="field summary-card__field"
-                >
-                  <span class="field__label">Количество брака</span>
+                  </label>
+                </div>
+              </div>
+
+              <div class="order-form__meta">
+                <label class="field">
+                  <span class="field__label">Номер заказа</span>
                   <input
-                    :value="brigadierModalDefectQuantity"
-                    type="number"
-                    min="0"
-                    step="1"
-                    :max="brigadierModalQuantity"
+                    :value="brigadierModalOrderNumber"
+                    type="text"
+                    class="text-input"
+                    data-field="brigadier-order-number"
+                    readonly
+                    :placeholder="
+                      brigadierModalMode === 'create'
+                        ? 'Присваивается автоматически'
+                        : ''
+                    "
+                  />
+                </label>
+
+                <label class="field order-form__quantity">
+                  <span class="field__label">Количество изделий</span>
+                  <div
+                    v-if="!isBrigadierQuantityEditable"
+                    class="operation-text"
+                  >
+                  {{ brigadierModalQuantity }} шт.
+                  </div>
+                  <input
+                    v-else
+                    :value="brigadierModalQuantity"
+                    type="text"
                     inputmode="numeric"
                     class="text-input"
-                    data-field="brigadier-defect-quantity"
-                    placeholder="0"
-                    @input="handleBrigadierDefectQuantityInput"
+                    data-field="brigadier-quantity"
+                    placeholder="Например, 12"
+                    @input="handleBrigadierQuantityInput"
                   />
-                  <p v-if="brigadierDefectQuantityError" class="field-error">
-                    {{ brigadierDefectQuantityError }}
+                  <p v-if="brigadierQuantityError" class="field-error">
+                  {{ brigadierQuantityError }}
+                  </p>
+                </label>
+
+                <label class="field">
+                  <span class="field__label">Плановая дата сдачи</span>
+                  <input
+                    v-model="brigadierModalPlannedCompletionDate"
+                    type="date"
+                    class="text-input"
+                    data-field="brigadier-planned-completion-date"
+                  />
+                  <p v-if="brigadierPlannedCompletionDateError" class="field-error">
+                  {{ brigadierPlannedCompletionDateError }}
                   </p>
                 </label>
               </div>
             </div>
 
-            <div class="order-form__meta">
-              <label class="field">
-                <span class="field__label">Номер заказа</span>
-                <input
-                  :value="brigadierModalOrderNumber"
-                  type="text"
-                  class="text-input"
-                  data-field="brigadier-order-number"
-                  readonly
-                  :placeholder="
-                    brigadierModalMode === 'create'
-                      ? 'Присваивается автоматически'
-                      : ''
-                  "
-                />
-              </label>
-
-              <label class="field order-form__quantity">
-                <span class="field__label">Количество изделий</span>
-                <div
-                  v-if="!isBrigadierQuantityEditable"
-                  class="operation-text"
-                >
-                  {{ brigadierModalQuantity }} шт.
-                </div>
-                <input
-                  v-else
-                  :value="brigadierModalQuantity"
-                  type="text"
-                  inputmode="numeric"
-                  class="text-input"
-                  data-field="brigadier-quantity"
-                  placeholder="Например, 12"
-                  @input="handleBrigadierQuantityInput"
-                />
-                <p v-if="brigadierQuantityError" class="field-error">
-                  {{ brigadierQuantityError }}
-                </p>
-              </label>
-
-              <label class="field">
-                <span class="field__label">Плановая дата сдачи</span>
-                <input
-                  v-model="brigadierModalPlannedCompletionDate"
-                  type="date"
-                  class="text-input"
-                  data-field="brigadier-planned-completion-date"
-                />
-                <p v-if="brigadierPlannedCompletionDateError" class="field-error">
-                  {{ brigadierPlannedCompletionDateError }}
-                </p>
-              </label>
-            </div>
-          </div>
-
-          <section class="order-assignments">
-            <div class="operations-section__head">
-              <div>
-                <span class="field__label">Назначение исполнителей</span>
-                <p class="field__hint">
+            <section class="order-assignments">
+              <div class="operations-section__head">
+                <div>
+                  <span class="field__label">Назначение исполнителей</span>
+                  <p class="field__hint">
                   {{
                     isBrigadierAssignmentsEditable
                       ? "Добавляйте исполнителей для операции кнопкой `+` слева от её названия."
                       : "Назначения исполнителей доступны только для просмотра."
                   }}
-                </p>
-              </div>
-            </div>
-
-            <div v-if="brigadierWorkerUsers.length === 0" class="banner banner--error">
-              <p>Нет активных пользователей с ролью исполнителя.</p>
-            </div>
-
-            <div
-              v-if="displayedBrigadierModalAssignmentGroups.length === 0"
-              class="empty-table-state"
-            >
-              <p>У этого изделия нет назначаемых операций.</p>
-            </div>
-
-            <div v-else class="assignment-list">
-              <div
-                v-for="group in displayedBrigadierModalAssignmentGroups"
-                :key="group.operationId"
-                class="assignment-row"
-              >
-                <div class="assignment-row__label">
-                  <button
-                    v-if="isBrigadierAssignmentsEditable"
-                    type="button"
-                    class="assignment-row__add"
-                    :aria-label="`Добавить исполнителя для операции ${group.operationLabel}`"
-                    :title="`Добавить исполнителя для операции ${group.operationLabel}`"
-                    @click="addBrigadierAssignment(
-                      group.operationId,
-                      group.operationCatalogEntryId,
-                      group.operationLabel,
-                    )"
-                  >
-                    +
-                  </button>
-                  <span>{{ group.operationLabel }}</span>
+                  </p>
                 </div>
-                <div class="assignment-row__control">
-                  <div
-                    v-for="assignment in group.assignments"
-                    :key="assignment.slotId"
-                    class="assignment-row__field"
-                  >
-                    <div class="assignment-input-wrap">
-                      <input
-                        :value="assignment.workerName"
-                        type="text"
-                        class="text-input text-input--with-clear"
-                        autocomplete="off"
-                        :readonly="!isBrigadierAssignmentsEditable"
-                        :data-brigadier-assignment-slot-id="assignment.slotId"
-                        placeholder="Выберите исполнителя"
-                        @input="handleBrigadierAssignmentInput(assignment.slotId, $event)"
-                        @focus="openBrigadierAssignmentDropdown(assignment.slotId)"
-                        @click="openBrigadierAssignmentDropdown(assignment.slotId)"
-                        @blur="scheduleBrigadierAssignmentDropdownClose(assignment.slotId)"
-                      />
-                      <button
-                        v-if="assignment.workerName && isBrigadierAssignmentsEditable"
-                        type="button"
-                        class="field-action field-action--right"
-                        aria-label="Очистить исполнителя"
-                        title="Очистить исполнителя"
-                        @mousedown.prevent
-                        @click="clearBrigadierAssignment(assignment.slotId)"
-                      >
-                        <span class="field-action__icon" aria-hidden="true" />
-                      </button>
-                      <div
-                        v-if="
-                          isBrigadierAssignmentDropdownOpen(assignment.slotId) &&
-                          isBrigadierAssignmentsEditable
-                        "
-                        class="assignment-dropdown"
-                      >
+              </div>
+
+              <div v-if="brigadierWorkerUsers.length === 0" class="banner banner--error">
+                <p>Нет активных пользователей с ролью исполнителя.</p>
+              </div>
+
+              <div
+                v-if="displayedBrigadierModalAssignmentGroups.length === 0"
+                class="empty-table-state"
+              >
+                <p>У этого изделия нет назначаемых операций.</p>
+              </div>
+
+              <div v-else class="assignment-list">
+                <div
+                  v-for="group in displayedBrigadierModalAssignmentGroups"
+                  :key="group.operationId"
+                  class="assignment-row"
+                >
+                  <div class="assignment-row__label">
+                    <button
+                      v-if="isBrigadierAssignmentsEditable"
+                      type="button"
+                      class="assignment-row__add"
+                      :aria-label="`Добавить исполнителя для операции ${group.operationLabel}`"
+                      :title="`Добавить исполнителя для операции ${group.operationLabel}`"
+                      @click="addBrigadierAssignment(
+                        group.operationId,
+                        group.operationCatalogEntryId,
+                        group.operationLabel,
+                      )"
+                    >
+                    +
+                    </button>
+                    <span>{{ group.operationLabel }}</span>
+                  </div>
+                  <div class="assignment-row__control">
+                    <div
+                      v-for="assignment in group.assignments"
+                      :key="assignment.slotId"
+                      class="assignment-row__field"
+                    >
+                      <div class="assignment-input-wrap">
+                        <input
+                          :value="assignment.workerName"
+                          type="text"
+                          class="text-input text-input--with-clear"
+                          autocomplete="off"
+                          :readonly="!isBrigadierAssignmentsEditable"
+                          :data-brigadier-assignment-slot-id="assignment.slotId"
+                          placeholder="Выберите исполнителя"
+                          @input="handleBrigadierAssignmentInput(assignment.slotId, $event)"
+                          @focus="openBrigadierAssignmentDropdown(assignment.slotId)"
+                          @click="openBrigadierAssignmentDropdown(assignment.slotId)"
+                          @blur="scheduleBrigadierAssignmentDropdownClose(assignment.slotId)"
+                        />
                         <button
-                          v-for="worker in getBrigadierAssignmentOptions(assignment)"
-                          :key="worker.id"
+                          v-if="assignment.workerName && isBrigadierAssignmentsEditable"
                           type="button"
-                          class="assignment-dropdown__option"
-                          :class="{
-                            'assignment-dropdown__option--selected':
-                              assignment.workerUserId === worker.id,
-                          }"
+                          class="field-action field-action--right"
+                          aria-label="Очистить исполнителя"
+                          title="Очистить исполнителя"
                           @mousedown.prevent
-                          @click="selectBrigadierAssignmentWorker(assignment.slotId, worker)"
+                          @click="clearBrigadierAssignment(assignment.slotId)"
                         >
-                          <span>{{ worker.name }}</span>
+                          <span class="field-action__icon" aria-hidden="true" />
                         </button>
                         <div
-                          v-if="getBrigadierAssignmentOptions(assignment).length === 0"
-                          class="assignment-dropdown__empty"
+                          v-if="
+                            isBrigadierAssignmentDropdownOpen(assignment.slotId) &&
+                            isBrigadierAssignmentsEditable
+                          "
+                          class="assignment-dropdown"
                         >
+                          <button
+                            v-for="worker in getBrigadierAssignmentOptions(assignment)"
+                            :key="worker.id"
+                            type="button"
+                            class="assignment-dropdown__option"
+                            :class="{
+                              'assignment-dropdown__option--selected':
+                                assignment.workerUserId === worker.id,
+                            }"
+                            @mousedown.prevent
+                            @click="selectBrigadierAssignmentWorker(assignment.slotId, worker)"
+                          >
+                            <span>{{ worker.name }}</span>
+                          </button>
+                          <div
+                            v-if="getBrigadierAssignmentOptions(assignment).length === 0"
+                            class="assignment-dropdown__empty"
+                          >
                           Нет исполнителей с требуемым навыком.
+                          </div>
                         </div>
                       </div>
-                    </div>
-                    <p
-                      v-if="
-                        isBrigadierAssignmentsEditable &&
-                        getBrigadierAssignmentError(assignment)
-                      "
-                      class="field-error"
-                    >
+                      <p
+                        v-if="
+                          isBrigadierAssignmentsEditable &&
+                          getBrigadierAssignmentError(assignment)
+                        "
+                        class="field-error"
+                      >
                       {{ getBrigadierAssignmentError(assignment) }}
-                    </p>
-                    <p
-                      v-else-if="getBrigadierAssignmentSkillWarning(assignment)"
-                      class="field__hint assignment-skill-warning"
-                    >
+                      </p>
+                      <p
+                        v-else-if="getBrigadierAssignmentSkillWarning(assignment)"
+                        class="field__hint assignment-skill-warning"
+                      >
                       {{ getBrigadierAssignmentSkillWarning(assignment) }}
-                    </p>
+                      </p>
+                    </div>
                   </div>
                 </div>
               </div>
-            </div>
-          </section>
+            </section>
 
-          <div class="modal__actions">
-            <button
-              v-if="brigadierSaveIssue"
-              type="button"
-              class="field-error-link field-error--actions"
-              @click="scrollToBrigadierSaveIssue"
-            >
+          </form>
+
+        </div>
+        <div class="modal__actions card-actions" v-if="!brigadierModalLoading && brigadierModalProduct">
+          <button
+            v-if="brigadierSaveIssue"
+            type="button"
+            class="field-error-link field-error--actions"
+            @click="scrollToBrigadierSaveIssue"
+          >
               {{ brigadierSaveIssue.message }}
-            </button>
+          </button>
 
-            <button
-              v-if="isBrigadierSaveAvailable"
-              type="submit"
-              class="primary-button"
-              :disabled="!brigadierModalCanSave || brigadierSaveLoading"
-            >
-              <span class="button-content">
-                <span class="button-icon button-icon--save" aria-hidden="true" />
-                <span>{{ brigadierSaveLoading ? "Сохранение..." : brigadierModalSaveLabel }}</span>
-              </span>
-            </button>
+          <button
+            v-if="isBrigadierSaveAvailable"
+            type="submit" form="order-form-dialog"
+            class="primary-button"
+            :disabled="!brigadierModalCanSave || brigadierSaveLoading"
+          >
+            <span class="button-content">
+              <span class="button-icon button-icon--save" aria-hidden="true" />
+              <span>{{ brigadierSaveLoading ? "Сохранение..." : brigadierModalSaveLabel }}</span>
+            </span>
+          </button>
 
-            <button
-              type="button"
-              class="ghost-button"
-              @click="closeBrigadierOrderModal"
-            >
-              <span class="button-content">
-                <span class="button-icon button-icon--close" aria-hidden="true" />
-                <span>{{ isBrigadierSaveAvailable ? "Отменить" : "Закрыть" }}</span>
-              </span>
-            </button>
-          </div>
-        </form>
+          <button
+            type="button"
+            class="ghost-button"
+            @click="closeBrigadierOrderModal"
+          >
+            <span class="button-content">
+              <span class="button-icon button-icon--close" aria-hidden="true" />
+              <span>{{ isBrigadierSaveAvailable ? "Отменить" : "Закрыть" }}</span>
+            </span>
+          </button>
+        </div>
       </section>
     </div>
 
@@ -10024,10 +10038,12 @@ async function handleResetUserPassword(user: UserRecord) {
       class="modal-backdrop"
       @click.self="closeBrigadierSaveConfirm"
     >
-      <section class="confirm-modal" role="dialog" aria-modal="true">
-        <div class="confirm-modal__content">
+      <section v-escape-close="closeBrigadierSaveConfirm" class="confirm-modal card-shell" role="dialog" aria-modal="true">
+        <div class="card-heading">
           <p class="confirm-modal__eyebrow">Подтверждение сохранения</p>
           <h2>{{ brigadierSaveConfirmTitle }}</h2>
+        </div>
+        <div class="confirm-modal__content card-scroll">
           <dl class="confirm-modal__details">
             <div>
               <dt>Заказ</dt>
@@ -10066,7 +10082,7 @@ async function handleResetUserPassword(user: UserRecord) {
           </p>
         </div>
 
-        <div class="confirm-modal__actions">
+        <div class="confirm-modal__actions card-actions">
           <button
             type="button"
             class="ghost-button"
@@ -10098,10 +10114,12 @@ async function handleResetUserPassword(user: UserRecord) {
       class="modal-backdrop"
       @click.self="closeSplitOrderModal"
     >
-      <section class="confirm-modal order-family-modal" role="dialog" aria-modal="true">
-        <div class="confirm-modal__content">
+      <section v-escape-close="closeSplitOrderModal" class="confirm-modal order-family-modal card-shell" role="dialog" aria-modal="true">
+        <div class="card-heading">
           <p class="confirm-modal__eyebrow">Разделение заказа</p>
           <h2>Заказ {{ splitOrderModal.orderNumber }}</h2>
+        </div>
+        <div class="confirm-modal__content card-scroll">
           <p class="confirm-modal__description">
             Указать количество изделий в каждой части. Общее количество остается
             неизменным, учтенное время распределяется пропорционально.
@@ -10146,7 +10164,7 @@ async function handleResetUserPassword(user: UserRecord) {
             <p>{{ splitOrderError }}</p>
           </div>
         </div>
-        <div class="confirm-modal__actions">
+        <div class="confirm-modal__actions card-actions">
           <button
             type="button"
             class="ghost-button"
@@ -10172,10 +10190,12 @@ async function handleResetUserPassword(user: UserRecord) {
       class="modal-backdrop"
       @click.self="closeMergeOrderModal"
     >
-      <section class="confirm-modal order-family-modal" role="dialog" aria-modal="true">
-        <div class="confirm-modal__content">
+      <section v-escape-close="closeMergeOrderModal" class="confirm-modal order-family-modal card-shell" role="dialog" aria-modal="true">
+        <div class="card-heading">
           <p class="confirm-modal__eyebrow">Слияние заказов</p>
           <h2>Включить части в {{ mergeOrderModal.orderNumber }}</h2>
+        </div>
+        <div class="confirm-modal__content card-scroll">
           <p class="confirm-modal__description">
             Выбранные части будут удалены, их количество и плановое время будут
             добавлены в текущий заказ.
@@ -10223,7 +10243,7 @@ async function handleResetUserPassword(user: UserRecord) {
             <p>{{ mergeOrderError }}</p>
           </div>
         </div>
-        <div class="confirm-modal__actions">
+        <div class="confirm-modal__actions card-actions">
           <button
             type="button"
             class="ghost-button"
@@ -10249,10 +10269,12 @@ async function handleResetUserPassword(user: UserRecord) {
       class="modal-backdrop"
       @click.self="closeWorkOrderActionConfirm"
     >
-      <section class="confirm-modal" role="dialog" aria-modal="true">
-        <div class="confirm-modal__content">
+      <section v-escape-close="closeWorkOrderActionConfirm" class="confirm-modal card-shell" role="dialog" aria-modal="true">
+        <div class="card-heading">
           <p class="confirm-modal__eyebrow">Подтверждение действия</p>
           <h2>{{ workOrderActionConfirmTitle }}</h2>
+        </div>
+        <div class="confirm-modal__content card-scroll">
           <dl class="confirm-modal__details">
             <div>
               <dt>Заказ</dt>
@@ -10279,7 +10301,7 @@ async function handleResetUserPassword(user: UserRecord) {
           </p>
         </div>
 
-        <div class="confirm-modal__actions">
+        <div class="confirm-modal__actions card-actions">
           <button
             type="button"
             class="ghost-button"
@@ -10317,19 +10339,12 @@ async function handleResetUserPassword(user: UserRecord) {
       class="modal-backdrop"
       @click.self="closeWorkOrderTimeBreakdown"
     >
-      <section class="modal time-breakdown-modal" role="dialog" aria-modal="true">
-        <div class="modal__head">
+      <section v-escape-close="closeWorkOrderTimeBreakdown" class="modal time-breakdown-modal card-shell" role="dialog" aria-modal="true">
+        <div class="modal__head card-heading">
           <div>
             <p class="modal__eyebrow">Суммарное время</p>
             <h2>Детализация времени</h2>
-            <p class="modal__description">
-              Заказ {{ workOrderTimeBreakdownModal.order.orderNumber }}
-              <template v-if="workOrderTimeBreakdownModal.order.quantity !== undefined">
-                · {{ workOrderTimeBreakdownModal.order.productName }}
-                · {{ workOrderTimeBreakdownModal.order.productVersion }}
-                · {{ workOrderTimeBreakdownModal.order.quantity }} шт.
-              </template>
-            </p>
+
           </div>
 
           <button type="button" class="ghost-button" @click="closeWorkOrderTimeBreakdown">
@@ -10339,83 +10354,92 @@ async function handleResetUserPassword(user: UserRecord) {
             </span>
           </button>
         </div>
+        <div class="card-scroll">
+          <p class="modal__description">
+              Заказ {{ workOrderTimeBreakdownModal.order.orderNumber }}
+            <template v-if="workOrderTimeBreakdownModal.order.quantity !== undefined">
+                · {{ workOrderTimeBreakdownModal.order.productName }}
+                · {{ workOrderTimeBreakdownModal.order.productVersion }}
+                · {{ workOrderTimeBreakdownModal.order.quantity }} шт.
+            </template>
+          </p>
 
-        <div v-if="workOrderTimeBreakdownError" class="banner banner--error">
-          <p>{{ workOrderTimeBreakdownError }}</p>
-          <button
-            type="button"
-            class="ghost-button"
-            :disabled="workOrderTimeBreakdownLoading"
-            @click="void openWorkOrderTimeBreakdown(workOrderTimeBreakdownModal.order)"
-          >
-            <span class="button-content">
-              <span class="button-icon button-icon--refresh" aria-hidden="true" />
-              <span>Повторить</span>
-            </span>
-          </button>
-        </div>
+          <div v-if="workOrderTimeBreakdownError" class="banner banner--error">
+            <p>{{ workOrderTimeBreakdownError }}</p>
+            <button
+              type="button"
+              class="ghost-button"
+              :disabled="workOrderTimeBreakdownLoading"
+              @click="void openWorkOrderTimeBreakdown(workOrderTimeBreakdownModal.order)"
+            >
+              <span class="button-content">
+                <span class="button-icon button-icon--refresh" aria-hidden="true" />
+                <span>Повторить</span>
+              </span>
+            </button>
+          </div>
 
-        <div v-else-if="workOrderTimeBreakdownLoading" class="banner">
-          <p>Загрузка детализации времени...</p>
-        </div>
+          <div v-else-if="workOrderTimeBreakdownLoading" class="banner">
+            <p>Загрузка детализации времени...</p>
+          </div>
 
-        <template v-else-if="workOrderTimeBreakdownModal.breakdown">
-          <div class="table-wrap time-breakdown-table-wrap">
-            <table class="products-table time-breakdown-table">
-              <thead>
-                <tr>
-                  <th>Операция</th>
-                  <th>Исполнитель</th>
-                  <th>Время</th>
-                  <th>Норма на операцию</th>
-                  <th>Среднее на изделие</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr v-if="workOrderTimeBreakdownModal.breakdown.items.length === 0">
-                  <td colspan="5" class="time-breakdown-table__empty">
+          <template v-else-if="workOrderTimeBreakdownModal.breakdown">
+            <div class="table-wrap time-breakdown-table-wrap">
+              <table class="products-table time-breakdown-table">
+                <thead>
+                  <tr>
+                    <th>Операция</th>
+                    <th>Исполнитель</th>
+                    <th>Время</th>
+                    <th>Норма на операцию</th>
+                    <th>Среднее на изделие</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-if="workOrderTimeBreakdownModal.breakdown.items.length === 0">
+                    <td colspan="5" class="time-breakdown-table__empty">
                     По заказу пока нет завершенных таймеров операций.
-                  </td>
-                </tr>
-                <tr
-                  v-for="item in workOrderTimeBreakdownModal.breakdown.items"
-                  :key="`${item.operationId ?? 'deleted'}:${item.workerUserId}`"
-                >
-                  <td>{{ item.operationName }}</td>
-                  <td>{{ item.workerUserName }}</td>
-                  <td>{{ formatTimerDuration(item.elapsedMs) }}</td>
-                  <td>
+                    </td>
+                  </tr>
+                  <tr
+                    v-for="item in workOrderTimeBreakdownModal.breakdown.items"
+                    :key="`${item.operationId ?? 'deleted'}:${item.workerUserId}`"
+                  >
+                    <td>{{ item.operationName }}</td>
+                    <td>{{ item.workerUserName }}</td>
+                    <td>{{ formatTimerDuration(item.elapsedMs) }}</td>
+                    <td>
                     {{
                       item.standardTimeSeconds === null
                         ? "Не указана"
                         : formatStandardTimeInput(item.standardTimeSeconds)
                     }}
-                  </td>
-                  <td>{{ formatTimerDuration(item.averageElapsedMs) }}</td>
-                </tr>
-              </tbody>
-              <tfoot>
-                <tr class="time-breakdown-total-row">
-                  <th colspan="2" scope="row">Итого</th>
-                  <td>
-                    <span class="time-breakdown-total-row__label">По всему заказу</span>
-                    <strong>
+                    </td>
+                    <td>{{ formatTimerDuration(item.averageElapsedMs) }}</td>
+                  </tr>
+                </tbody>
+                <tfoot>
+                  <tr class="time-breakdown-total-row">
+                    <th colspan="2" scope="row">Итого</th>
+                    <td>
+                      <span class="time-breakdown-total-row__label">По всему заказу</span>
+                      <strong>
                       {{ formatTimerDuration(workOrderTimeBreakdownModal.breakdown.totalElapsedMs) }}
-                    </strong>
-                  </td>
-                  <td>
-                    <span class="time-breakdown-total-row__label">План на изделие</span>
-                    <strong>
+                      </strong>
+                    </td>
+                    <td>
+                      <span class="time-breakdown-total-row__label">План на изделие</span>
+                      <strong>
                       {{
                         formatTimerDuration(
                           workOrderTimeBreakdownModal.breakdown.totalStandardTimeSeconds * 1000,
                         )
                       }}
-                    </strong>
-                  </td>
-                  <td>
-                    <span class="time-breakdown-total-row__label">На одно изделие</span>
-                    <strong>
+                      </strong>
+                    </td>
+                    <td>
+                      <span class="time-breakdown-total-row__label">На одно изделие</span>
+                      <strong>
                       {{
                         formatTimerDuration(
                           calculateAverageDuration(
@@ -10424,13 +10448,16 @@ async function handleResetUserPassword(user: UserRecord) {
                           ),
                         )
                       }}
-                    </strong>
-                  </td>
-                </tr>
-              </tfoot>
-            </table>
-          </div>
-        </template>
+                      </strong>
+                    </td>
+                  </tr>
+                </tfoot>
+              </table>
+            </div>
+          </template>
+
+        </div>
+
       </section>
     </div>
 
@@ -10438,11 +10465,11 @@ async function handleResetUserPassword(user: UserRecord) {
       v-if="isModalOpen"
       class="modal-backdrop"
     >
-      <section ref="productModalRef" class="modal" role="dialog" aria-modal="true">
-        <div class="modal__head">
+      <section v-escape-close="requestProductModalClose" ref="productModalRef" class="modal card-shell" role="dialog" aria-modal="true">
+        <div class="modal__head card-heading">
           <div>
             <h2>{{ modalTitle }}</h2>
-            <p class="modal__description">{{ modalDescription }}</p>
+
           </div>
 
           <button type="button" class="ghost-button" @click="requestProductModalClose">
@@ -10452,440 +10479,445 @@ async function handleResetUserPassword(user: UserRecord) {
             </span>
           </button>
         </div>
+        <div class="card-scroll">
+          <p class="modal__description">{{ modalDescription }}</p>
 
-        <div v-if="modalError" class="banner banner--error">
-          <p>{{ modalError }}</p>
-        </div>
-
-        <div v-if="modalLoading" class="banner">
-          <p>Загрузка изделия...</p>
-        </div>
-
-        <form
-          v-else
-          class="product-form"
-          @submit.prevent="saveProductToApi"
-        >
-          <div class="product-form__header">
-            <div class="form-grid">
-              <label class="field">
-                <span class="field__label">Наименование изделия</span>
-                <input
-                  ref="productNameInputRef"
-                  v-model="productName"
-                  type="text"
-                  class="text-input"
-                  :readonly="isViewMode"
-                  data-field="product-name"
-                  placeholder="Например, кошелек Daily Fold"
-                />
-                <p
-                  v-if="shouldShowFieldError(productName, productNameError)"
-                  class="field-error"
-                >
-                  {{ productNameError }}
-                </p>
-              </label>
-
-              <label class="field">
-                <span class="field__label">Версия</span>
-                <input
-                  v-model="productVersion"
-                  type="text"
-                  class="text-input"
-                  :readonly="isViewMode"
-                  data-field="product-version"
-                  placeholder="Например, 1.0"
-                />
-                <p
-                  v-if="shouldShowFieldError(productVersion, productVersionError)"
-                  class="field-error"
-                >
-                  {{ productVersionError }}
-                </p>
-              </label>
-
-              <label class="field">
-                <span class="field__label">Стоимость материала, ₽</span>
-                <input
-                  :value="formatMoneyInput(productMaterialCostCents)"
-                  type="number"
-                  min="0"
-                  step="0.01"
-                  class="text-input"
-                  data-field="product-material-cost"
-                  placeholder="Не указана"
-                  @input="handleProductMaterialCostInput"
-                />
-                <p v-if="productMaterialCostError" class="field-error">
-                  {{ productMaterialCostError }}
-                </p>
-              </label>
-
-              <label class="field">
-                <span class="field__label">Комментарий</span>
-                <textarea
-                  v-model="productComment"
-                  class="text-input product-comment-input"
-                  maxlength="1000"
-                  rows="4"
-                  data-field="product-comment"
-                  placeholder="Например, Блок операций 1: подготовка деталей"
-                />
-                <span class="field__hint">{{ productComment.length }}/1000</span>
-                <p v-if="productCommentError" class="field-error">
-                  {{ productCommentError }}
-                </p>
-              </label>
-            </div>
-
-            <p v-if="productIdentityError" class="field-error field-error--inline">
-              {{ productIdentityError }}
-            </p>
+          <div v-if="modalError" class="banner banner--error">
+            <p>{{ modalError }}</p>
           </div>
 
-          <section ref="productOperationsSectionRef" class="operations-section">
-            <div class="operations-section__head">
-              <div>
-                <span class="field__label">Таблица-дерево операций</span>
-                <p class="field__hint">
+          <div v-if="modalLoading" class="banner">
+            <p>Загрузка изделия...</p>
+          </div>
+
+          <form id="product-form-dialog"
+            v-else
+            class="product-form card-content-form"
+            @submit.prevent="saveProductToApi"
+          >
+            <div class="product-form__header">
+              <div class="form-grid">
+                <label class="field">
+                  <span class="field__label">Наименование изделия</span>
+                  <input
+                    ref="productNameInputRef"
+                    v-model="productName"
+                    type="text"
+                    class="text-input"
+                    :readonly="isViewMode"
+                    data-field="product-name"
+                    placeholder="Например, кошелек Daily Fold"
+                  />
+                  <p
+                    v-if="shouldShowFieldError(productName, productNameError)"
+                    class="field-error"
+                  >
+                  {{ productNameError }}
+                  </p>
+                </label>
+
+                <label class="field">
+                  <span class="field__label">Версия</span>
+                  <input
+                    v-model="productVersion"
+                    type="text"
+                    class="text-input"
+                    :readonly="isViewMode"
+                    data-field="product-version"
+                    placeholder="Например, 1.0"
+                  />
+                  <p
+                    v-if="shouldShowFieldError(productVersion, productVersionError)"
+                    class="field-error"
+                  >
+                  {{ productVersionError }}
+                  </p>
+                </label>
+
+                <label class="field">
+                  <span class="field__label">Стоимость материала, ₽</span>
+                  <input
+                    :value="formatMoneyInput(productMaterialCostCents)"
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    class="text-input"
+                    data-field="product-material-cost"
+                    placeholder="Не указана"
+                    @input="handleProductMaterialCostInput"
+                  />
+                  <p v-if="productMaterialCostError" class="field-error">
+                  {{ productMaterialCostError }}
+                  </p>
+                </label>
+
+                <label class="field">
+                  <span class="field__label">Комментарий</span>
+                  <textarea
+                    v-model="productComment"
+                    class="text-input product-comment-input"
+                    maxlength="1000"
+                    rows="4"
+                    data-field="product-comment"
+                    placeholder="Например, Блок операций 1: подготовка деталей"
+                  />
+                  <span class="field__hint">{{ productComment.length }}/1000</span>
+                  <p v-if="productCommentError" class="field-error">
+                  {{ productCommentError }}
+                  </p>
+                </label>
+              </div>
+
+              <p v-if="productIdentityError" class="field-error field-error--inline">
+              {{ productIdentityError }}
+              </p>
+            </div>
+
+            <section ref="productOperationsSectionRef" class="operations-section">
+              <div class="operations-section__head">
+                <div>
+                  <span class="field__label">Таблица-дерево операций</span>
+                  <p class="field__hint">
                   Группы вводятся вручную, операции выбираются из справочника и
                   должны быть уникальными в изделии.
-                </p>
+                  </p>
+                </div>
               </div>
-            </div>
 
-            <div
-              v-if="operationTree.length === 0"
-              class="empty-state empty-state--operations"
-            >
-              <p>Операции пока не добавлены.</p>
-              <p>Начните с корневого этапа, например `Крой` или `Пошив`.</p>
-            </div>
+              <div
+                v-if="operationTree.length === 0"
+                class="empty-state empty-state--operations"
+              >
+                <p>Операции пока не добавлены.</p>
+                <p>Начните с корневого этапа, например `Крой` или `Пошив`.</p>
+              </div>
 
-            <p
-              v-if="shouldShowValidation && operationTreeError"
-              class="field-error field-error--section"
-            >
+              <p
+                v-if="shouldShowValidation && operationTreeError"
+                class="field-error field-error--section"
+              >
               {{ operationTreeError }}
-            </p>
+              </p>
 
-            <div class="operation-table-wrap">
-              <table class="operation-table">
-                <thead>
-                  <tr>
-                    <th>Операция</th>
-                    <th>Тип</th>
-                    <th>Норма на одно изделие, мм:сс</th>
-                    <th>Цена, ₽</th>
-                    <th>Действия</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr v-for="row in flatOperationRows" :key="row.id">
-                    <td>
-                      <div
-                        class="operation-cell"
-                        :style="{ '--level': String(row.level) }"
-                      >
-                        <span v-if="row.level > 0" class="operation-branch" />
+              <div class="operation-table-wrap">
+                <table class="operation-table">
+                  <thead>
+                    <tr>
+                      <th>Операция</th>
+                      <th>Тип</th>
+                      <th>Норма на одно изделие, мм:сс</th>
+                      <th>Цена, ₽</th>
+                      <th>Действия</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="row in flatOperationRows" :key="row.id">
+                      <td>
+                        <div
+                          class="operation-cell"
+                          :style="{ '--level': String(row.level) }"
+                        >
+                          <span v-if="row.level > 0" class="operation-branch" />
 
-                        <div class="operation-editor">
-                          <div v-if="isViewMode" class="operation-text">
+                          <div class="operation-editor">
+                            <div v-if="isViewMode" class="operation-text">
                             {{ row.name }}
-                          </div>
-                          <div v-else class="assignment-input-wrap">
-                            <input
-                              v-if="row.isGroup"
-                              :value="row.name"
-                              type="text"
-                              class="operation-input operation-input--with-action"
-                              :data-operation-id="row.id"
-                              autocomplete="off"
-                              placeholder="Название группы операций"
-                              @input="handleOperationGroupNameInput(row.id, $event)"
-                            />
-                            <input
-                              v-else
-                              :value="row.name"
-                              type="text"
-                              class="operation-input operation-input--with-dropdown"
-                              :data-operation-id="row.id"
-                              autocomplete="off"
-                              placeholder="Название операции"
-                              @input="handleOperationNameInput(row.id, $event)"
-                              @focus="openOperationNameDropdown(row.id)"
-                              @click="openOperationNameDropdown(row.id)"
-                              @blur="scheduleOperationNameDropdownClose(row.id)"
-                            />
-                            <button
-                              v-if="row.name"
-                              type="button"
-                              class="field-action field-action--right"
-                              aria-label="Очистить операцию"
-                              title="Очистить операцию"
-                              @mousedown.prevent
-                              @click="
-                                row.isGroup
-                                  ? clearOperationGroupName(row.id)
-                                  : clearOperationName(row.id)
-                              "
-                            >
-                              <span class="field-action__icon" aria-hidden="true" />
-                            </button>
-                            <div
-                              v-if="
-                                !row.isGroup && isOperationNameDropdownOpen(row.id)
-                              "
-                              class="assignment-dropdown"
-                            >
+                            </div>
+                            <div v-else class="assignment-input-wrap">
+                              <input
+                                v-if="row.isGroup"
+                                :value="row.name"
+                                type="text"
+                                class="operation-input operation-input--with-action"
+                                :data-operation-id="row.id"
+                                autocomplete="off"
+                                placeholder="Название группы операций"
+                                @input="handleOperationGroupNameInput(row.id, $event)"
+                              />
+                              <input
+                                v-else
+                                :value="row.name"
+                                type="text"
+                                class="operation-input operation-input--with-dropdown"
+                                :data-operation-id="row.id"
+                                autocomplete="off"
+                                placeholder="Название операции"
+                                @input="handleOperationNameInput(row.id, $event)"
+                                @focus="openOperationNameDropdown(row.id)"
+                                @click="openOperationNameDropdown(row.id)"
+                                @blur="scheduleOperationNameDropdownClose(row.id)"
+                              />
                               <button
-                                v-for="entry in getOperationNameOptions(row)"
-                                :key="entry.id"
+                                v-if="row.name"
                                 type="button"
-                                class="assignment-dropdown__option"
-                                :class="{
-                                  'assignment-dropdown__option--selected':
-                                    normalizeName(row.name) === normalizeName(entry.name),
-                                }"
+                                class="field-action field-action--right"
+                                aria-label="Очистить операцию"
+                                title="Очистить операцию"
                                 @mousedown.prevent
-                                @click="selectOperationName(row.id, entry)"
+                                @click="
+                                  row.isGroup
+                                    ? clearOperationGroupName(row.id)
+                                    : clearOperationName(row.id)
+                                "
                               >
-                                <span>{{ entry.name }}</span>
+                                <span class="field-action__icon" aria-hidden="true" />
                               </button>
                               <div
-                                v-if="getOperationNameOptions(row).length === 0"
-                                class="assignment-dropdown__empty"
+                                v-if="
+                                  !row.isGroup && isOperationNameDropdownOpen(row.id)
+                                "
+                                class="assignment-dropdown"
                               >
+                                <button
+                                  v-for="entry in getOperationNameOptions(row)"
+                                  :key="entry.id"
+                                  type="button"
+                                  class="assignment-dropdown__option"
+                                  :class="{
+                                    'assignment-dropdown__option--selected':
+                                      normalizeName(row.name) === normalizeName(entry.name),
+                                  }"
+                                  @mousedown.prevent
+                                  @click="selectOperationName(row.id, entry)"
+                                >
+                                  <span>{{ entry.name }}</span>
+                                </button>
+                                <div
+                                  v-if="getOperationNameOptions(row).length === 0"
+                                  class="assignment-dropdown__empty"
+                                >
                                 {{
                                   activeOperationCatalogEntries.length === 0
                                     ? "Справочник операций пуст."
                                     : "Подходящие операции не найдены."
                                 }}
+                                </div>
                               </div>
                             </div>
-                          </div>
-                          <p
-                            v-if="!isViewMode && shouldShowOperationError(row)"
-                            class="field-error"
-                          >
+                            <p
+                              v-if="!isViewMode && shouldShowOperationError(row)"
+                              class="field-error"
+                            >
                             {{ operationErrors[row.id] }}
-                          </p>
+                            </p>
+                          </div>
                         </div>
-                      </div>
-                    </td>
-                    <td>
-                      <span
-                        class="operation-badge"
-                        :class="{
-                          'operation-badge--group': row.isGroup,
-                          'operation-badge--leaf': !row.isGroup,
-                        }"
-                      >
+                      </td>
+                      <td>
+                        <span
+                          class="operation-badge"
+                          :class="{
+                            'operation-badge--group': row.isGroup,
+                            'operation-badge--leaf': !row.isGroup,
+                          }"
+                        >
                         {{ row.isGroup ? "Группа" : "Операция" }}
-                      </span>
-                    </td>
-                    <td>
-                      <span v-if="row.isGroup" class="readonly-note">
-                        Норма только у операций
-                      </span>
-                      <input
-                        v-else
-                        :value="getOperationStandardTimeInput(row)"
-                        type="text"
-                        inputmode="numeric"
-                        class="operation-input operation-input--standard-time"
-                        :placeholder="getOperationStandardTimePlaceholder(row)"
-                        :data-standard-time-operation-id="row.id"
-                        :aria-label="`Норма времени операции ${row.name || row.id}`"
-                        @input="handleOperationStandardTimeInput(row.id, $event)"
-                        @blur="normalizeOperationStandardTimeInput(row.id, $event)"
-                      />
-                      <small
-                        v-if="!row.isGroup"
-                        class="readonly-note"
-                      >
-                        {{ getOperationStatisticalTimeLabel(row) }}
-                      </small>
-                      <p
-                        v-if="
-                          operationErrors[row.id]?.startsWith('Норма') ||
-                          operationErrors[row.id]?.includes('нормы времени')
-                        "
-                        class="field-error"
-                      >
-                        {{ operationErrors[row.id] }}
-                      </p>
-                    </td>
-                    <td>
-                      <span v-if="row.isGroup" class="readonly-note">
-                        Цена только у операций
-                      </span>
-                      <span v-else-if="isViewMode && !canManagePlanningSettings" class="operation-text">
-                        {{ formatMoneyInput(row.priceCents) || "Не указана" }}
-                      </span>
-                      <input
-                        v-else
-                        :value="formatMoneyInput(row.priceCents)"
-                        type="number"
-                        min="0"
-                        step="0.01"
-                        class="operation-input operation-input--price"
-                        :aria-label="`Цена операции ${row.name || row.id}`"
-                        @input="handleOperationPriceInput(row.id, $event)"
-                      />
-                      <p
-                        v-if="
-                          (!isViewMode || canManagePlanningSettings) &&
-                          (operationErrors[row.id]?.startsWith('Цена') ||
-                            operationErrors[row.id]?.startsWith('У группы'))
-                        "
-                        class="field-error"
-                      >
-                        {{ operationErrors[row.id] }}
-                      </p>
-                    </td>
-                    <td>
-                      <div class="operation-actions">
-                        <span v-if="isViewMode" class="readonly-note">
-                          Структура без изменений
                         </span>
-                        <template v-else>
-                          <button
-                            type="button"
-                            class="icon-action-button"
-                            title="Переместить выше"
-                            aria-label="Переместить выше"
-                            :disabled="!row.canMoveUp"
-                            @click="moveOperationUp(row.id)"
-                          >
-                            <span
-                              class="action-icon action-icon--up"
-                              aria-hidden="true"
-                            />
-                          </button>
-                          <button
-                            type="button"
-                            class="icon-action-button"
-                            title="Переместить ниже"
-                            aria-label="Переместить ниже"
-                            :disabled="!row.canMoveDown"
-                            @click="moveOperationDown(row.id)"
-                          >
-                            <span
-                              class="action-icon action-icon--down"
-                              aria-hidden="true"
-                            />
-                          </button>
-                          <button
-                            type="button"
-                            class="icon-action-button"
-                            title="Переместить внутрь предыдущей операции"
-                            aria-label="Переместить внутрь предыдущей операции"
-                            :disabled="!row.canIndent"
-                            @click="indentOperation(row.id)"
-                          >
-                            <span
-                              class="action-icon action-icon--indent"
-                              aria-hidden="true"
-                            />
-                          </button>
-                          <button
-                            type="button"
-                            class="icon-action-button"
-                            title="Поднять на уровень выше"
-                            aria-label="Поднять на уровень выше"
-                            :disabled="!row.canOutdent"
-                            @click="outdentOperation(row.id)"
-                          >
-                            <span
-                              class="action-icon action-icon--outdent"
-                              aria-hidden="true"
-                            />
-                          </button>
-                          <button
-                            type="button"
-                            class="icon-action-button"
-                            title="Создать вложенную операцию"
-                            aria-label="Создать вложенную операцию"
-                            @click="addChildOperation(row.id)"
-                          >
-                            <span
-                              class="action-icon action-icon--child"
-                              aria-hidden="true"
-                            />
-                          </button>
-                          <button
-                            type="button"
-                            class="icon-action-button"
-                            title="Создать следующую операцию"
-                            aria-label="Создать следующую операцию"
-                            @click="addSiblingOperation(row.id)"
-                          >
-                            <span
-                              class="action-icon action-icon--sibling"
-                              aria-hidden="true"
-                            />
-                          </button>
-                          <button
-                            type="button"
-                            class="ghost-button ghost-button--danger"
-                            @click="removeOperation(row.id)"
-                          >
-                            <span class="button-content">
-                              <span class="button-icon button-icon--delete" aria-hidden="true" />
-                              <span>Удалить</span>
-                            </span>
-                          </button>
-                        </template>
-                      </div>
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
+                      </td>
+                      <td>
+                        <span v-if="row.isGroup" class="readonly-note">
+                        Норма только у операций
+                        </span>
+                        <input
+                          v-else
+                          :value="getOperationStandardTimeInput(row)"
+                          type="text"
+                          inputmode="numeric"
+                          class="operation-input operation-input--standard-time"
+                          :placeholder="getOperationStandardTimePlaceholder(row)"
+                          :data-standard-time-operation-id="row.id"
+                          :aria-label="`Норма времени операции ${row.name || row.id}`"
+                          @input="handleOperationStandardTimeInput(row.id, $event)"
+                          @blur="normalizeOperationStandardTimeInput(row.id, $event)"
+                        />
+                        <small
+                          v-if="!row.isGroup"
+                          class="readonly-note"
+                        >
+                        {{ getOperationStatisticalTimeLabel(row) }}
+                        </small>
+                        <p
+                          v-if="
+                            operationErrors[row.id]?.startsWith('Норма') ||
+                            operationErrors[row.id]?.includes('нормы времени')
+                          "
+                          class="field-error"
+                        >
+                        {{ operationErrors[row.id] }}
+                        </p>
+                      </td>
+                      <td>
+                        <span v-if="row.isGroup" class="readonly-note">
+                        Цена только у операций
+                        </span>
+                        <span v-else-if="isViewMode && !canManagePlanningSettings" class="operation-text">
+                        {{ formatMoneyInput(row.priceCents) || "Не указана" }}
+                        </span>
+                        <input
+                          v-else
+                          :value="formatMoneyInput(row.priceCents)"
+                          type="number"
+                          min="0"
+                          step="0.01"
+                          class="operation-input operation-input--price"
+                          :aria-label="`Цена операции ${row.name || row.id}`"
+                          @input="handleOperationPriceInput(row.id, $event)"
+                        />
+                        <p
+                          v-if="
+                            (!isViewMode || canManagePlanningSettings) &&
+                            (operationErrors[row.id]?.startsWith('Цена') ||
+                              operationErrors[row.id]?.startsWith('У группы'))
+                          "
+                          class="field-error"
+                        >
+                        {{ operationErrors[row.id] }}
+                        </p>
+                      </td>
+                      <td>
+                        <div class="operation-actions">
+                          <span v-if="isViewMode" class="readonly-note">
+                          Структура без изменений
+                          </span>
+                          <template v-else>
+                            <button
+                              type="button"
+                              class="icon-action-button"
+                              title="Переместить выше"
+                              aria-label="Переместить выше"
+                              :disabled="!row.canMoveUp"
+                              @click="moveOperationUp(row.id)"
+                            >
+                              <span
+                                class="action-icon action-icon--up"
+                                aria-hidden="true"
+                              />
+                            </button>
+                            <button
+                              type="button"
+                              class="icon-action-button"
+                              title="Переместить ниже"
+                              aria-label="Переместить ниже"
+                              :disabled="!row.canMoveDown"
+                              @click="moveOperationDown(row.id)"
+                            >
+                              <span
+                                class="action-icon action-icon--down"
+                                aria-hidden="true"
+                              />
+                            </button>
+                            <button
+                              type="button"
+                              class="icon-action-button"
+                              title="Переместить внутрь предыдущей операции"
+                              aria-label="Переместить внутрь предыдущей операции"
+                              :disabled="!row.canIndent"
+                              @click="indentOperation(row.id)"
+                            >
+                              <span
+                                class="action-icon action-icon--indent"
+                                aria-hidden="true"
+                              />
+                            </button>
+                            <button
+                              type="button"
+                              class="icon-action-button"
+                              title="Поднять на уровень выше"
+                              aria-label="Поднять на уровень выше"
+                              :disabled="!row.canOutdent"
+                              @click="outdentOperation(row.id)"
+                            >
+                              <span
+                                class="action-icon action-icon--outdent"
+                                aria-hidden="true"
+                              />
+                            </button>
+                            <button
+                              type="button"
+                              class="icon-action-button"
+                              title="Создать вложенную операцию"
+                              aria-label="Создать вложенную операцию"
+                              @click="addChildOperation(row.id)"
+                            >
+                              <span
+                                class="action-icon action-icon--child"
+                                aria-hidden="true"
+                              />
+                            </button>
+                            <button
+                              type="button"
+                              class="icon-action-button"
+                              title="Создать следующую операцию"
+                              aria-label="Создать следующую операцию"
+                              @click="addSiblingOperation(row.id)"
+                            >
+                              <span
+                                class="action-icon action-icon--sibling"
+                                aria-hidden="true"
+                              />
+                            </button>
+                            <button
+                              type="button"
+                              class="ghost-button ghost-button--danger"
+                              @click="removeOperation(row.id)"
+                            >
+                              <span class="button-content">
+                                <span class="button-icon button-icon--delete" aria-hidden="true" />
+                                <span>Удалить</span>
+                              </span>
+                            </button>
+                          </template>
+                        </div>
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
 
-            <div v-if="!isViewMode" class="operations-footer">
-              <button
-                type="button"
-                class="secondary-button secondary-button--add"
-                data-field="add-root-operation"
-                @click="addRootOperation"
-              >
-                <span class="button-content">
-                  <span class="button-icon button-icon--plus" aria-hidden="true" />
-                  <span>
+              <div v-if="!isViewMode" class="operations-footer">
+                <button
+                  type="button"
+                  class="secondary-button secondary-button--add"
+                  data-field="add-root-operation"
+                  @click="addRootOperation"
+                >
+                  <span class="button-content">
+                    <span class="button-icon button-icon--plus" aria-hidden="true" />
+                    <span>
                     {{
                       operationTree.length > 0
                         ? "Добавить корневую операцию"
                         : "Добавить первую операцию"
                     }}
+                    </span>
                   </span>
-                </span>
-              </button>
-            </div>
-          </section>
+                </button>
+              </div>
+            </section>
 
-          <div class="modal__actions">
-            <button
-              v-if="saveBlockIssue"
-              type="button"
-              class="field-error-link field-error--actions"
-              @click="scrollToSaveBlockIssue"
-            >
+          </form>
+
+        </div>
+        <div class="modal__actions card-actions" v-if="!modalLoading">
+          <button
+            v-if="saveBlockIssue"
+            type="button"
+            class="field-error-link field-error--actions"
+            @click="scrollToSaveBlockIssue"
+          >
               {{ saveBlockIssue.message }}
-            </button>
+          </button>
 
-            <button
-              type="submit"
-              class="primary-button"
-              :class="{ 'primary-button--blocked': !canSaveProduct && !saveLoading }"
-              :aria-disabled="!canSaveProduct"
-              :disabled="saveLoading"
-            >
-              <span class="button-content">
-                <span class="button-icon button-icon--save" aria-hidden="true" />
-                <span>
+          <button
+            type="submit" form="product-form-dialog"
+            class="primary-button"
+            :class="{ 'primary-button--blocked': !canSaveProduct && !saveLoading }"
+            :aria-disabled="!canSaveProduct"
+            :disabled="saveLoading"
+          >
+            <span class="button-content">
+              <span class="button-icon button-icon--save" aria-hidden="true" />
+              <span>
                   {{
                     saveLoading
                       ? "Сохранение..."
@@ -10893,18 +10925,17 @@ async function handleResetUserPassword(user: UserRecord) {
                         ? "Сохранить изменения"
                         : "Сохранить изделие"
                   }}
-                </span>
               </span>
-            </button>
+            </span>
+          </button>
 
-            <button type="button" class="ghost-button" @click="requestProductModalClose">
-              <span class="button-content">
-                <span class="button-icon button-icon--close" aria-hidden="true" />
-                <span>{{ isViewMode ? "Закрыть" : "Отменить" }}</span>
-              </span>
-            </button>
-          </div>
-        </form>
+          <button type="button" class="ghost-button" @click="requestProductModalClose">
+            <span class="button-content">
+              <span class="button-icon button-icon--close" aria-hidden="true" />
+              <span>{{ isViewMode ? "Закрыть" : "Отменить" }}</span>
+            </span>
+          </button>
+        </div>
       </section>
     </div>
 
@@ -10913,16 +10944,18 @@ async function handleResetUserPassword(user: UserRecord) {
       class="modal-backdrop"
       @click.self="cancelProductModalClose"
     >
-      <section class="confirm-modal" role="dialog" aria-modal="true">
-        <div class="confirm-modal__content">
+      <section v-escape-close="cancelProductModalClose" class="confirm-modal card-shell" role="dialog" aria-modal="true">
+        <div class="card-heading">
           <p class="confirm-modal__eyebrow">Несохранённые изменения</p>
           <h2>Выйти без сохранения?</h2>
+        </div>
+        <div class="confirm-modal__content card-scroll">
           <p class="confirm-modal__description">
             Изменения в карточке изделия будут потеряны.
           </p>
         </div>
 
-        <div class="confirm-modal__actions">
+        <div class="confirm-modal__actions card-actions">
           <button type="button" class="ghost-button" @click="cancelProductModalClose">
             <span class="button-content">
               <span class="button-icon button-icon--close" aria-hidden="true" />
@@ -10948,10 +10981,12 @@ async function handleResetUserPassword(user: UserRecord) {
       class="modal-backdrop"
       @click.self="closeDeleteConfirmation"
     >
-      <section class="confirm-modal" role="dialog" aria-modal="true">
-        <div class="confirm-modal__content">
+      <section v-escape-close="closeDeleteConfirmation" class="confirm-modal card-shell" role="dialog" aria-modal="true">
+        <div class="card-heading">
           <p class="confirm-modal__eyebrow">Подтверждение удаления</p>
           <h2>Удалить изделие?</h2>
+        </div>
+        <div class="confirm-modal__content card-scroll">
           <dl class="confirm-modal__details">
             <div>
               <dt>Наименование</dt>
@@ -10968,7 +11003,7 @@ async function handleResetUserPassword(user: UserRecord) {
           </p>
         </div>
 
-        <div class="confirm-modal__actions">
+        <div class="confirm-modal__actions card-actions">
           <button
             type="button"
             class="ghost-button"
@@ -11000,10 +11035,12 @@ async function handleResetUserPassword(user: UserRecord) {
       class="modal-backdrop"
       @click.self="closeUserDeleteConfirmation"
     >
-      <section class="confirm-modal" role="dialog" aria-modal="true">
-        <div class="confirm-modal__content">
+      <section v-escape-close="closeUserDeleteConfirmation" class="confirm-modal card-shell" role="dialog" aria-modal="true">
+        <div class="card-heading">
           <p class="confirm-modal__eyebrow">Подтверждение удаления</p>
           <h2>Удалить пользователя?</h2>
+        </div>
+        <div class="confirm-modal__content card-scroll">
           <dl class="confirm-modal__details">
             <div>
               <dt>Имя</dt>
@@ -11020,7 +11057,7 @@ async function handleResetUserPassword(user: UserRecord) {
           </p>
         </div>
 
-        <div class="confirm-modal__actions">
+        <div class="confirm-modal__actions card-actions">
           <button
             type="button"
             class="ghost-button"
@@ -11050,10 +11087,12 @@ async function handleResetUserPassword(user: UserRecord) {
       class="modal-backdrop"
       @click.self="closeWorkerAssignmentStatusConfirm"
     >
-      <section class="confirm-modal" role="dialog" aria-modal="true">
-        <div class="confirm-modal__content">
+      <section v-escape-close="closeWorkerAssignmentStatusConfirm" class="confirm-modal card-shell" role="dialog" aria-modal="true">
+        <div class="card-heading">
           <p class="confirm-modal__eyebrow">Подтверждение действия</p>
           <h2>{{ workerAssignmentStatusConfirmTitle }}</h2>
+        </div>
+        <div class="confirm-modal__content card-scroll">
           <dl class="confirm-modal__details">
             <div>
               <dt>Заказ</dt>
@@ -11069,7 +11108,7 @@ async function handleResetUserPassword(user: UserRecord) {
           </p>
         </div>
 
-        <div class="confirm-modal__actions">
+        <div class="confirm-modal__actions card-actions">
           <button
             type="button"
             class="ghost-button"
@@ -11105,10 +11144,9 @@ async function handleResetUserPassword(user: UserRecord) {
     <WorkSummaryModal v-if="workSummaryOpen && canManagePlanningSettings" @close="workSummaryOpen = false" />
     <CompletedWorkModal v-if="personalWorkOpen && currentSession?.userRoles.includes('worker')" :key="currentSession.userId" :user-id="currentSession.userId" personal @close="personalWorkOpen = false" />
     <CompletedWorkModal v-if="completedWorkUser && canManagePlanningSettings" :user-id="completedWorkUser.id" @close="completedWorkUser = null" />
-    <div v-if="bonusUser && canManagePlanningSettings" class="bonus-dialog-overlay" @click.self="bonusUser = null" @keydown.esc="bonusUser = null">
-      <section class="bonus-dialog" role="dialog" aria-modal="true" aria-label="Премии" tabindex="-1">
-        <button type="button" class="ghost-button" @click="bonusUser = null">Закрыть</button>
-        <h2 v-if="bonusUser">{{ bonusUser.name }}</h2>
+    <div v-if="bonusUser && canManagePlanningSettings" class="bonus-dialog-overlay" @click.self="bonusUser = null">
+      <section v-escape-close="() => { bonusUser = null }" class="bonus-dialog card-shell" role="dialog" aria-modal="true" aria-label="Премии" tabindex="-1">
+        <h2 v-if="bonusUser" class="card-heading">Премии · {{ bonusUser.name }}</h2>
         <BonusPanel :key="bonusUser.id" :user-id="bonusUser.id" @close="bonusUser = null" />
       </section>
     </div>
@@ -11155,15 +11193,17 @@ async function handleResetUserPassword(user: UserRecord) {
       class="modal-backdrop"
       @click.self="closeWorkerQrScanner"
     >
-      <section
-        class="confirm-modal worker-qr-scanner-modal"
+      <section v-escape-close="closeWorkerQrScanner"
+        class="confirm-modal worker-qr-scanner-modal card-shell"
         role="dialog"
         aria-modal="true"
         aria-labelledby="worker-qr-scanner-title"
       >
-        <div class="confirm-modal__content">
+        <div class="card-heading">
           <p class="confirm-modal__eyebrow">Быстрый переход</p>
           <h2 id="worker-qr-scanner-title">Сканирование QR-кода</h2>
+        </div>
+        <div class="confirm-modal__content card-scroll">
           <p class="confirm-modal__description">
             Наведите камеру на QR-код в печатной форме заказа.
           </p>
@@ -11187,7 +11227,7 @@ async function handleResetUserPassword(user: UserRecord) {
           </p>
         </div>
 
-        <div class="confirm-modal__actions">
+        <div class="confirm-modal__actions card-actions">
           <button type="button" class="ghost-button" @click="closeWorkerQrScanner">
             <span class="button-content">
               <span class="button-icon button-icon--close" aria-hidden="true" />
@@ -11203,16 +11243,18 @@ async function handleResetUserPassword(user: UserRecord) {
       class="modal-backdrop"
       @click.self="closeWorkerDayEndConfirm"
     >
-      <section class="confirm-modal" role="dialog" aria-modal="true">
-        <div class="confirm-modal__content">
+      <section v-escape-close="closeWorkerDayEndConfirm" class="confirm-modal card-shell" role="dialog" aria-modal="true">
+        <div class="card-heading">
           <p class="confirm-modal__eyebrow">Подтверждение завершения</p>
           <h2>Закончить рабочий день?</h2>
+        </div>
+        <div class="confirm-modal__content card-scroll">
           <p class="confirm-modal__description">
             Будут остановлены текущий активный таймер и рабочая смена исполнителя.
           </p>
         </div>
 
-        <div class="confirm-modal__actions">
+        <div class="confirm-modal__actions card-actions">
           <button
             type="button"
             class="ghost-button"

@@ -11,8 +11,12 @@ from sqlalchemy.orm import Session
 from app.api.dependencies import get_session, require_any_role
 from app.schemas.report import ProductQuantityReport, ProductTimeReport
 from app.schemas.report import ReportFilterOptions
-from app.schemas.report import OrderBatchReport
+from app.schemas.report import OrderBatchReport, OperationWorkerReport
 from app.services.report_service import ReportService
+
+from app.services.operation_worker_report_service import (
+    OperationWorkerReportService,
+)
 
 router = APIRouter()
 ReportId = Annotated[int, Field(ge=1)]
@@ -152,6 +156,60 @@ def export_order_batch_report(
     session: Session = Depends(get_session),
 ) -> Response:
     content, filename = ReportService(session).build_order_batch_xlsx(
+        date_from,
+        date_to,
+        product_id,
+        worker_user_id,
+        operation_catalog_entry_id,
+        order_number,
+    )
+    return _xlsx_response(content, filename)
+
+
+@router.get(
+    "/operation-workers",
+    response_model=OperationWorkerReport,
+    summary="Operation and worker time by batch",
+)
+def get_operation_worker_report(
+    date_from: date,
+    date_to: date,
+    product_id: Annotated[list[ReportId] | None, Query()] = None,
+    worker_user_id: Annotated[list[ReportId] | None, Query()] = None,
+    operation_catalog_entry_id: Annotated[list[ReportId] | None, Query()] = None,
+    order_number: Annotated[str | None, Query(max_length=64)] = None,
+    page: Annotated[int, Query(ge=1)] = 1,
+    page_size: Annotated[int, Query(ge=1, le=100)] = 20,
+    _: object = Depends(require_any_role("reports")),
+    session: Session = Depends(get_session),
+) -> OperationWorkerReport:
+    return OperationWorkerReportService(session).get_report(
+        date_from,
+        date_to,
+        product_id,
+        worker_user_id,
+        operation_catalog_entry_id,
+        order_number,
+        page,
+        page_size,
+    )
+
+
+@router.get(
+    "/operation-workers/export.xlsx",
+    summary="Export operation and worker time by batch",
+)
+def export_operation_worker_report(
+    date_from: date,
+    date_to: date,
+    product_id: Annotated[list[ReportId] | None, Query()] = None,
+    worker_user_id: Annotated[list[ReportId] | None, Query()] = None,
+    operation_catalog_entry_id: Annotated[list[ReportId] | None, Query()] = None,
+    order_number: Annotated[str | None, Query(max_length=64)] = None,
+    _: object = Depends(require_any_role("reports")),
+    session: Session = Depends(get_session),
+) -> Response:
+    content, filename = OperationWorkerReportService(session).export_xlsx(
         date_from,
         date_to,
         product_id,

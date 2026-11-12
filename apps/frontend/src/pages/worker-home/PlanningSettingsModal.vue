@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from "vue";
+import { vEscapeClose } from "./escapeClose";
 
 import {
   fetchPlanningSettings,
@@ -153,8 +154,8 @@ function getErrorMessage(value: unknown, fallback: string): string {
 
 <template>
   <div class="planning-backdrop" @click.self="requestClose">
-    <section class="planning-modal" role="dialog" aria-modal="true">
-      <header class="planning-modal__head">
+    <section v-escape-close="requestClose" class="planning-modal card-shell" role="dialog" aria-modal="true">
+      <header class="planning-modal__head card-heading">
         <div>
           <p>Планирование производства</p>
           <h2>Настройки расчёта</h2>
@@ -163,67 +164,70 @@ function getErrorMessage(value: unknown, fallback: string): string {
           Закрыть
         </button>
       </header>
+      <div class="card-scroll">
 
-      <p v-if="error" class="planning-message planning-message--error">{{ error }}</p>
-      <p v-if="loading" class="planning-message">Загрузка настроек...</p>
+        <p v-if="error" class="planning-message planning-message--error">{{ error }}</p>
+        <p v-if="loading" class="planning-message">Загрузка настроек...</p>
 
-      <div v-else class="planning-fields">
-        <label>
-          <span>Смещение отображаемой даты, дней</span>
-          <input
-            v-model.number="displayOffsetDays"
-            type="number"
-            min="0"
-            step="1"
-          />
-          <small>Прибавляется только к показываемой расчётной дате.</small>
-        </label>
-        <label>
-          <span>Подготовка каждой новой операции, часов</span>
-          <input
-            v-model.number="preparationHours"
-            type="number"
-            min="0"
-            step="0.25"
-          />
-          <small>Начисляется один раз до начала операции.</small>
-        </label>
-        <label>
-          <span>Горизонт расчёта</span>
-          <select v-model.number="horizonMonths">
-            <option :value="1">1 месяц</option>
-            <option :value="3">3 месяца</option>
-            <option :value="6">6 месяцев</option>
-            <option :value="12">12 месяцев</option>
-          </select>
-        </label>
-        <p v-if="formError" class="planning-message planning-message--error">
+        <div v-else class="planning-fields">
+          <label>
+            <span>Смещение отображаемой даты, дней</span>
+            <input
+              v-model.number="displayOffsetDays"
+              type="number"
+              min="0"
+              step="1"
+            />
+            <small>Прибавляется только к показываемой расчётной дате.</small>
+          </label>
+          <label>
+            <span>Подготовка каждой новой операции, часов</span>
+            <input
+              v-model.number="preparationHours"
+              type="number"
+              min="0"
+              step="0.25"
+            />
+            <small>Начисляется один раз до начала операции.</small>
+          </label>
+          <label>
+            <span>Горизонт расчёта</span>
+            <select v-model.number="horizonMonths">
+              <option :value="1">1 месяц</option>
+              <option :value="3">3 месяца</option>
+              <option :value="6">6 месяцев</option>
+              <option :value="12">12 месяцев</option>
+            </select>
+          </label>
+          <p v-if="formError" class="planning-message planning-message--error">
           {{ formError }}
-        </p>
+          </p>
+        </div>
+
+        <section class="calendar-settings" aria-label="Производственный календарь">
+          <h3>Производственный календарь РФ</h3>
+          <p>Источник: calendar.kuzyak.in · пятидневная 40-часовая неделя</p>
+          <button
+            type="button"
+            class="planning-button"
+            :disabled="calendarLoading || calendarUpdating"
+            @click="updateCalendar"
+          >
+          {{ calendarUpdateLabel }}
+          </button>
+          <p v-if="calendarStatus?.years.length">
+          Сохранённые годы: {{ calendarStatus.years.join(", ") }}
+          </p>
+          <p>Загрузить текущий год и доступные последующие годы.</p>
+          <p v-if="calendarError" class="planning-message planning-message--error" role="alert">
+          {{ calendarError }}
+          </p>
+          <p v-if="calendarMessage" class="planning-message" role="status">{{ calendarMessage }}</p>
+        </section>
+
       </div>
 
-      <section class="calendar-settings" aria-label="Производственный календарь">
-        <h3>Производственный календарь РФ</h3>
-        <p>Источник: calendar.kuzyak.in · пятидневная 40-часовая неделя</p>
-        <button
-          type="button"
-          class="planning-button"
-          :disabled="calendarLoading || calendarUpdating"
-          @click="updateCalendar"
-        >
-          {{ calendarUpdateLabel }}
-        </button>
-        <p v-if="calendarStatus?.years.length">
-          Сохранённые годы: {{ calendarStatus.years.join(", ") }}
-        </p>
-        <p>Загрузить текущий год и доступные последующие годы.</p>
-        <p v-if="calendarError" class="planning-message planning-message--error" role="alert">
-          {{ calendarError }}
-        </p>
-        <p v-if="calendarMessage" class="planning-message" role="status">{{ calendarMessage }}</p>
-      </section>
-
-      <footer class="planning-modal__actions">
+      <footer class="planning-modal__actions card-actions">
         <span v-if="hasChanges">Есть несохранённые изменения</span>
         <button
           type="button"
@@ -236,10 +240,12 @@ function getErrorMessage(value: unknown, fallback: string): string {
       </footer>
 
       <div v-if="closeConfirmationOpen" class="planning-confirm-backdrop">
-        <section class="planning-confirm" role="alertdialog" aria-modal="true">
-          <h3>Закрыть без сохранения?</h3>
-          <p>Изменённые настройки будут потеряны.</p>
-          <div>
+        <section v-escape-close="() => { closeConfirmationOpen = false }" class="planning-confirm card-shell" role="alertdialog" aria-modal="true">
+          <h3 class="card-heading">Закрыть без сохранения?</h3>
+          <div class="card-scroll">
+            <p>Изменённые настройки будут потеряны.</p>
+          </div>
+          <div class="card-actions">
             <button
               type="button"
               class="planning-button planning-button--danger"

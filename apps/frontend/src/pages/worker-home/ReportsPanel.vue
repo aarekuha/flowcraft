@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
+import { computed, onMounted, ref, onBeforeUnmount } from "vue";
 
 import type { ProductSummary } from "@/shared/api/products";
 import {
@@ -15,6 +15,9 @@ import {
   type ReportFilters,
   type ReportFilterOptions,
   type OrderBatchReport,
+  fetchOperationWorkerReport,
+  downloadOperationWorkerReport,
+  type OperationWorkerReport,
 } from "@/shared/api/reports";
 import {
   clearReportFilterIds,
@@ -26,12 +29,13 @@ import {
   toggleReportFilterId,
 } from "@/shared/lib/reportFormatting";
 
-type ReportTab = "products" | "product-time" | "order-batches";
+type ReportTab = "products" | "product-time" | "order-batches" | "operation-workers";
 
 const props = defineProps<{
   products: ProductSummary[];
 }>();
 
+const reportsPanel = ref<HTMLElement | null>(null);
 const activeReport = ref<ReportTab>("products");
 const dateTo = ref(toDateInput(new Date()));
 const dateFrom = ref(toDateInput(addDays(new Date(), -29)));
@@ -45,6 +49,9 @@ const orderNumber = ref("");
 const productQuantityReport = ref<ProductQuantityReport | null>(null);
 const productTimeReport = ref<ProductTimeReport | null>(null);
 const orderBatchReport = ref<OrderBatchReport | null>(null);
+const operationWorkerReport = ref<OperationWorkerReport | null>(null);
+const batchReport = computed(() => activeReport.value === "operation-workers"
+  ? operationWorkerReport.value : orderBatchReport.value);
 const orderBatchPage = ref(1);
 const loading = ref(false);
 const exportLoading = ref(false);
@@ -97,9 +104,43 @@ const periodError = computed(() => {
 });
 
 onMounted(() => {
+  document.addEventListener("click", closeFiltersOnOutsideClick, true);
+  document.addEventListener("keydown", closeFiltersOnEscape);
   void loadFilterOptions();
   void loadReport();
 });
+
+onBeforeUnmount(() => {
+  document.removeEventListener("click", closeFiltersOnOutsideClick, true);
+  document.removeEventListener("keydown", closeFiltersOnEscape);
+});
+
+function closeFiltersOnOutsideClick(event: MouseEvent) {
+  if (!(event.target instanceof Node)) {
+    return;
+  }
+  const target = event.target;
+  reportsPanel.value?.querySelectorAll<HTMLDetailsElement>(".reports-multi-select[open]")
+    .forEach((filter) => {
+      if (!filter.contains(target)) {
+        filter.open = false;
+      }
+    });
+}
+
+function closeFiltersOnEscape(event: KeyboardEvent) {
+  if (event.key !== "Escape") {
+    return;
+  }
+  reportsPanel.value?.querySelectorAll<HTMLDetailsElement>(".reports-multi-select[open]")
+    .forEach((filter) => {
+      const hadFocus = filter.contains(document.activeElement);
+      filter.open = false;
+      if (hadFocus) {
+        filter.querySelector("summary")?.focus();
+      }
+    });
+}
 
 async function loadFilterOptions() {
   filterOptionsError.value = "";
@@ -139,6 +180,8 @@ async function loadReport() {
       productQuantityReport.value = await fetchProductQuantityReport(getFilters());
     } else if (activeReport.value === "product-time") {
       productTimeReport.value = await fetchProductTimeReport(getFilters());
+    } else if (activeReport.value === "operation-workers") {
+      operationWorkerReport.value = await fetchOperationWorkerReport(getFilters());
     } else {
       orderBatchReport.value = await fetchOrderBatchReport(getFilters());
     }
@@ -150,7 +193,7 @@ async function loadReport() {
 }
 
 async function showReport() {
-  if (activeReport.value === "order-batches") {
+  if (activeReport.value === "order-batches" || activeReport.value === "operation-workers") {
     orderBatchPage.value = 1;
   }
   await loadReport();
@@ -169,6 +212,8 @@ async function exportReport() {
       result = await downloadProductQuantityReport(getFilters());
     } else if (activeReport.value === "product-time") {
       result = await downloadProductTimeReport(getFilters());
+    } else if (activeReport.value === "operation-workers") {
+      result = await downloadOperationWorkerReport(getFilters());
     } else {
       result = await downloadOrderBatchReport(getFilters());
     }
@@ -198,13 +243,13 @@ function getFilters(): ReportFilters {
   if (activeReport.value !== "products" && selectedWorkerUserIds.value.length > 0) {
     filters.workerUserIds = selectedWorkerUserIds.value;
   }
-  if (activeReport.value === "order-batches" && selectedOperationCatalogEntryIds.value.length > 0) {
+  if ((activeReport.value === "order-batches" || activeReport.value === "operation-workers") && selectedOperationCatalogEntryIds.value.length > 0) {
     filters.operationCatalogEntryIds = selectedOperationCatalogEntryIds.value;
   }
   if (activeReport.value !== "products" && orderNumber.value.trim()) {
     filters.orderNumber = orderNumber.value.trim();
   }
-  if (activeReport.value === "order-batches") {
+  if (activeReport.value === "order-batches" || activeReport.value === "operation-workers") {
     filters.page = orderBatchPage.value;
     filters.pageSize = 20;
   }
@@ -212,7 +257,7 @@ function getFilters(): ReportFilters {
 }
 
 async function selectOrderBatchPage(page: number) {
-  if (page < 1 || page === orderBatchPage.value || page > (orderBatchReport.value?.pages ?? 1)) {
+  if (page < 1 || page === orderBatchPage.value || page > (batchReport.value?.pages ?? 1)) {
     return;
   }
   orderBatchPage.value = page;
@@ -291,7 +336,7 @@ function getErrorMessage(value: unknown, fallback: string): string {
 </script>
 
 <template>
-  <article class="reports-panel">
+  <article ref="reportsPanel" class="reports-panel">
     <div class="reports-panel__head">
       <div>
         <span class="reports-panel__eyebrow">Производственные данные</span>
@@ -312,7 +357,7 @@ function getErrorMessage(value: unknown, fallback: string): string {
           :class="{ 'reports-tab--active': activeReport === 'product-time' }"
           @click="void selectReport('product-time')"
         >
-          Время по изделиям и операциям
+          По изделиям и операциям
         </button>
         <button
           type="button"
@@ -321,6 +366,14 @@ function getErrorMessage(value: unknown, fallback: string): string {
           @click="void selectReport('order-batches')"
         >
           По партиям
+        </button>
+        <button
+          type="button"
+          class="reports-tab"
+          :class="{ 'reports-tab--active': activeReport === 'operation-workers' }"
+          @click="void selectReport('operation-workers')"
+        >
+          По операциям и исполнителям
         </button>
       </div>
     </div>
@@ -392,7 +445,7 @@ function getErrorMessage(value: unknown, fallback: string): string {
           </div>
         </details>
       </div>
-      <div v-if="activeReport === 'order-batches'" class="reports-field">
+      <div v-if="activeReport === 'order-batches' || activeReport === 'operation-workers'" class="reports-field">
         <span>Операция</span>
         <details class="reports-multi-select">
           <summary>{{ operationSelectionLabel() }}</summary>
@@ -617,26 +670,67 @@ function getErrorMessage(value: unknown, fallback: string): string {
             </tfoot>
           </table>
         </div>
-        <div v-if="orderBatchReport.pages > 1" class="reports-pagination">
+      </section>
+    </template>
+
+    <template v-else-if="activeReport === 'operation-workers' && operationWorkerReport">
+      <div v-if="operationWorkerReport.batches.length === 0" class="reports-message">
+        За выбранный период завершенных заказов нет.
+      </div>
+      <section v-else class="report-section">
+        <div class="report-section__head">
+          <h3>По операциям и исполнителям</h3>
+          <span>Найдено партий: {{ operationWorkerReport.total }}</span>
+        </div>
+        <p>Среднее время на одно сданное изделие. В заголовках — номер партии / количество сданных изделий.</p>
+        <div class="report-table-wrap">
+          <table class="report-table">
+            <thead>
+              <tr>
+                <th>Операция</th>
+                <th>Исполнитель</th>
+                <th v-for="batch in operationWorkerReport.batches" :key="batch.order_id"
+                  :title="formatReportProductName(batch.product_name, batch.product_version)">
+                  {{ batch.order_number }} / {{ formatQuantity(batch.submitted_quantity) }}
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="row in operationWorkerReport.rows" :key="row.key">
+                <td>{{ row.operation_name }}</td>
+                <td>{{ row.worker_user_name }}</td>
+                <td v-for="(value, index) in row.average_ms" :key="operationWorkerReport.batches[index]?.order_id">
+                  {{ value === null ? '—' : (formatDuration(value) || '00:00:00') }}
+                </td>
+              </tr>
+              <tr v-if="operationWorkerReport.rows.length === 0">
+                <td :colspan="operationWorkerReport.batches.length + 2">Данных по операциям и исполнителям нет.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </template>
+    <template v-if="activeReport === 'order-batches' || activeReport === 'operation-workers'">
+        <div v-if="batchReport && batchReport.pages > 1" class="reports-pagination">
           <button
             type="button"
             class="reports-button reports-button--secondary"
-            :disabled="loading || orderBatchReport.page <= 1"
-            @click="void selectOrderBatchPage(orderBatchReport.page - 1)"
+            :disabled="loading || batchReport.page <= 1"
+            @click="void selectOrderBatchPage(batchReport.page - 1)"
           >
             Назад
           </button>
-          <span>Страница {{ orderBatchReport.page }} из {{ orderBatchReport.pages }}</span>
+          <span>Страница {{ batchReport.page }} из {{ batchReport.pages }}</span>
           <button
             type="button"
             class="reports-button reports-button--secondary"
-            :disabled="loading || orderBatchReport.page >= orderBatchReport.pages"
-            @click="void selectOrderBatchPage(orderBatchReport.page + 1)"
+            :disabled="loading || batchReport.page >= batchReport.pages"
+            @click="void selectOrderBatchPage(batchReport.page + 1)"
           >
             Далее
           </button>
         </div>
-      </section>
     </template>
   </article>
 </template>
@@ -675,6 +769,7 @@ function getErrorMessage(value: unknown, fallback: string): string {
 
 .reports-tabs {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
   padding: 6px;
   border-radius: 16px;
