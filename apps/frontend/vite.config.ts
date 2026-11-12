@@ -3,6 +3,7 @@ import vue from "@vitejs/plugin-vue";
 import { fileURLToPath, URL } from "node:url";
 
 export default defineConfig({
+  define: { __APP_BUILD__: JSON.stringify(process.env.FLOWCRAFT_BUILD ?? new Date().toISOString().replace(/[^0-9]/g, "")) },
   plugins: [vue()],
   resolve: {
     alias: {

@@ -18,7 +18,12 @@ from app.api.routes.users import router as users_router
 from app.api.routes.completed_work import router as completed_work_router
 from app.api.routes.personal_work import router as personal_work_router
 
+from app.api.routes.diagnostics import router as diagnostics_router
+
 api_router = APIRouter()
+api_router.include_router(
+    diagnostics_router, prefix="/diagnostics", tags=["diagnostics"]
+)
 api_router.include_router(
     personal_work_router, prefix="/worker", tags=["personal-work"]
 )

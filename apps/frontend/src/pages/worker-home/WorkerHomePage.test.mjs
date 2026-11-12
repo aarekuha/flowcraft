@@ -22,6 +22,7 @@ const functions = source.statements
 function createWorkspace() {
   const setup = `
     const {ref,computed,watch,nextTick} = vue;
+    const recordDiagnostic=()=>{};
     const PREPARATION_TIMER_ID='preparation', BREAK_TIMER_ID='break', IDLE_TIMER_ID='idle';
     const operationId='worker:operation:492:518';
     const base=[{id:'preparation',kind:'preparation'},{id:'break',kind:'break'},{id:'idle',kind:'idle'}];
