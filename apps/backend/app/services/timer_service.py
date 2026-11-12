@@ -8,6 +8,7 @@ from sqlalchemy import Select, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.core.timer_audit import TimerAudit, timer_snapshot
 from app.domain.operation_availability import is_operation_available_for_stage
 from app.models.operation import Operation
 from app.models.timer_session import TimerSession
@@ -42,8 +43,10 @@ CODE_TO_TIMER_TYPE = {
 
 
 class TimerService:
-    def __init__(self, session: Session) -> None:
+    def __init__(self, session: Session, audit: TimerAudit | None = None) -> None:
         self.session = session
+        self.audit = audit
+        self._pending_timer: TimerSession | None = None
 
     def get_state(self, user_id: int) -> WorkerTimerStateRead:
         shift = self._get_open_shift(user_id)
@@ -55,6 +58,8 @@ class TimerService:
     def start_day(self, user_id: int) -> WorkerTimerStateRead:
         shift = self._get_open_shift(user_id)
         if shift is None:
+            if self.audit is not None:
+                self.audit.previous_observed = True
             now = self._now_ts()
             shift = WorkShift(
                 user_id=user_id,
@@ -72,7 +77,7 @@ class TimerService:
                 started_at=now,
             )
             PlanningRevisionService(self.session).request_recalculation()
-            self.session.commit()
+            self._commit_timer_change()
             self.session.refresh(shift)
             return self._serialize_state(shift)
 
@@ -85,8 +90,10 @@ class TimerService:
                 started_at=self._now_ts(),
             )
             PlanningRevisionService(self.session).request_recalculation()
-            self.session.commit()
+            self._commit_timer_change()
 
+        if self.audit is not None and active_session is not None:
+            self.audit.unchanged = True
         return self._serialize_state(shift)
 
     def switch_timer(
@@ -101,9 +108,11 @@ class TimerService:
                 detail="Рабочий день не начат.",
             )
 
-        self._validate_switch_payload(user_id, payload)
         active_session = self._get_open_timer_session(user_id)
+        self._validate_switch_payload(user_id, payload)
         if active_session is not None and self._is_same_target(active_session, payload):
+            if self.audit is not None:
+                self.audit.unchanged = True
             return self._serialize_state(shift)
 
         self._ensure_operation_is_not_active(payload)
@@ -143,7 +152,7 @@ class TimerService:
             )
             self._refresh_work_order_totals(affected_order_ids)
             PlanningRevisionService(self.session).request_recalculation()
-            self.session.commit()
+            self._commit_timer_change()
         except IntegrityError:
             self.session.rollback()
             if (
@@ -164,6 +173,9 @@ class TimerService:
     def end_day(self, user_id: int) -> WorkerTimerStateRead:
         shift = self._get_open_shift(user_id)
         if shift is None:
+            if self.audit is not None:
+                self.audit.previous_observed = True
+                self.audit.unchanged = True
             return WorkerTimerStateRead(shift=None, active_timer=None, timer_totals=[])
 
         now = self._now_ts()
@@ -183,8 +195,20 @@ class TimerService:
         shift.ended_at = now
         self._refresh_work_order_totals(affected_order_ids)
         PlanningRevisionService(self.session).request_recalculation()
-        self.session.commit()
+        self._commit_timer_change()
         return WorkerTimerStateRead(shift=None, active_timer=None, timer_totals=[])
+
+    def _commit_timer_change(self) -> None:
+        snapshot = None
+        if self.audit is not None:
+            self.session.flush()
+            snapshot = timer_snapshot(self._pending_timer)
+        self.session.commit()
+        self._pending_timer = None
+        if self.audit is not None:
+            self.audit.committed = True
+            self.audit.committed_timer = snapshot
+            self.audit.emit("timer_change_committed")
 
     def _serialize_state(self, shift: WorkShift) -> WorkerTimerStateRead:
         now = self._now_ts()
@@ -254,7 +278,11 @@ class TimerService:
             TimerSession.ended_at.is_(None),
             TimerSession.deleted_at.is_(None),
         )
-        return self.session.scalars(stmt).one_or_none()
+        timer = self.session.scalars(stmt).one_or_none()
+        if self.audit is not None:
+            self.audit.previous_timer = timer_snapshot(timer)
+            self.audit.previous_observed = True
+        return timer
 
     def _open_timer_session(
         self,
@@ -280,6 +308,7 @@ class TimerService:
             deleted_by_user_id=None,
         )
         self.session.add(timer_session)
+        self._pending_timer = timer_session
 
     def _validate_switch_payload(
         self,

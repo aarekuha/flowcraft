@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.auth_middleware import AuthSessionMiddleware
 from app.api.router import api_router
+from app.api.timer_audit_middleware import TimerAuditMiddleware
 from app.core.config import settings
 from app.core.database import SessionLocal
 
@@ -26,6 +27,7 @@ def create_application() -> FastAPI:
         allow_headers=["*"],
     )
     app.add_middleware(AuthSessionMiddleware)
+    app.add_middleware(TimerAuditMiddleware)
     app.include_router(api_router, prefix="/api")
     return app
 

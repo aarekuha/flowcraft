@@ -164,7 +164,7 @@ def get_work_schedule(
     summary="Create or update worker availability days",
 )
 def update_work_schedule(
-    payload: WorkScheduleBatchUpdate,
+    payload: WorkScheduleBatchUpdate | list[WorkScheduleBatchUpdate],
     auth_session: AuthenticatedSession = Depends(
         require_any_role("brigadier", "admin")
     ),
@@ -183,7 +183,7 @@ def update_work_schedule(
     summary="Delete worker availability days",
 )
 def delete_work_schedule(
-    payload: WorkScheduleBatchDelete,
+    payload: WorkScheduleBatchDelete | list[WorkScheduleBatchDelete],
     _: object = Depends(require_any_role("brigadier", "admin")),
     session: Session = Depends(get_session),
 ) -> Response:

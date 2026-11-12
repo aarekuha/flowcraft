@@ -366,12 +366,14 @@ export async function fetchWorkSchedule(
   }));
 }
 
-export async function updateWorkSchedule(payload: {
+type WorkScheduleUpdatePayload = {
   user_id: number;
   work_dates: string[];
   available_seconds: number;
   period_type: WorkSchedulePeriodType;
-}): Promise<void> {
+};
+
+export async function updateWorkSchedule(payload: WorkScheduleUpdatePayload | WorkScheduleUpdatePayload[]): Promise<void> {
   const response = await apiFetch("/api/planning/work-schedule", {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
@@ -382,10 +384,12 @@ export async function updateWorkSchedule(payload: {
   }
 }
 
-export async function deleteWorkSchedule(payload: {
+type WorkScheduleDeletePayload = {
   user_id: number;
   work_dates: string[];
-}): Promise<void> {
+};
+
+export async function deleteWorkSchedule(payload: WorkScheduleDeletePayload | WorkScheduleDeletePayload[]): Promise<void> {
   const response = await apiFetch("/api/planning/work-schedule", {
     method: "DELETE",
     headers: { "Content-Type": "application/json" },

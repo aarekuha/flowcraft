@@ -413,6 +413,12 @@ class OrderService:
                 sort_direction,
             )
 
+        if sort_by == WorkOrderSortField.CALCULATED_FINISH:
+            return self._build_nullable_timestamp_sort(
+                WorkOrder.calculated_finish_date.expression,
+                sort_direction,
+            )
+
         if sort_by == WorkOrderSortField.TAKEN:
             return self._build_nullable_timestamp_sort(
                 WorkOrder.taken_at,

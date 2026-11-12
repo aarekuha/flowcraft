@@ -22,6 +22,7 @@ class WorkOrderSortField(StrEnum):
     QUALITY_CONTROL = "quality_control"
     TAKEN = "taken"
     PRIORITY = "priority"
+    CALCULATED_FINISH = "calculated_finish"
 
 
 class WorkOrderStatusFilter(StrEnum):

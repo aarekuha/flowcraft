@@ -1859,6 +1859,7 @@ function getDefaultWorkOrderSortDirection(
   return field === "name" ||
     field === "order_number" ||
     field === "planned_completion" ||
+    field === "calculated_finish" ||
     field === "priority"
     ? "asc"
     : "desc";
@@ -7392,9 +7393,13 @@ async function handleResetUserPassword(user: UserRecord) {
                   </div>
                 </label>
                 <button v-if="showWorkOrderPriority" type="button"
-                  class="secondary-button mobile-only work-order-priority-sort"
+                  class="secondary-button mobile-only work-order-mobile-sort"
                   @click="toggleWorkOrderSort('priority')">
                   Приоритет {{ isWorkOrderSortFieldActive('priority') ? (getWorkOrderSortDirection('priority') === 'asc' ? '↑' : '↓') : '↕' }}
+                </button>
+                <button type="button" class="secondary-button mobile-only work-order-mobile-sort"
+                  @click="toggleWorkOrderSort('calculated_finish')">
+                  Расчётная готовность {{ isWorkOrderSortFieldActive('calculated_finish') ? (getWorkOrderSortDirection('calculated_finish') === 'asc' ? '↑' : '↓') : '↕' }}
                 </button>
               </div>
 
@@ -7492,7 +7497,16 @@ async function handleResetUserPassword(user: UserRecord) {
                             />
                           </button>
                         </th>
-                        <th>Расчётная дата готовности</th>
+                        <th :aria-sort="isWorkOrderSortFieldActive('calculated_finish') ? (getWorkOrderSortDirection('calculated_finish') === 'asc' ? 'ascending' : 'descending') : 'none'">
+                          <button type="button" class="sort-header-button"
+                            :class="{ 'sort-header-button--active': isWorkOrderSortFieldActive('calculated_finish') }"
+                            @click="toggleWorkOrderSort('calculated_finish')">
+                            <span>Расчётная дата готовности</span>
+                            <span class="sort-header-button__icon"
+                              :class="`sort-header-button__icon--${getWorkOrderSortDirection('calculated_finish')}`"
+                              aria-hidden="true" />
+                          </button>
+                        </th>
                       </template>
                       <template v-else>
                         <th>
@@ -7603,7 +7617,16 @@ async function handleResetUserPassword(user: UserRecord) {
                             />
                           </button>
                         </th>
-                        <th>Расчётная дата готовности</th>
+                        <th :aria-sort="isWorkOrderSortFieldActive('calculated_finish') ? (getWorkOrderSortDirection('calculated_finish') === 'asc' ? 'ascending' : 'descending') : 'none'">
+                          <button type="button" class="sort-header-button"
+                            :class="{ 'sort-header-button--active': isWorkOrderSortFieldActive('calculated_finish') }"
+                            @click="toggleWorkOrderSort('calculated_finish')">
+                            <span>Расчётная дата готовности</span>
+                            <span class="sort-header-button__icon"
+                              :class="`sort-header-button__icon--${getWorkOrderSortDirection('calculated_finish')}`"
+                              aria-hidden="true" />
+                          </button>
+                        </th>
                         <th v-if="workOrderStatusTab === 'completed'">
                           <button
                             type="button"
@@ -12817,8 +12840,7 @@ h2 {
 .products-table th,
 .operation-table th {
   font-size: 0.82rem;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
+  text-transform: none;
   color: var(--color-text-muted);
 }
 
@@ -14605,7 +14627,7 @@ h2 {
 }
 
 @media (min-width: 761px) and (max-width: 1220px) {
-  .work-order-priority-sort.mobile-only {
+  .work-order-mobile-sort.mobile-only {
     display: inline-flex;
   }
 
