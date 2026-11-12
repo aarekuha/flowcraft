@@ -28,6 +28,7 @@ export type WorkOrderSummary = {
   leatherTypeName: string | null;
   quantity: number;
   plannedCompletionDate: string | null;
+  calculatedFinishDate: string | null;
   estimatedMinutes: number;
   totalSpentSeconds: number;
   cuttingSpentSeconds: number;
@@ -36,6 +37,7 @@ export type WorkOrderSummary = {
   splitBlockReason: string | null;
   canMerge: boolean;
   assignmentsCount: number;
+  priorityPosition: number | null;
   createdAtTs: number;
   createdAt: string;
   updatedAtTs: number;
@@ -68,6 +70,7 @@ export type WorkOrderDetail = {
   leatherTypeName: string | null;
   quantity: number;
   plannedCompletionDate: string | null;
+  calculatedFinishDate: string | null;
   estimatedMinutes: number;
   totalSpentSeconds: number;
   cuttingSpentSeconds: number;
@@ -101,7 +104,8 @@ export type WorkOrderSortBy =
   | "order_number"
   | "planned_completion"
   | "quality_control"
-  | "taken";
+  | "taken"
+  | "priority";
 export type WorkOrderSortDirection = "asc" | "desc";
 export type WorkOrderStatusFilter =
   | "all"
@@ -215,6 +219,7 @@ type WorkOrderSummaryApi = {
   leather_type_name: string | null;
   quantity: number;
   planned_completion_date: string | null;
+  calculated_finish_date?: string | null;
   estimated_minutes: number;
   total_spent_seconds: number;
   cutting_spent_seconds: number;
@@ -223,6 +228,7 @@ type WorkOrderSummaryApi = {
   split_block_reason: string | null;
   can_merge: boolean;
   assignments_count: number;
+  priority_position: number | null;
   created_at: number;
   updated_at: number;
   production_stage: WorkOrderProductionStage;
@@ -248,6 +254,7 @@ type WorkOrderDetailApi = {
   leather_type_name: string | null;
   quantity: number;
   planned_completion_date: string | null;
+  calculated_finish_date?: string | null;
   estimated_minutes: number;
   total_spent_seconds: number;
   cutting_spent_seconds: number;
@@ -663,6 +670,7 @@ function mapWorkOrderSummary(order: WorkOrderSummaryApi): WorkOrderSummary {
     leatherTypeName: order.leather_type_name,
     quantity: order.quantity,
     plannedCompletionDate: order.planned_completion_date,
+    calculatedFinishDate: order.calculated_finish_date ?? null,
     estimatedMinutes: order.estimated_minutes,
     totalSpentSeconds: order.total_spent_seconds,
     cuttingSpentSeconds: order.cutting_spent_seconds,
@@ -671,6 +679,7 @@ function mapWorkOrderSummary(order: WorkOrderSummaryApi): WorkOrderSummary {
     splitBlockReason: order.split_block_reason,
     canMerge: order.can_merge,
     assignmentsCount: order.assignments_count,
+    priorityPosition: order.priority_position,
     createdAtTs: order.created_at,
     createdAt: formatDate(order.created_at),
     updatedAtTs: order.updated_at,
@@ -717,6 +726,7 @@ function mapWorkOrderDetail(order: WorkOrderDetailApi): WorkOrderDetail {
     leatherTypeName: order.leather_type_name,
     quantity: order.quantity,
     plannedCompletionDate: order.planned_completion_date,
+    calculatedFinishDate: order.calculated_finish_date ?? null,
     estimatedMinutes: order.estimated_minutes,
     totalSpentSeconds: order.total_spent_seconds,
     cuttingSpentSeconds: order.cutting_spent_seconds,

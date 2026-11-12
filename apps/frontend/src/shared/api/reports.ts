@@ -363,7 +363,16 @@ function getDownloadFilename(contentDisposition: string | null): string {
   return match?.groups?.filename ?? "flowcraft-report.xlsx";
 }
 
+export type OperationWorkerProductSection = {
+  product_id: number;
+  product_name: string;
+  product_version: string;
+  batches: OperationWorkerReport["batches"];
+  rows: OperationWorkerReport["rows"];
+};
+
 export type OperationWorkerReport = {
+  products: OperationWorkerProductSection[];
   batches: Array<{ order_id: number; order_number: string; submitted_quantity: number;
     product_name: string; product_version: string }>;
   rows: Array<{ key: string; operation_name: string; worker_user_name: string;

@@ -109,9 +109,18 @@ class OperationWorkerRow(BaseModel):
     average_ms: list[int | None]
 
 
+class OperationWorkerProductSection(BaseModel):
+    product_id: int
+    product_name: str
+    product_version: str
+    batches: list[OrderBatchReportItem]
+    rows: list[OperationWorkerRow]
+
+
 class OperationWorkerReport(BaseModel):
     batches: list[OrderBatchReportItem]
     rows: list[OperationWorkerRow]
+    products: list[OperationWorkerProductSection]
     total: int
     page: int
     pages: int

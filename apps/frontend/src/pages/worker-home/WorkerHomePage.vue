@@ -419,6 +419,9 @@ const productSort = ref<ProductSort>("name-asc");
 const workOrderFilter = ref("");
 const workOrderSearchDraft = ref("");
 const workOrderSort = ref<WorkOrderSort>("created-desc");
+const showWorkOrderPriority = computed(() =>
+  workOrderStatusTab.value !== "completed" && workOrderStatusTab.value !== "deleted",
+);
 const leatherTypeFilter = ref("");
 const leatherTypeSearchDraft = ref("");
 const showInactiveLeatherTypes = ref(false);
@@ -1708,6 +1711,10 @@ watch(
     if (!isWorkOrderStatusTabId(brigadierTab.value)) {
       return;
     }
+    if (!showWorkOrderPriority.value && isWorkOrderSortFieldActive("priority")) {
+      workOrderSort.value = "created-desc";
+      return;
+    }
     reloadWorkOrdersFromFirstPage();
   },
 );
@@ -1851,7 +1858,8 @@ function getDefaultWorkOrderSortDirection(
 ): WorkOrderSortDirection {
   return field === "name" ||
     field === "order_number" ||
-    field === "planned_completion"
+    field === "planned_completion" ||
+    field === "priority"
     ? "asc"
     : "desc";
 }
@@ -6263,6 +6271,9 @@ function formatPlannedCompletionDate(value: string | null): string {
 function getWorkOrderPlanningForecast(
   order: WorkOrderSummary,
 ): PlanningOrderForecast | undefined {
+  if (order.completedAtTs !== null || order.deletedAtTs !== null) {
+    return undefined;
+  }
   return planningForecastByOrderId.value.get(order.id);
 }
 
@@ -7380,6 +7391,11 @@ async function handleResetUserPassword(user: UserRecord) {
                     </button>
                   </div>
                 </label>
+                <button v-if="showWorkOrderPriority" type="button"
+                  class="secondary-button mobile-only work-order-priority-sort"
+                  @click="toggleWorkOrderSort('priority')">
+                  Приоритет {{ isWorkOrderSortFieldActive('priority') ? (getWorkOrderSortDirection('priority') === 'asc' ? '↑' : '↓') : '↕' }}
+                </button>
               </div>
 
               <div v-if="filteredWorkOrders.length === 0" class="empty-table-state">
@@ -7390,6 +7406,17 @@ async function handleResetUserPassword(user: UserRecord) {
                 <table class="products-table brigadier-table">
                   <thead>
                     <tr>
+                      <th v-if="showWorkOrderPriority" :aria-sort="isWorkOrderSortFieldActive('priority') ? (getWorkOrderSortDirection('priority') === 'asc' ? 'ascending' : 'descending') : 'none'">
+                        <button type="button" class="sort-header-button"
+                          :class="{ 'sort-header-button--active': isWorkOrderSortFieldActive('priority') }"
+                          title="Позиция в общей очереди приоритизации: 1 — самый высокий приоритет"
+                          @click="toggleWorkOrderSort('priority')">
+                          <span>Приоритет</span>
+                          <span class="sort-header-button__icon"
+                            :class="`sort-header-button__icon--${getWorkOrderSortDirection('priority')}`"
+                            aria-hidden="true" />
+                        </button>
+                      </th>
                       <th>
                         <button
                           type="button"
@@ -7603,6 +7630,7 @@ async function handleResetUserPassword(user: UserRecord) {
                   </thead>
                   <tbody>
                     <tr v-for="order in filteredWorkOrders" :key="order.id">
+                      <td v-if="showWorkOrderPriority">{{ order.priorityPosition ?? "—" }}</td>
                       <td>{{ order.orderNumber }}</td>
                       <td>{{ order.productName }}</td>
                       <td>{{ order.leatherTypeName ?? "вид кожи не указан" }}</td>
@@ -7630,7 +7658,7 @@ async function handleResetUserPassword(user: UserRecord) {
                           >
                             {{ getWorkOrderPlanningForecastLabel(order) }}
                           </button>
-                          <span v-else>—</span>
+                          <span v-else>{{ formatPlannedCompletionDate(order.calculatedFinishDate) }}</span>
                         </td>
                       </template>
                       <template v-else>
@@ -7668,7 +7696,7 @@ async function handleResetUserPassword(user: UserRecord) {
                           >
                             {{ getWorkOrderPlanningForecastLabel(order) }}
                           </button>
-                          <span v-else>—</span>
+                          <span v-else>{{ formatPlannedCompletionDate(order.calculatedFinishDate) }}</span>
                         </td>
                         <td v-if="workOrderStatusTab === 'completed'">
                           {{ order.defectQuantity }} шт.
@@ -7890,6 +7918,7 @@ async function handleResetUserPassword(user: UserRecord) {
                     </button>
                   </div>
                   <div class="mobile-card__meta">
+                    <span v-if="showWorkOrderPriority">Приоритет: {{ order.priorityPosition ?? "—" }}</span>
                     <span>{{ order.productName }}</span>
                     <span>Вид кожи: {{ order.leatherTypeName ?? "вид кожи не указан" }}</span>
                     <span>Количество изделий: {{ order.quantity }} шт.</span>
@@ -7935,7 +7964,7 @@ async function handleResetUserPassword(user: UserRecord) {
                       >
                         {{ getWorkOrderPlanningForecastLabel(order) }}
                       </button>
-                      <span v-else>—</span>
+                      <span v-else>{{ formatPlannedCompletionDate(order.calculatedFinishDate) }}</span>
                     </span>
                     <span v-if="workOrderStatusTab === 'completed'">
                       Брак: {{ order.defectQuantity }} шт.
@@ -14576,6 +14605,10 @@ h2 {
 }
 
 @media (min-width: 761px) and (max-width: 1220px) {
+  .work-order-priority-sort.mobile-only {
+    display: inline-flex;
+  }
+
   .work-orders-table-wrap.desktop-only {
     display: none;
   }

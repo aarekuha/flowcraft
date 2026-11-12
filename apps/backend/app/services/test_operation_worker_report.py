@@ -119,7 +119,7 @@ def test_filters_pagination_and_export_keep_all_matching_batches(
     """
     Проверяем фильтры и выгрузку отчёта:
     - отобрать исполнителя и операцию, показать одну партию на странице
-    - выгрузить все подходящие партии с числовыми значениями времени
+    - выгрузить все подходящие партии на отдельных листах изделий
     """
     service = OperationWorkerReportService(report_session)
     period = (date(1970, 1, 1), date(1970, 1, 2))
@@ -140,6 +140,39 @@ def test_filters_pagination_and_export_keep_all_matching_batches(
     assert filename.endswith(".xlsx")
     with ZipFile(BytesIO(content)) as archive:
         sheet = archive.read("xl/worksheets/sheet1.xml").decode()
-        assert "1 / 8" in sheet and "2 / 8" in sheet
-        assert "3 / 0" not in sheet
-        assert 'r="C2"' in sheet and 'r="D2"' in sheet
+        second_sheet = archive.read("xl/worksheets/sheet2.xml").decode()
+        assert "1 / 8" in sheet and "2 / 8" not in sheet
+        assert "2 / 8" in second_sheet and "1 / 8" not in second_sheet
+        assert "Изделие 1" in sheet and "Изделие 2" in second_sheet
+        assert "3 / 0" not in sheet + second_sheet
+        assert 'r="C2"' in sheet and 'r="C2"' in second_sheet
+
+
+def test_product_tables_keep_batches_and_values_together(
+    report_session: Session,
+) -> None:
+    """
+    Проверяем разделение таблиц по изделиям и версиям:
+    - партии одного изделия перемежаются с партиями другого
+    - одинаковые названия разных версий не объединяются
+    - строки содержат только значения и исполнителей своего изделия
+    """
+    first = report_session.get(Product, 1)
+    second = report_session.get(Product, 2)
+    third_order = report_session.get(WorkOrder, 3)
+    assert first is not None and second is not None and third_order is not None
+    first.name = second.name = "Одинаковое название"
+    second.version = "2"
+    third_order.product_id = 1
+    report_session.commit()
+    report = OperationWorkerReportService(report_session).get_report(
+        date(1970, 1, 1), date(1970, 1, 2)
+    )
+    assert [
+        (product.product_id, product.product_version) for product in report.products
+    ] == [(1, "1"), (2, "2")]
+    first_table, second_table = report.products
+    assert [batch.order_number for batch in first_table.batches] == ["3", "1"]
+    assert [row.average_ms for row in first_table.rows] == [[None, 10000], [0, None]]
+    assert [batch.order_number for batch in second_table.batches] == ["2"]
+    assert [row.average_ms for row in second_table.rows] == [[20000]]

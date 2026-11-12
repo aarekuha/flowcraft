@@ -677,10 +677,12 @@ function getErrorMessage(value: unknown, fallback: string): string {
       <div v-if="operationWorkerReport.batches.length === 0" class="reports-message">
         За выбранный период завершенных заказов нет.
       </div>
-      <section v-else class="report-section">
+      <template v-else>
+      <p>Найдено партий: {{ operationWorkerReport.total }}</p>
+      <section v-for="product in operationWorkerReport.products" :key="product.product_id" class="report-section">
         <div class="report-section__head">
-          <h3>По операциям и исполнителям</h3>
-          <span>Найдено партий: {{ operationWorkerReport.total }}</span>
+          <h3>{{ formatReportProductName(product.product_name, product.product_version) }}</h3>
+          <span>Партий на странице: {{ product.batches.length }}</span>
         </div>
         <p>Среднее время на одно сданное изделие. В заголовках — номер партии / количество сданных изделий.</p>
         <div class="report-table-wrap">
@@ -689,27 +691,28 @@ function getErrorMessage(value: unknown, fallback: string): string {
               <tr>
                 <th>Операция</th>
                 <th>Исполнитель</th>
-                <th v-for="batch in operationWorkerReport.batches" :key="batch.order_id"
+                <th v-for="batch in product.batches" :key="batch.order_id"
                   :title="formatReportProductName(batch.product_name, batch.product_version)">
                   {{ batch.order_number }} / {{ formatQuantity(batch.submitted_quantity) }}
                 </th>
               </tr>
             </thead>
             <tbody>
-              <tr v-for="row in operationWorkerReport.rows" :key="row.key">
+              <tr v-for="row in product.rows" :key="row.key">
                 <td>{{ row.operation_name }}</td>
                 <td>{{ row.worker_user_name }}</td>
-                <td v-for="(value, index) in row.average_ms" :key="operationWorkerReport.batches[index]?.order_id">
+                <td v-for="(value, index) in row.average_ms" :key="product.batches[index]?.order_id">
                   {{ value === null ? '—' : (formatDuration(value) || '00:00:00') }}
                 </td>
               </tr>
-              <tr v-if="operationWorkerReport.rows.length === 0">
-                <td :colspan="operationWorkerReport.batches.length + 2">Данных по операциям и исполнителям нет.</td>
+              <tr v-if="product.rows.length === 0">
+                <td :colspan="product.batches.length + 2">Данных по операциям и исполнителям нет.</td>
               </tr>
             </tbody>
           </table>
         </div>
       </section>
+      </template>
     </template>
     <template v-if="activeReport === 'order-batches' || activeReport === 'operation-workers'">
         <div v-if="batchReport && batchReport.pages > 1" class="reports-pagination">

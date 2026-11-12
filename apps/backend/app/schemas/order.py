@@ -21,6 +21,7 @@ class WorkOrderSortField(StrEnum):
     PLANNED_COMPLETION = "planned_completion"
     QUALITY_CONTROL = "quality_control"
     TAKEN = "taken"
+    PRIORITY = "priority"
 
 
 class WorkOrderStatusFilter(StrEnum):
@@ -155,6 +156,7 @@ class WorkOrderListItem(BaseModel):
     leather_type_name: str | None
     quantity: int
     planned_completion_date: date | None
+    calculated_finish_date: date | None = None
     estimated_minutes: int
     total_spent_seconds: int
     cutting_spent_seconds: int
@@ -163,6 +165,7 @@ class WorkOrderListItem(BaseModel):
     split_block_reason: str | None
     can_merge: bool
     assignments_count: int
+    priority_position: int | None
     created_at: int
     updated_at: int
     production_stage: WorkOrderProductionStage
@@ -198,6 +201,7 @@ class WorkOrderDetail(BaseModel):
     leather_type_name: str | None
     quantity: int
     planned_completion_date: date | None
+    calculated_finish_date: date | None = None
     estimated_minutes: int
     total_spent_seconds: int
     cutting_spent_seconds: int
