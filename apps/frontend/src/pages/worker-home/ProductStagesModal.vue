@@ -371,7 +371,7 @@ function getErrorMessage(value: unknown, fallback: string): string {
           <p class="stages-modal__eyebrow">Технологическая схема</p>
           <h2>Этапы · {{ productName }}</h2>
         </div>
-        <button type="button" class="stages-button" @click="requestClose">
+        <button type="button" class="stages-button fc-button" @click="requestClose">
           Закрыть
         </button>
       </header>
@@ -388,7 +388,7 @@ function getErrorMessage(value: unknown, fallback: string): string {
             </p>
             <button
               type="button"
-              class="stages-button stages-button--primary"
+              class="stages-button stages-button--primary fc-button fc-button--primary"
               @click="addStage"
             >
             + Добавить этап
@@ -483,7 +483,7 @@ function getErrorMessage(value: unknown, fallback: string): string {
         <span v-if="hasChanges">Есть несохранённые изменения</span>
         <button
           type="button"
-          class="stages-button stages-button--primary"
+          class="stages-button stages-button--primary fc-button fc-button--primary"
           :disabled="!hasChanges || saving"
           @click="save"
         >
@@ -501,14 +501,14 @@ function getErrorMessage(value: unknown, fallback: string): string {
           <div class="stages-confirm__actions card-actions">
             <button
               type="button"
-              class="stages-button stages-button--danger"
+              class="stages-button stages-button--danger fc-button fc-button--danger"
               @click="discardChanges"
             >
               Закрыть без сохранения
             </button>
             <button
               type="button"
-              class="stages-button"
+              class="stages-button fc-button"
               @click="closeConfirmationOpen = false"
             >
               Продолжить редактирование
@@ -538,14 +538,14 @@ function getErrorMessage(value: unknown, fallback: string): string {
           <div class="stages-confirm__actions card-actions">
             <button
               type="button"
-              class="stages-button stages-button--danger"
+              class="stages-button stages-button--danger fc-button fc-button--danger"
               @click="confirmRemoveStage"
             >
               Удалить этап
             </button>
             <button
               type="button"
-              class="stages-button"
+              class="stages-button fc-button"
               @click="cancelRemoveStage"
             >
               Отменить

@@ -11,6 +11,8 @@ ALLOWED_HORIZON_MONTHS = {1, 3, 6, 12}
 
 
 class PlanningSettingsUpdate(BaseModel):
+    show_personal_work_report: bool | None = None
+    base_rate_cents: int | None = Field(default=None, ge=0, le=100000000)
     display_offset_days: int = Field(ge=0)
     preparation_seconds: int = Field(ge=0)
     horizon_months: int
@@ -26,6 +28,8 @@ class PlanningSettingsUpdate(BaseModel):
 class PlanningSettingsRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
+    show_personal_work_report: bool = True
+    base_rate_cents: int = 35000
     display_offset_days: int
     preparation_seconds: int
     horizon_months: int
@@ -86,6 +90,7 @@ class WorkScheduleMonthRead(BaseModel):
 
 
 class PlanningQueueItemRead(BaseModel):
+    planned_completion_date: date | None
     order_id: int
     position: int
     order_number: str

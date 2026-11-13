@@ -16,6 +16,8 @@ import {
 
 import { getPlanningForecastLabel, getPlanningForecastHint } from "@/shared/lib/productionPlanning";
 
+import { printPriorityTable, type PriorityPrintRow } from "@/shared/lib/planningPriorityPrint";
+
 const props = defineProps<{ forecasts: PlanningOrderForecast[] }>();
 const emit = defineEmits<{ reordered: [] }>();
 const forecastsByOrderId = computed(() => new Map(
@@ -169,7 +171,7 @@ async function saveReorder(payload: {
   notice.value = "";
   try {
     applyQueue(await reorderPlanningQueue(payload));
-    notice.value = "Приоритеты сохранены. Для обновления прогноза нажать «Пересчитать».";
+    notice.value = "Приоритеты сохранены. Для обновления прогноза требуется пересчёт администратором.";
     emit("reordered");
   } catch (saveError) {
     if (saveError instanceof ApiRequestError && saveError.status === 409) {
@@ -205,6 +207,19 @@ function getStageLabel(stage: PlanningQueueStage): string {
   return labels[stage];
 }
 
+function plannedDateLabel(value: string | null): string {
+  return value ? value.split("-").reverse().join(".") : "—";
+}
+
+function printQueue() {
+  if (loading.value || saving.value || draggingOrderId.value !== null || !items.value.length) return;
+  const rows: PriorityPrintRow[] = items.value.map(item => [
+    item.position, item.orderNumber, item.productName, item.leatherTypeName ?? "—",
+    item.quantity, getStageLabel(item.stage), plannedDateLabel(item.plannedCompletionDate), forecastLabel(item.orderId),
+  ]);
+  printPriorityTable(rows, () => { error.value = "Не удалось открыть печать таблицы приоритетов."; });
+}
+
 function getErrorMessage(value: unknown, fallback: string): string {
   return value instanceof Error && value.message ? value.message : fallback;
 }
@@ -219,14 +234,19 @@ function getErrorMessage(value: unknown, fallback: string): string {
           Перетащить заказ за маркер или указать его номер в общей очереди.
         </p>
       </div>
+      <div class="priority-panel__actions">
       <button
         type="button"
-        class="priority-refresh"
+        class="priority-refresh fc-button"
         :disabled="loading || saving"
         @click="loadQueue"
       >
         Обновить
       </button>
+        <button type="button" class="priority-refresh fc-button"
+          :disabled="loading || saving || draggingOrderId !== null || !items.length"
+          @click="printQueue">Распечатать</button>
+      </div>
     </div>
 
     <div v-if="error" class="priority-banner priority-banner--error">
@@ -250,6 +270,7 @@ function getErrorMessage(value: unknown, fallback: string): string {
             <th>Вид кожи</th>
             <th>Количество изделий</th>
             <th>Стадия</th>
+            <th>Плановая дата сдачи</th>
             <th>Расчётная дата готовности</th>
           </tr>
         </thead>
@@ -298,6 +319,7 @@ function getErrorMessage(value: unknown, fallback: string): string {
             <td>
               <span class="priority-stage">{{ getStageLabel(item.stage) }}</span>
             </td>
+            <td>{{ plannedDateLabel(item.plannedCompletionDate) }}</td>
             <td :title="getPlanningForecastHint(forecastsByOrderId.get(item.orderId))">{{ forecastLabel(item.orderId) }}</td>
           </tr>
         </tbody>
@@ -328,6 +350,12 @@ function getErrorMessage(value: unknown, fallback: string): string {
 .priority-panel__head p {
   margin-top: 6px;
   color: #6f6558;
+}
+
+.priority-panel__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
 }
 
 .priority-refresh {
@@ -446,8 +474,12 @@ function getErrorMessage(value: unknown, fallback: string): string {
     flex-direction: column;
   }
 
-  .priority-refresh {
+  .priority-panel__actions {
     width: 100%;
+  }
+
+  .priority-refresh {
+    flex: 1;
   }
 }
 </style>

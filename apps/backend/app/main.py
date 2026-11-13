@@ -1,3 +1,7 @@
+# ruff: noqa: I001
+from contextlib import asynccontextmanager
+from collections.abc import AsyncIterator
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -6,10 +10,18 @@ from app.api.router import api_router
 from app.api.timer_audit_middleware import TimerAuditMiddleware
 from app.core.config import settings
 from app.core.database import SessionLocal
+from app.services.bitrix_service import recover_interrupted_sync
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    recover_interrupted_sync(app.state.session_factory)
+    yield
 
 
 def create_application() -> FastAPI:
     app = FastAPI(
+        lifespan=lifespan,
         title=settings.app_name,
         version="0.1.0",
         docs_url="/docs",

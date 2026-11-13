@@ -187,6 +187,7 @@ class WorkOrderPage(BaseModel):
 
 
 class WorkOrderDetail(BaseModel):
+    comment: str | None = None
     model_config = ConfigDict(from_attributes=True)
 
     id: int
@@ -245,3 +246,12 @@ class WorkOrderTimeBreakdown(BaseModel):
     items: list[WorkOrderTimeBreakdownItem] = Field(default_factory=list)
     total_standard_time_seconds: int
     total_elapsed_ms: int
+
+
+class WorkOrderCommentUpdate(BaseModel):
+    comment: str | None = Field(max_length=4000)
+
+    @field_validator("comment")
+    @classmethod
+    def normalize_comment(cls, value: str | None) -> str | None:
+        return value.strip() or None if value is not None else None

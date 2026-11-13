@@ -243,6 +243,7 @@ class ReportService:
         product_ids: list[int] | None = None,
         worker_user_ids: list[int] | None = None,
         order_number: str | None = None,
+        operation_catalog_entry_ids: list[int] | None = None,
     ) -> ProductTimeReport:
         self._validate_period(date_from, date_to)
         effective_time = build_effective_operation_time_subquery()
@@ -294,6 +295,10 @@ class ReportService:
         )
         if product_ids:
             stmt = stmt.where(Product.id.in_(product_ids))
+        if operation_catalog_entry_ids:
+            stmt = stmt.where(
+                Operation.operation_catalog_entry_id.in_(operation_catalog_entry_ids)
+            )
         if worker_user_ids:
             stmt = stmt.where(User.id.in_(worker_user_ids))
         normalized_order_number = (order_number or "").strip().casefold()
@@ -763,6 +768,7 @@ class ReportService:
         product_ids: list[int] | None = None,
         worker_user_ids: list[int] | None = None,
         order_number: str | None = None,
+        operation_catalog_entry_ids: list[int] | None = None,
     ) -> tuple[bytes, str]:
         report = self.get_product_time_report(
             date_from,
@@ -770,6 +776,7 @@ class ReportService:
             product_ids,
             worker_user_ids,
             order_number,
+            operation_catalog_entry_ids,
         )
         rows: list[list[str | int | float | XlsxDuration | None]] = [
             [

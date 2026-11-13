@@ -57,6 +57,7 @@ export type WorkOrderSummary = {
 };
 
 export type WorkOrderDetail = {
+  comment: string | null;
   id: number;
   orderNumber: string;
   familyId: number | null;
@@ -242,6 +243,7 @@ type WorkOrderSummaryApi = {
 };
 
 type WorkOrderDetailApi = {
+  comment: string | null;
   id: number;
   order_number: string;
   family_id: number | null;
@@ -723,6 +725,7 @@ function mapWorkOrderDetail(order: WorkOrderDetailApi): WorkOrderDetail {
     productName: order.product_name,
     productVersion: order.product_version,
     productComment: order.product_comment,
+    comment: order.comment,
     leatherTypeId: order.leather_type_id,
     leatherTypeName: order.leather_type_name,
     quantity: order.quantity,
@@ -794,4 +797,12 @@ function formatDate(value: number): string {
     dateStyle: "short",
     timeStyle: "medium",
   }).format(new Date(value));
+}
+
+
+export async function updateWorkOrderComment(orderId: number, comment: string | null): Promise<WorkOrderDetail> {
+  const response = await apiFetch(`/api/orders/${orderId}/comment`, {
+    method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ comment }),
+  });
+  return handleJsonResponse<WorkOrderDetailApi>(response).then(mapWorkOrderDetail);
 }

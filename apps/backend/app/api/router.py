@@ -20,7 +20,10 @@ from app.api.routes.personal_work import router as personal_work_router
 
 from app.api.routes.diagnostics import router as diagnostics_router
 
+from app.api.routes.bitrix import router as bitrix_router
+
 api_router = APIRouter()
+api_router.include_router(bitrix_router, prefix="/bitrix", tags=["bitrix"])
 api_router.include_router(
     diagnostics_router, prefix="/diagnostics", tags=["diagnostics"]
 )

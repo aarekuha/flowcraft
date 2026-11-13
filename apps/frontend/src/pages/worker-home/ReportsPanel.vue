@@ -243,7 +243,7 @@ function getFilters(): ReportFilters {
   if (activeReport.value !== "products" && selectedWorkerUserIds.value.length > 0) {
     filters.workerUserIds = selectedWorkerUserIds.value;
   }
-  if ((activeReport.value === "order-batches" || activeReport.value === "operation-workers") && selectedOperationCatalogEntryIds.value.length > 0) {
+  if (activeReport.value !== "products" && selectedOperationCatalogEntryIds.value.length > 0) {
     filters.operationCatalogEntryIds = selectedOperationCatalogEntryIds.value;
   }
   if (activeReport.value !== "products" && orderNumber.value.trim()) {
@@ -342,35 +342,35 @@ function getErrorMessage(value: unknown, fallback: string): string {
         <span class="reports-panel__eyebrow">Производственные данные</span>
         <h2>Отчеты</h2>
       </div>
-      <div class="reports-tabs" role="tablist" aria-label="Виды отчетов">
+      <div class="fc-tabs" role="tablist" aria-label="Виды отчетов">
         <button
           type="button"
-          class="reports-tab"
-          :class="{ 'reports-tab--active': activeReport === 'products' }"
+          class="fc-tab"
+          :class="{ 'fc-tab--active': activeReport === 'products' }"
           @click="void selectReport('products')"
         >
           По изделиям
         </button>
         <button
           type="button"
-          class="reports-tab"
-          :class="{ 'reports-tab--active': activeReport === 'product-time' }"
+          class="fc-tab"
+          :class="{ 'fc-tab--active': activeReport === 'product-time' }"
           @click="void selectReport('product-time')"
         >
           По изделиям и операциям
         </button>
         <button
           type="button"
-          class="reports-tab"
-          :class="{ 'reports-tab--active': activeReport === 'order-batches' }"
+          class="fc-tab"
+          :class="{ 'fc-tab--active': activeReport === 'order-batches' }"
           @click="void selectReport('order-batches')"
         >
           По партиям
         </button>
         <button
           type="button"
-          class="reports-tab"
-          :class="{ 'reports-tab--active': activeReport === 'operation-workers' }"
+          class="fc-tab"
+          :class="{ 'fc-tab--active': activeReport === 'operation-workers' }"
           @click="void selectReport('operation-workers')"
         >
           По операциям и исполнителям
@@ -445,7 +445,7 @@ function getErrorMessage(value: unknown, fallback: string): string {
           </div>
         </details>
       </div>
-      <div v-if="activeReport === 'order-batches' || activeReport === 'operation-workers'" class="reports-field">
+      <div v-if="activeReport !== 'products'" class="reports-field">
         <span>Операция</span>
         <details class="reports-multi-select">
           <summary>{{ operationSelectionLabel() }}</summary>
@@ -479,12 +479,12 @@ function getErrorMessage(value: unknown, fallback: string): string {
         <input v-model="orderNumber" type="text" placeholder="Например, FC-0101" />
       </label>
       <div class="reports-actions">
-        <button type="button" class="reports-button" :disabled="loading" @click="void showReport()">
+        <button type="button" class="reports-button fc-button fc-button--primary" :disabled="loading" @click="void showReport()">
           {{ loading ? "Загрузка..." : "Показать" }}
         </button>
         <button
           type="button"
-          class="reports-button reports-button--secondary"
+          class="reports-button reports-button--secondary fc-button"
           :disabled="loading || exportLoading"
           @click="void exportReport()"
         >
@@ -718,7 +718,7 @@ function getErrorMessage(value: unknown, fallback: string): string {
         <div v-if="batchReport && batchReport.pages > 1" class="reports-pagination">
           <button
             type="button"
-            class="reports-button reports-button--secondary"
+            class="reports-button reports-button--secondary fc-button"
             :disabled="loading || batchReport.page <= 1"
             @click="void selectOrderBatchPage(batchReport.page - 1)"
           >
@@ -727,7 +727,7 @@ function getErrorMessage(value: unknown, fallback: string): string {
           <span>Страница {{ batchReport.page }} из {{ batchReport.pages }}</span>
           <button
             type="button"
-            class="reports-button reports-button--secondary"
+            class="reports-button reports-button--secondary fc-button"
             :disabled="loading || batchReport.page >= batchReport.pages"
             @click="void selectOrderBatchPage(batchReport.page + 1)"
           >
@@ -768,37 +768,6 @@ function getErrorMessage(value: unknown, fallback: string): string {
   font-weight: 800;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-}
-
-.reports-tabs {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  padding: 6px;
-  border-radius: 16px;
-  background: var(--color-surface-soft);
-}
-
-.reports-tab,
-.reports-button {
-  min-height: 42px;
-  padding: 10px 16px;
-  border: 0;
-  border-radius: 12px;
-  font: inherit;
-  font-weight: 700;
-  cursor: pointer;
-}
-
-.reports-tab {
-  color: var(--color-text-secondary);
-  background: transparent;
-}
-
-.reports-tab--active,
-.reports-button {
-  color: #fff;
-  background: var(--color-primary);
 }
 
 .reports-filters {
@@ -1032,7 +1001,7 @@ function getErrorMessage(value: unknown, fallback: string): string {
   }
 
   .reports-panel__head,
-  .reports-tabs,
+  .fc-tabs,
   .reports-filters,
   .reports-actions {
     align-items: stretch;

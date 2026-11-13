@@ -67,7 +67,7 @@ function getErrorMessage(value: unknown, fallback: string): string {
           <p>Планирование производства</p>
           <h2 id="workload-modal-title">Загрузка по операциям</h2>
         </div>
-        <button type="button" class="workload-button" @click="close">
+        <button type="button" class="workload-button fc-button" @click="close">
           Закрыть
         </button>
       </header>
@@ -80,7 +80,7 @@ function getErrorMessage(value: unknown, fallback: string): string {
           </label>
           <button
             type="button"
-            class="workload-button"
+            class="workload-button fc-button"
             :disabled="loading"
             @click="loadWorkload"
           >

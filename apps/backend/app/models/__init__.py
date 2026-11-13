@@ -38,6 +38,10 @@ from app.models.work_order import (
 from app.models.work_shift import WorkShift
 
 __all__ = [
+    "BitrixDeal",
+    "BitrixConnection",
+    "BitrixProduct",
+    "BitrixMapping",
     "DiagnosticReport",
     "CalendarDay",
     "CalendarImport",
@@ -79,3 +83,5 @@ from app.models.bonus import Bonus, UserBonus, MonthlyBonusExclusion
 from app.models.monthly_piecework import MonthlyPiecework
 
 from app.models.diagnostic_report import DiagnosticReport
+
+from app.models.bitrix import BitrixConnection, BitrixProduct, BitrixMapping, BitrixDeal

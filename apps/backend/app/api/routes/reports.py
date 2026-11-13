@@ -80,6 +80,7 @@ def get_product_time_report(
     product_id: Annotated[list[ReportId] | None, Query()] = None,
     worker_user_id: Annotated[list[ReportId] | None, Query()] = None,
     order_number: Annotated[str | None, Query(max_length=64)] = None,
+    operation_catalog_entry_id: Annotated[list[ReportId] | None, Query()] = None,
     _: object = Depends(require_any_role("reports")),
     session: Session = Depends(get_session),
 ) -> ProductTimeReport:
@@ -89,6 +90,7 @@ def get_product_time_report(
         product_id,
         worker_user_id,
         order_number,
+        operation_catalog_entry_id,
     )
 
 
@@ -99,6 +101,7 @@ def export_product_time_report(
     product_id: Annotated[list[ReportId] | None, Query()] = None,
     worker_user_id: Annotated[list[ReportId] | None, Query()] = None,
     order_number: Annotated[str | None, Query(max_length=64)] = None,
+    operation_catalog_entry_id: Annotated[list[ReportId] | None, Query()] = None,
     _: object = Depends(require_any_role("reports")),
     session: Session = Depends(get_session),
 ) -> Response:
@@ -108,6 +111,7 @@ def export_product_time_report(
         product_id,
         worker_user_id,
         order_number,
+        operation_catalog_entry_id,
     )
     return _xlsx_response(content, filename)
 

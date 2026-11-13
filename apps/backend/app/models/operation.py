@@ -36,6 +36,9 @@ class Operation(Base):
         index=True,
     )
     name: Mapped[str] = mapped_column(String(255), nullable=False)
+    coefficient_units: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=10000
+    )
     price_cents: Mapped[int | None] = mapped_column(Integer, nullable=True)
     standard_time_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
     stage_start: Mapped[int] = mapped_column(Integer, nullable=False, default=1)

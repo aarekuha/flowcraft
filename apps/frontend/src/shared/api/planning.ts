@@ -3,6 +3,8 @@ import { apiFetch, createRequestError, handleJsonResponse } from "@/shared/api/h
 import type { ProductionCalendarMonth } from "@/shared/api/productionCalendar";
 
 export type PlanningSettings = {
+  showPersonalWorkReport: boolean;
+  baseRateCents: number;
   displayOffsetDays: number;
   preparationSeconds: number;
   horizonMonths: 1 | 3 | 6 | 12;
@@ -38,6 +40,7 @@ export type PlanningQueueStage =
   | "quality_control";
 
 export type PlanningQueueItem = {
+  plannedCompletionDate: string | null;
   orderId: number;
   position: number;
   orderNumber: string;
@@ -127,6 +130,8 @@ export type PlanningWorkload = {
 };
 
 type PlanningSettingsApi = {
+  show_personal_work_report: boolean;
+  base_rate_cents: number;
   display_offset_days: number;
   preparation_seconds: number;
   horizon_months: 1 | 3 | 6 | 12;
@@ -152,6 +157,7 @@ type WorkScheduleMonthApi = {
 type PlanningQueueApi = {
   revision: number;
   items: Array<{
+    planned_completion_date: string | null;
     order_id: number;
     position: number;
     order_number: string;
@@ -326,12 +332,18 @@ export async function reorderPlanningQueue(payload: {
   return handleJsonResponse<PlanningQueueApi>(response).then(mapPlanningQueue);
 }
 
+export async function fetchInterfaceSettings(): Promise<{ show_personal_work_report: boolean }> {
+  return handleJsonResponse(await apiFetch("/api/planning/interface-settings"));
+}
+
 export async function fetchPlanningSettings(): Promise<PlanningSettings> {
   const response = await apiFetch("/api/planning/settings");
   return handleJsonResponse<PlanningSettingsApi>(response).then(mapSettings);
 }
 
 export async function updatePlanningSettings(payload: {
+  show_personal_work_report: boolean;
+  base_rate_cents: number;
   display_offset_days: number;
   preparation_seconds: number;
   horizon_months: 1 | 3 | 6 | 12;
@@ -403,6 +415,8 @@ export async function deleteWorkSchedule(payload: WorkScheduleDeletePayload | Wo
 function mapSettings(payload: PlanningSettingsApi): PlanningSettings {
   return {
     displayOffsetDays: payload.display_offset_days,
+    showPersonalWorkReport: payload.show_personal_work_report,
+    baseRateCents: payload.base_rate_cents,
     preparationSeconds: payload.preparation_seconds,
     horizonMonths: payload.horizon_months,
     updatedAt: payload.updated_at,
@@ -415,6 +429,7 @@ function mapPlanningQueue(payload: PlanningQueueApi): PlanningQueue {
     revision: payload.revision,
     items: payload.items.map((item) => ({
       orderId: item.order_id,
+      plannedCompletionDate: item.planned_completion_date,
       position: item.position,
       orderNumber: item.order_number,
       productName: item.product_name,

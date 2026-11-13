@@ -940,7 +940,7 @@ function errorMessage(error: unknown): string {
       </div>
       <button
         type="button"
-        class="button button--primary"
+        class="button button--primary fc-button fc-button--primary"
         :disabled="!canAddTimeForSelectedWorker"
         @click="startCreate"
       >
@@ -986,7 +986,7 @@ function errorMessage(error: unknown): string {
 
       <button
         type="submit"
-        class="button button--secondary"
+        class="button button--secondary fc-button fc-button--primary"
         :disabled="selectedWorkerId === null || Boolean(rangeError) || sessionsLoading"
       >
         {{ sessionsLoading ? "Загрузка..." : "Показать" }}
@@ -1085,7 +1085,7 @@ function errorMessage(error: unknown): string {
             Распределено по заказам: {{ selectedSession.allocatedOrderNumbers.join(", ") }}
           </p>
         </div>
-        <button type="button" class="button button--ghost" @click="resetEditor">
+        <button type="button" class="button button--ghost fc-button fc-button--ghost" @click="resetEditor">
           Отмена
         </button>
       </header>
@@ -1132,7 +1132,7 @@ function errorMessage(error: unknown): string {
             <button
               v-if="!selectedSession || selectedSession.editable"
               type="button"
-              class="button button--ghost"
+              class="button button--ghost fc-button fc-button--ghost"
               :disabled="saveLoading"
               @click="clearSelectedOrder"
             >Сменить заказ</button>
@@ -1173,7 +1173,7 @@ function errorMessage(error: unknown): string {
             <button
               v-if="!replacesServiceWithOperation"
               type="button"
-              class="button button--secondary"
+              class="button button--secondary fc-button"
               :disabled="!selectedSession?.editable"
               @click="startServiceConversion"
             >
@@ -1182,7 +1182,7 @@ function errorMessage(error: unknown): string {
             <button
               v-else
               type="button"
-              class="button button--ghost"
+              class="button button--ghost fc-button fc-button--ghost"
               @click="cancelServiceConversion"
             >
               Оставить «{{ selectedSession?.label }}»
@@ -1310,7 +1310,7 @@ function errorMessage(error: unknown): string {
         <button
           v-if="editorMode === 'edit' && selectedSession?.editable"
           type="button"
-          class="button button--danger"
+          class="button button--danger fc-button fc-button--danger"
           :disabled="saveLoading"
           @click="void removeSession()"
         >
@@ -1318,7 +1318,7 @@ function errorMessage(error: unknown): string {
         </button>
         <button
           type="button"
-          class="button button--primary"
+          class="button button--primary fc-button fc-button--primary"
           :disabled="!canSave"
           @click="void saveChanges()"
         >

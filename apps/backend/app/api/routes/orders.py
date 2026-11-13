@@ -1,3 +1,4 @@
+# ruff: noqa: I001
 from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.orm import Session
 
@@ -29,6 +30,7 @@ from app.schemas.order import (
     WorkOrderStatusUpdate,
     WorkOrderTimeBreakdown,
     WorkOrderUpdateAssignments,
+    WorkOrderCommentUpdate,
 )
 from app.services.auth_service import AuthenticatedSession
 from app.services.order_service import OrderService
@@ -315,3 +317,13 @@ def update_order_deleted_status(
     session: Session = Depends(get_session),
 ) -> WorkOrderDetail:
     return OrderService(session).update_order_deleted_status(order_id, payload)
+
+
+@router.patch("/{order_id}/comment", response_model=WorkOrderDetail)
+def update_order_comment(
+    order_id: int,
+    payload: WorkOrderCommentUpdate,
+    _: object = Depends(require_any_role("brigadier", "quality_control", "admin")),
+    session: Session = Depends(get_session),
+) -> WorkOrderDetail:
+    return OrderService(session).update_order_comment(order_id, payload.comment)

@@ -33,6 +33,9 @@ class Product(Base):
     material_cost_cents: Mapped[int | None] = mapped_column(Integer, nullable=True)
     stage_count: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     is_active: Mapped[bool] = mapped_column(default=True, nullable=False)
+    bitrix_mapping_not_required: Mapped[bool] = mapped_column(
+        default=False, nullable=False
+    )
     created_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
 
     author_user = relationship(User, lazy="joined")
