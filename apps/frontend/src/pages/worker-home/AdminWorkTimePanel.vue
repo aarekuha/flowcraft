@@ -1370,7 +1370,19 @@ function errorMessage(error: unknown): string {
   color: #64748b;
 }
 
-.filters,
+.filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 14px;
+}
+
+.filters .field--worker {
+  flex: 1 1 220px;
+  max-width: 380px;
+  min-width: 0;
+}
+
 .editor-grid {
   display: grid;
   grid-template-columns: minmax(220px, 1.4fr) repeat(2, minmax(220px, 1fr)) auto;
@@ -1416,13 +1428,29 @@ function errorMessage(error: unknown): string {
 }
 
 .date-range {
-  display: grid;
-  grid-template-columns: minmax(130px, 1fr) 100px;
+  display: flex;
+  flex-wrap: wrap;
+  width: fit-content;
+  max-width: 100%;
   gap: 8px;
   min-width: 0;
   margin: 0;
   padding: 0;
   border: 0;
+}
+
+.date-range input {
+  flex: 0 0 auto;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.date-range input[type="date"] {
+  width: 11rem;
+}
+
+.date-range input[type="time"] {
+  width: 8rem;
 }
 
 .date-range legend {
@@ -1732,7 +1760,6 @@ function errorMessage(error: unknown): string {
 }
 
 @media (max-width: 1100px) {
-  .filters,
   .editor-grid {
     grid-template-columns: repeat(2, minmax(220px, 1fr));
   }
@@ -1750,9 +1777,13 @@ function errorMessage(error: unknown): string {
     flex-direction: column;
   }
 
-  .filters,
   .editor-grid {
     grid-template-columns: 1fr;
+  }
+
+  .filters .field--worker {
+    flex-basis: 100%;
+    max-width: none;
   }
 
   .editor-actions .button--danger {

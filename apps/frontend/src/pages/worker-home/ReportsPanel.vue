@@ -991,6 +991,12 @@ function getErrorMessage(value: unknown, fallback: string): string {
   background: var(--color-surface);
 }
 
+@media (hover: hover) {
+  .report-table tbody tr:not(.report-batch-spacer):hover > :is(td, th) {
+    background: var(--color-surface-soft);
+  }
+}
+
 .reports-pagination {
   justify-content: flex-end;
 }
