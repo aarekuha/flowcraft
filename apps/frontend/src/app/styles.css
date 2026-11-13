@@ -135,8 +135,9 @@ html body .fc-tabs .fc-tab--active:hover:not(:disabled) {
   color: #fff;
   box-shadow: 0 10px 22px rgba(47, 110, 163, .12);
 }
+/* Правила видимости компонентов имеют приоритет над базовой раскладкой кнопки */
+:where(button.fc-button) { display: inline-flex; }
 :root body button.fc-button {
-  display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 8px;

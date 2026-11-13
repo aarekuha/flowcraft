@@ -28,6 +28,9 @@ from app.services.planning_results_service import PlanningResultsService
 from app.services.planning_service import PlanningService
 from app.services.production_calendar_service import ProductionCalendarService
 
+from app.schemas.planning_timeline import PlanningTimelineRead
+from app.services.planning_timeline_service import PlanningTimelineService
+
 router = APIRouter()
 
 
@@ -224,3 +227,11 @@ def get_interface_settings(
             settings.show_personal_work_report if settings else True
         ),
     }
+
+
+@router.get("/timeline", response_model=PlanningTimelineRead)
+def get_planning_timeline(
+    _: object = Depends(require_any_role("brigadier", "admin")),
+    session: Session = Depends(get_session),
+) -> PlanningTimelineRead:
+    return PlanningTimelineService(session).get_timeline()

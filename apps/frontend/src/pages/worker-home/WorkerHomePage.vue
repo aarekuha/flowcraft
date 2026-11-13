@@ -14,6 +14,7 @@ import OrderCommentEditor from "@/pages/worker-home/OrderCommentEditor.vue";
 import { fetchInterfaceSettings } from "@/shared/api/planning";
 import PlanningForecastModal from "@/pages/worker-home/PlanningForecastModal.vue";
 import PlanningPriorityPanel from "@/pages/worker-home/PlanningPriorityPanel.vue";
+import PlanningTimelinePanel from "@/pages/worker-home/PlanningTimelinePanel.vue";
 import PlanningSettingsModal from "@/pages/worker-home/PlanningSettingsModal.vue";
 import PlanningWorkloadModal from "@/pages/worker-home/PlanningWorkloadModal.vue";
 import { createWorkerTimerRequests } from "@/shared/lib/workerTimerRequests";
@@ -600,6 +601,7 @@ const workerTimers = ref<Record<string, WorkerTimerState>>({});
 const workerTimerNow = ref(Date.now());
 const workerGroupExpanded = ref<Record<string, boolean>>({});
 const isSmartphoneViewport = ref(false);
+const statisticsTab = ref<"production" | "work_time">("production");
 const statisticsPeriodMode = ref<StatisticsPeriodMode>("preset");
 const statisticsPeriodDays = ref<(typeof statisticsPeriodOptions)[number]>(14);
 const statisticsDateFrom = ref(getDateInputValueForDays(14));
@@ -6896,35 +6898,24 @@ async function handleResetUserPassword(user: UserRecord) {
 
     <section v-else class="shell">
       <header class="header">
-        <nav class="tabs" aria-label="Разделы">
-          <button
-            v-for="tab in availableTabs"
-            :key="tab.id"
-            type="button"
-            class="tab-button"
-            :class="{ 'tab-button--active': activeTab === tab.id }"
-            @click="setActiveTab(tab.id)"
-          >
-            <span class="button-content">
-              <span class="role-icon" :class="`role-icon--${tab.icon}`" aria-hidden="true" />
-              <span>{{ tab.label }}</span>
-            </span>
-          </button>
-        </nav>
+        <div class="brand-block">
+          <div class="brand-logo-frame">
+            <img
+              :src="flowcraftLogoUrl"
+              alt="FlowCraft"
+              class="brand-logo"
+            />
+          </div>
+        </div>
 
         <div class="current-user-card">
           <div class="current-user-card__identity">
             <span class="section-label">Текущий пользователь</span>
             <strong>{{ currentSession.userName }}</strong>
           </div>
-          <button
-            v-if="showPersonalWorkReport && currentSession.userRoles.includes('worker')"
-            type="button"
-            class="action-link"
-            @click="personalWorkOpen = true"
-          >Мой расчёт за месяц</button>
+
           <div class="current-user-card__actions">
-            <button type="button" class="ghost-button fc-button fc-button--ghost" @click="openChangePasswordModal">
+            <button type="button" class="ghost-button fc-button fc-button--ghost" aria-label="Изменить пароль" @click="openChangePasswordModal">
               <span class="button-content">
                 <span class="button-icon button-icon--key" aria-hidden="true" />
                 <span class="current-user-card__action-label">Изменить пароль</span>
@@ -6936,7 +6927,7 @@ async function handleResetUserPassword(user: UserRecord) {
                 <span class="current-user-card__action-label">{{ diagnosticSending ? "Отправка…" : "Отправить диагностику" }}</span>
               </span>
             </button>
-            <button type="button" class="ghost-button fc-button fc-button--ghost" @click="void handleLogout()">
+            <button type="button" class="ghost-button fc-button fc-button--ghost" aria-label="Выйти" @click="void handleLogout()">
               <span class="button-content">
                 <span class="button-icon button-icon--logout" aria-hidden="true" />
                 <span class="current-user-card__action-label">Выйти</span>
@@ -6944,18 +6935,30 @@ async function handleResetUserPassword(user: UserRecord) {
             </button>
           </div>
           <span v-if="diagnosticMessage" class="diagnostic-message" role="status">{{ diagnosticMessage }}</span>
-        </div>
-
-        <div class="brand-block">
-          <div class="brand-logo-frame">
-            <img
-              :src="flowcraftLogoUrl"
-              alt="FlowCraft"
-              class="brand-logo"
-            />
-          </div>
+          <button
+            v-if="showPersonalWorkReport && currentSession.userRoles.includes('worker')"
+            type="button"
+            class="action-link current-user-card__report"
+            @click="personalWorkOpen = true"
+          >Мой расчёт за месяц</button>
         </div>
       </header>
+
+      <nav class="tabs" aria-label="Разделы">
+        <button
+          v-for="tab in availableTabs"
+          :key="tab.id"
+          type="button"
+          class="tab-button"
+          :class="{ 'tab-button--active': activeTab === tab.id }"
+          @click="setActiveTab(tab.id)"
+        >
+          <span class="button-content">
+            <span class="role-icon" :class="`role-icon--${tab.icon}`" aria-hidden="true" />
+            <span>{{ tab.label }}</span>
+          </span>
+        </button>
+      </nav>
 
       <section v-if="activeTab === 'worker'">
         <article class="constructor-panel worker-panel">
@@ -7478,28 +7481,38 @@ async function handleResetUserPassword(user: UserRecord) {
 
             <div v-else>
               <div class="toolbar work-orders-toolbar">
-                <label class="field field--inline">
-                  <span class="field__label">Поиск по заказам</span>
-                  <div class="filter-input-wrap">
-                    <input
-                      v-model="workOrderSearchDraft"
-                      type="text"
-                      class="text-input text-input--with-action"
-                      placeholder="Номер заказа или изделие"
-                      @keydown.enter.prevent="applyWorkOrderSearch"
-                    />
+                <div class="field field--inline">
+                  <label for="work-order-search" class="field__label">Поиск по заказам</label>
+                  <div class="work-order-search-controls">
+                    <div class="filter-input-wrap">
+                      <input
+                        id="work-order-search"
+                        v-model="workOrderSearchDraft"
+                        type="text"
+                        class="text-input text-input--with-action"
+                        placeholder="Номер заказа или изделие"
+                        @keydown.enter.prevent="applyWorkOrderSearch"
+                      />
+                      <button
+                        v-if="workOrderSearchDraft || workOrderFilter"
+                        type="button"
+                        class="field-action"
+                        aria-label="Очистить поиск"
+                        title="Очистить поиск"
+                        @click="clearWorkOrderSearch"
+                      >
+                        <span class="field-action__icon" aria-hidden="true" />
+                      </button>
+                    </div>
                     <button
-                      v-if="workOrderSearchDraft || workOrderFilter"
                       type="button"
-                      class="field-action"
-                      aria-label="Очистить поиск"
-                      title="Очистить поиск"
-                      @click="clearWorkOrderSearch"
+                      class="secondary-button fc-button"
+                      @click="applyWorkOrderSearch"
                     >
-                      <span class="field-action__icon" aria-hidden="true" />
+                      Применить
                     </button>
                   </div>
-                </label>
+                </div>
                 <button v-if="showWorkOrderPriority" type="button"
                   class="secondary-button mobile-only work-order-mobile-sort fc-button"
                   @click="toggleWorkOrderSort('priority')">
@@ -7846,7 +7859,7 @@ async function handleResetUserPassword(user: UserRecord) {
                         <td>
                           <button
                             type="button"
-                            class="secondary-button fc-button"
+                            class="secondary-button fc-button order-assignments-button"
                             @click="openBrigadierManageOrder(order)"
                           >
                             <span class="button-content">
@@ -8123,7 +8136,7 @@ async function handleResetUserPassword(user: UserRecord) {
                   </div>
                   <button
                     type="button"
-                    class="secondary-button fc-button"
+                    class="secondary-button fc-button order-assignments-button"
                     @click="openBrigadierManageOrder(order)"
                   >
                     <span class="button-content">
@@ -8445,7 +8458,11 @@ async function handleResetUserPassword(user: UserRecord) {
       </section>
 
       <section v-else-if="activeTab === 'stats'">
-        <article class="constructor-panel statistics-panel">
+        <nav class="fc-tabs statistics-tabs" aria-label="Разделы статистики">
+          <button type="button" class="fc-tab" :class="{ 'fc-tab--active': statisticsTab === 'production' }" @click="statisticsTab = 'production'">Производство</button>
+          <button type="button" class="fc-tab" :class="{ 'fc-tab--active': statisticsTab === 'work_time' }" @click="statisticsTab = 'work_time'">Рабочее время</button>
+        </nav>
+        <article v-if="statisticsTab === 'production'" class="constructor-panel statistics-panel">
           <div class="panel-head statistics-panel__head">
             <div>
               <h2>Статистика производства</h2>
@@ -8748,6 +8765,7 @@ async function handleResetUserPassword(user: UserRecord) {
             </div>
           </template>
         </article>
+        <PlanningTimelinePanel v-else />
       </section>
 
       <section v-else-if="activeTab === 'settings' && canManagePlanningSettings" class="settings-page">
@@ -11557,6 +11575,7 @@ async function handleResetUserPassword(user: UserRecord) {
 </template>
 
 <style scoped>
+.statistics-tabs { margin-bottom: 20px; }
 .settings-page { width: 100%; max-width: 1280px; min-width: 0; }
 .settings-page > h2 { margin: 0 0 24px; }
 .diagnostic-message { max-width: 320px; font-size: 0.85rem; overflow-wrap: anywhere; }
@@ -11629,17 +11648,30 @@ async function handleResetUserPassword(user: UserRecord) {
 }
 
 .header {
-  display: flex;
-  gap: 14px;
-  align-items: center;
-  justify-content: space-between;
-  flex-wrap: wrap;
-  margin-bottom: 28px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 24px;
+  align-items: start;
+  margin-bottom: 20px;
 }
 
 .brand-block {
-  flex: 0 0 auto;
-  align-self: center;
+  min-width: 0;
+  justify-self: start;
+  width: 100%;
+}
+
+.header .brand-logo-frame {
+  width: min(380px, 100%);
+  height: auto;
+  aspect-ratio: 3;
+}
+
+.header .brand-logo {
+  width: 180%;
+  height: auto;
+  max-width: none;
+  flex-shrink: 0;
 }
 
 h1,
@@ -11685,18 +11717,28 @@ h2 {
 }
 
 .tabs {
-  display: inline-flex;
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  overflow-x: auto;
+  margin-bottom: 24px;
   gap: 10px;
   padding: 8px;
   border-radius: 18px;
   background: var(--color-surface);
   border: 1px solid var(--color-border);
-  flex-wrap: wrap;
-  align-self: center;
+  flex-wrap: nowrap;
+}
+
+.tabs > .tab-button {
+  flex: 0 0 auto;
 }
 
 .current-user-card {
-  min-width: 260px;
+  min-width: 0;
+  max-width: 100%;
+  width: fit-content;
+  justify-self: end;
   display: grid;
   gap: 8px;
   padding: 10px 14px;
@@ -11704,6 +11746,16 @@ h2 {
   border-radius: 16px;
   background: var(--color-surface);
   text-align: left;
+}
+
+.current-user-card__report {
+  justify-self: center;
+  text-align: center;
+}
+
+.order-assignments-button {
+  min-width: max-content;
+  white-space: nowrap;
 }
 
 .current-user-card__identity {
@@ -12654,6 +12706,23 @@ h2 {
 
 .dictionary-form .primary-button {
   align-self: end;
+}
+
+.work-order-search-controls {
+  display: flex;
+  align-items: stretch;
+  gap: 10px;
+  min-width: 0;
+}
+
+.work-order-search-controls > .filter-input-wrap {
+  flex: 1;
+  min-width: 0;
+}
+
+.work-order-search-controls > button {
+  flex-shrink: 0;
+  align-self: stretch;
 }
 
 .filter-input-wrap {
@@ -14891,26 +14960,6 @@ h2 {
   }
 }
 
-@media (max-width: 1999px) {
-  .header {
-    justify-content: flex-start;
-  }
-
-  .brand-block {
-    order: -1;
-    flex: 0 0 100%;
-    align-self: flex-start;
-  }
-
-  .tabs {
-    order: 0;
-  }
-
-  .current-user-card {
-    order: 1;
-  }
-}
-
 @media print {
   @page {
     size: A4;
@@ -14966,6 +15015,21 @@ h2 {
   }
 }
 
+@media (width < 1200px) {
+  .header {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .current-user-card {
+    width: 100%;
+    justify-self: stretch;
+  }
+  .current-user-card__report {
+    justify-self: start;
+    text-align: left;
+  }
+}
+
 @media (max-width: 760px) {
   .page {
     padding: 10px;
@@ -14977,7 +15041,6 @@ h2 {
     border-radius: 18px;
   }
 
-  .header,
   .panel-head,
   .modal__head,
   .modal__actions,
@@ -15018,35 +15081,14 @@ h2 {
     width: 100%;
   }
 
-  .brand-block {
-    display: flex;
-    justify-content: center;
-  }
-
-  .header .brand-logo-frame {
-    width: min(320px, 86vw);
-    height: 88px;
-  }
-
-  .header .brand-logo {
-    width: 260%;
-    height: 180px;
-    object-fit: cover;
-    object-position: center;
-    transform: none;
-  }
-
   .tabs {
-    width: 100%;
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(132px, 1fr));
     gap: 8px;
     padding: 6px;
+    margin-bottom: 16px;
   }
 
   .tab-button {
-    width: 100%;
-    min-height: 56px;
+    min-height: 44px;
   }
 
   .brand-logo-frame--auth {
@@ -15064,10 +15106,9 @@ h2 {
 
   .current-user-card {
     min-width: 0;
-    grid-template-columns: minmax(0, 1fr) auto;
-    align-items: center;
-    gap: 10px;
-    padding: 12px 14px;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 8px;
+    padding: 10px;
   }
 
   .current-user-card__identity {
@@ -15082,14 +15123,14 @@ h2 {
   .current-user-card strong {
     display: block;
     min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    overflow-wrap: anywhere;
+    line-height: 1.4;
   }
 
   .current-user-card__actions {
     gap: 6px;
     flex-wrap: nowrap;
+    justify-content: flex-start;
   }
 
   .current-user-card .ghost-button {
@@ -15097,9 +15138,6 @@ h2 {
     padding: 8px;
   }
 
-  .current-user-card__action-label {
-    display: none;
-  }
 
   .panel-head h2,
   .constructor-panel h2 {
@@ -15252,6 +15290,12 @@ h2 {
   .operation-table th,
   .operation-table td {
     min-width: 150px;
+  }
+}
+@media (width < 620px) {
+  .current-user-card__actions {
+    flex-direction: column;
+    align-items: flex-start;
   }
 }
 </style>
