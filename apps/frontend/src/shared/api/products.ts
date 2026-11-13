@@ -6,6 +6,7 @@ export type OperationNode = {
   operationCatalogEntryId: number | null;
   name: string;
   operationKind: OperationCatalogEntryKind | null;
+  coefficientUnits: number;
   priceCents: number | null;
   standardTimeSeconds: number | null;
   statisticalTimeSeconds: number | null;
@@ -32,6 +33,7 @@ export type ProductSummary = {
 };
 
 export type ProductDetail = {
+  baseRateCents: number;
   id: number;
   name: string;
   version: string;
@@ -57,7 +59,7 @@ export type ProductCreatePayload = {
   operations: Array<{
     operation_catalog_entry_id?: number | null;
     name: string;
-    price_cents?: number | null;
+    coefficient_units?: number;
     standard_time_seconds?: number | null;
     stage_start?: number;
     stage_end?: number;
@@ -79,7 +81,7 @@ export type ProductCostsUpdatePayload = {
   comment?: string | null;
   operations: Array<{
     id: number;
-    price_cents?: number | null;
+    coefficient_units?: number;
     standard_time_seconds?: number | null;
     children: ProductCostsUpdatePayload["operations"];
   }>;
@@ -90,6 +92,7 @@ type OperationNodeApi = {
   operation_catalog_entry_id: number | null;
   name: string;
   operation_kind: OperationCatalogEntryKind | null;
+  coefficient_units: number;
   price_cents: number | null;
   standard_time_seconds: number | null;
   statistical_time_seconds: number | null;
@@ -115,6 +118,7 @@ type ProductSummaryApi = {
 };
 
 type ProductDetailApi = {
+  base_rate_cents: number;
   id: number;
   name: string;
   version: string;
@@ -228,6 +232,7 @@ function mapProductSummary(product: ProductSummaryApi): ProductSummary {
 
 function mapProductDetail(product: ProductDetailApi): ProductDetail {
   return {
+    baseRateCents: product.base_rate_cents,
     id: product.id,
     name: product.name,
     version: product.version,
@@ -249,6 +254,7 @@ function mapOperationNode(operation: OperationNodeApi): OperationNode {
     operationCatalogEntryId: operation.operation_catalog_entry_id,
     name: operation.name,
     operationKind: operation.operation_kind,
+    coefficientUnits: operation.coefficient_units,
     priceCents: operation.price_cents,
     standardTimeSeconds: operation.standard_time_seconds,
     statisticalTimeSeconds: operation.statistical_time_seconds,

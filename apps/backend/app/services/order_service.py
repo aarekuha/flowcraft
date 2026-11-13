@@ -660,6 +660,7 @@ class OrderService:
             order.estimated_minutes - created_estimated_minutes
         )
         created_order = WorkOrder(
+            comment=order.comment,
             order_number=created_order_number,
             family_id=family.id,
             part_number=next_part_number,
@@ -1030,6 +1031,15 @@ class OrderService:
         planning_queue.bump_revision()
         self.session.commit()
         self.session.refresh(order)
+        return self.get_order(order.id)
+
+    def update_order_comment(
+        self, order_id: int, comment: str | None
+    ) -> WorkOrderDetail:
+        order = self._get_order_or_404(order_id)
+        order.comment = comment
+        order.updated_at = self._now_ts()
+        self.session.commit()
         return self.get_order(order.id)
 
     def update_order_planned_completion_date(
@@ -2316,6 +2326,7 @@ class OrderService:
             product_name=product.name,
             product_version=product.version,
             product_comment=product.comment,
+            comment=order.comment,
             leather_type_id=order.leather_type_id,
             leather_type_name=order.leather_type.name
             if order.leather_type is not None

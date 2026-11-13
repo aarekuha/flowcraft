@@ -2902,3 +2902,77 @@ def test_order_lifecycle_filters_and_soft_delete(client: TestClient) -> None:
     restored_in_work_response = client.get("/api/orders?status=in_work&search=0112")
     assert restored_in_work_response.status_code == 200
     assert restored_in_work_response.json()["total"] == 1
+
+
+@pytest.mark.parametrize(
+    "stage,completed,deleted,quality",
+    [
+        ("created", None, None, None),
+        ("cutting", None, None, None),
+        ("in_work", None, None, None),
+        ("in_work", None, None, 10),
+        ("in_work", 20, None, 10),
+        ("in_work", 20, 30, 10),
+    ],
+)
+def test_comment_editable_at_every_order_stage(
+    client: TestClient,
+    db_session: sessionmaker[Session],
+    stage: str,
+    completed: int | None,
+    deleted: int | None,
+    quality: int | None,
+) -> None:
+    """
+    Проверяем независимый комментарий заказа:
+    - изменить комментарий на каждой стадии, включая выполненные и удалённые
+    - сохранить переносы строк, не изменить комментарий изделия
+    - очистить комментарий и отклонить слишком длинный текст
+    """
+    from app.models.product import Product
+
+    with db_session() as session:
+        product = Product(
+            name="Комментарий",
+            version="1",
+            author="Автор",
+            comment="Комментарий изделия",
+            created_at=1,
+        )
+        session.add(product)
+        session.flush()
+        order = WorkOrder(
+            order_number="COMMENT-1",
+            product_id=product.id,
+            quantity=1,
+            production_stage=stage,
+            completed_at=completed,
+            deleted_at=deleted,
+            quality_control_at=quality,
+            created_at=1,
+            updated_at=1,
+        )
+        session.add(order)
+        session.commit()
+        identifier = order.id
+    response = client.patch(
+        f"/api/orders/{identifier}/comment",
+        json={"comment": "  Первая строка\nВторая строка  "},
+    )
+    assert response.status_code == 200
+    assert response.json()["comment"] == "Первая строка\nВторая строка"
+    saved = client.get(f"/api/orders/{identifier}").json()
+    assert saved["comment"] == "Первая строка\nВторая строка"
+    assert saved["product_comment"] == "Комментарий изделия"
+    assert (
+        client.patch(
+            f"/api/orders/{identifier}/comment", json={"comment": "x" * 4001}
+        ).status_code
+        == 422
+    )
+    assert (
+        client.patch(f"/api/orders/{identifier}/comment", json={"comment": " "}).json()[
+            "comment"
+        ]
+        is None
+    )

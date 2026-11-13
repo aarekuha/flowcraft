@@ -259,6 +259,7 @@ class PlanningQueueService:
                         else None
                     ),
                     quantity=order.quantity,
+                    planned_completion_date=order.planned_completion_date,
                     stage=(
                         "quality_control"
                         if order.quality_control_at is not None

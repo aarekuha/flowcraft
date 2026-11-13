@@ -1,3 +1,4 @@
+# ruff: noqa: I001
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from typing import Any
@@ -26,6 +27,9 @@ from app.services.operation_time_estimate_service import (
     OperationTimeEstimateService,
 )
 from app.services.planning_revision_service import PlanningRevisionService
+
+
+from app.services.operation_pricing import recalculate_prices, get_base_rate
 
 
 class ProductService:
@@ -67,6 +71,7 @@ class ProductService:
     def get_product(self, product_id: int) -> ProductDetail:
         product = self._get_product_or_404(product_id)
         return ProductDetail(
+            base_rate_cents=get_base_rate(self.session),
             id=product.id,
             name=product.name,
             version=product.version,
@@ -131,6 +136,10 @@ class ProductService:
                 if not operation.children
             },
             dirty_at=product.created_at,
+        )
+        recalculate_prices(
+            self.session,
+            {operation.id for operation in self._walk_operations(product.operations)},
         )
         self.session.commit()
         self.session.refresh(product)
@@ -204,9 +213,7 @@ class ProductService:
         can_change_prices: bool = False,
     ) -> ProductDetail:
         product = self._get_product_or_404(product_id)
-        requested_operation_updates = self._collect_operation_costs(
-            payload.operations
-        )
+        requested_operation_updates = self._collect_operation_costs(payload.operations)
         operations = self.session.scalars(
             select(Operation).where(Operation.product_id == product.id)
         ).all()
@@ -217,9 +224,7 @@ class ProductService:
             if operation.parent_id is not None
         }
 
-        unknown_operation_ids = set(requested_operation_updates) - set(
-            operations_by_id
-        )
+        unknown_operation_ids = set(requested_operation_updates) - set(operations_by_id)
         if unknown_operation_ids:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -230,24 +235,27 @@ class ProductService:
         for operation_id, requested_update in requested_operation_updates.items():
             operation = operations_by_id[operation_id]
             is_group = operation.id in parent_operation_ids
-            current_price_cents = None if is_group else operation.price_cents
             if (
                 "price_cents" in requested_update.model_fields_set
-                and requested_update.price_cents != current_price_cents
+                and requested_update.price_cents != operation.price_cents
+            ):
+                raise HTTPException(
+                    422,
+                    "Цена рассчитывается автоматически. Изменять коэффициент операции",
+                )
+            if (
+                "coefficient_units" in requested_update.model_fields_set
+                and requested_update.coefficient_units != operation.coefficient_units
             ):
                 if not can_change_prices:
                     raise HTTPException(
-                        status_code=status.HTTP_403_FORBIDDEN,
-                        detail=(
-                            "Изменение цены операции доступно только администратору."
-                        ),
+                        403, "Изменение коэффициента доступно только администратору"
                     )
                 if is_group:
                     raise HTTPException(
-                        status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-                        detail="Operation groups cannot have prices.",
+                        422, "Коэффициент можно задавать только операциям"
                     )
-                operation.price_cents = requested_update.price_cents
+                operation.coefficient_units = requested_update.coefficient_units
             if "standard_time_seconds" not in requested_update.model_fields_set:
                 continue
             if is_group:
@@ -261,9 +269,7 @@ class ProductService:
                 requested_update.standard_time_seconds
                 != operation.standard_time_seconds
             ):
-                operation.standard_time_seconds = (
-                    requested_update.standard_time_seconds
-                )
+                operation.standard_time_seconds = requested_update.standard_time_seconds
                 standard_times_changed = True
 
         if standard_times_changed:
@@ -273,15 +279,19 @@ class ProductService:
         if "comment" in payload.model_fields_set:
             product.comment = payload.comment
 
+        recalculate_prices(self.session, set(operations_by_id))
         self.session.commit()
         self.session.refresh(product)
         return self.get_product(product.id)
 
     def delete_product(self, product_id: int) -> None:
         product = self._get_product_or_404(product_id)
-        if self.session.scalar(
-            select(WorkOrder.id).where(WorkOrder.product_id == product.id).limit(1)
-        ) is not None:
+        if (
+            self.session.scalar(
+                select(WorkOrder.id).where(WorkOrder.product_id == product.id).limit(1)
+            )
+            is not None
+        ):
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail=(
@@ -349,7 +359,8 @@ class ProductService:
                 None if catalog_entry is None else catalog_entry.id
             ),
             name=operation_name,
-            price_cents=payload.price_cents if not is_group else None,
+            coefficient_units=payload.coefficient_units,
+            price_cents=0 if not is_group else None,
             standard_time_seconds=(
                 payload.standard_time_seconds if not is_group else None
             ),
@@ -391,8 +402,7 @@ class ProductService:
                     raise HTTPException(
                         status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                         detail=(
-                            "Operation groups must not reference the operation "
-                            "catalog."
+                            "Operation groups must not reference the operation catalog."
                         ),
                     )
             self._validate_group_operations(operation.children)
@@ -596,6 +606,7 @@ class ProductService:
                 if operation.catalog_entry is not None
                 else None
             ),
+            coefficient_units=operation.coefficient_units,
             price_cents=None if ordered_children else operation.price_cents,
             standard_time_seconds=(
                 None if ordered_children else operation.standard_time_seconds
@@ -604,9 +615,7 @@ class ProductService:
                 time_estimate.seconds_per_item if time_estimate is not None else None
             ),
             statistical_completed_orders_count=(
-                time_estimate.completed_orders_count
-                if time_estimate is not None
-                else 0
+                time_estimate.completed_orders_count if time_estimate is not None else 0
             ),
             statistical_items_count=(
                 time_estimate.items_count if time_estimate is not None else 0

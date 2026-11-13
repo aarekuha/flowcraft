@@ -7,7 +7,11 @@ import { useRoute, useRouter } from "vue-router";
 import flowcraftLogoUrl from "@/shared/assets/flowcraft_logo.png";
 import AdminWorkTimePanel from "@/pages/worker-home/AdminWorkTimePanel.vue";
 import ReportsPanel from "@/pages/worker-home/ReportsPanel.vue";
+import BitrixPanel from "@/pages/worker-home/BitrixPanel.vue";
 import ProductStagesModal from "@/pages/worker-home/ProductStagesModal.vue";
+import ProductBitrixMapping from "@/pages/worker-home/ProductBitrixMapping.vue";
+import OrderCommentEditor from "@/pages/worker-home/OrderCommentEditor.vue";
+import { fetchInterfaceSettings } from "@/shared/api/planning";
 import PlanningForecastModal from "@/pages/worker-home/PlanningForecastModal.vue";
 import PlanningPriorityPanel from "@/pages/worker-home/PlanningPriorityPanel.vue";
 import PlanningSettingsModal from "@/pages/worker-home/PlanningSettingsModal.vue";
@@ -145,7 +149,9 @@ type TabId =
   | "stats"
   | "reports"
   | "work_time"
-  | "users";
+  | "users"
+  | "bitrix"
+  | "settings";
 type ModalMode = "create" | "copy" | "view" | null;
 type WorkOrderStatusTabId = Exclude<WorkOrderStatusFilter, "all">;
 type BrigadierTabId =
@@ -180,6 +186,7 @@ type FlatOperationNodeRow = {
   id: number;
   operationCatalogEntryId: number | null;
   name: string;
+  coefficientUnits: number;
   priceCents: number | null;
   standardTimeSeconds: number | null;
   statisticalTimeSeconds: number | null;
@@ -262,6 +269,8 @@ const tabs: Array<{ id: TabId; label: string; icon: string }> = [
   { id: "reports", label: "Отчеты", icon: "stats" },
   { id: "work_time", label: "Рабочее время", icon: "admin" },
   { id: "users", label: "Пользователи", icon: "users" },
+  { id: "bitrix", label: "Bitrix24", icon: "admin" },
+  { id: "settings", label: "Настройки", icon: "admin" },
 ];
 
 const tabRoles: Record<TabId, UserRole[]> = {
@@ -272,6 +281,8 @@ const tabRoles: Record<TabId, UserRole[]> = {
   reports: ["reports"],
   work_time: ["admin"],
   users: ["admin"],
+  bitrix: ["admin"],
+  settings: ["admin"],
 };
 
 const visibilityOptions: Array<{
@@ -387,6 +398,7 @@ const constructorDirectoryTab = ref<ConstructorDirectoryTabId>(
 );
 const modalMode = ref<ModalMode>(null);
 const modalProductId = ref<number | null>(null);
+const pricingBaseRateCents = ref(35000);
 const currentSession = ref<AuthSession | null>(null);
 const diagnosticSending = ref(false);
 const diagnosticMessage = ref("");
@@ -431,6 +443,7 @@ async function sendDiagnosticReport() {
 }
 
 const products = ref<ProductSummary[]>([]);
+const productsById = computed(() => new Map(products.value.map(product => [product.id, product])));
 const busyProductIds = ref<number[]>([]);
 const users = ref<UserRecord[]>([]);
 const workOrders = ref<WorkOrderSummary[]>([]);
@@ -462,6 +475,12 @@ const productFilter = ref("");
 const productVisibility = ref<ProductVisibilityFilter>("active");
 const productSort = ref<ProductSort>("name-asc");
 const workOrderFilter = ref("");
+const orderCommentEditor = ref<InstanceType<typeof OrderCommentEditor> | null>(null);
+const showPersonalWorkReport = ref(false);
+async function loadInterfaceSettings() {
+  try { showPersonalWorkReport.value = (await fetchInterfaceSettings()).show_personal_work_report; }
+  catch { showPersonalWorkReport.value = false; }
+}
 const workOrderSearchDraft = ref("");
 const workOrderSort = ref<WorkOrderSort>("created-desc");
 const showWorkOrderPriority = computed(() =>
@@ -490,6 +509,7 @@ const productMaterialCostCents = ref<number | null>(null);
 const productStageCount = ref(1);
 const operationTree = ref<OperationNode[]>([]);
 const operationStandardTimeInputs = ref<Record<number, string>>({});
+const operationCoefficientInputs = ref<Record<number, string>>({});
 const operationStandardTimeInputErrors = ref<Record<number, string>>({});
 const productFormBaseline = ref("");
 const isProductCloseConfirmOpen = ref(false);
@@ -497,8 +517,7 @@ const productModalRef = ref<HTMLElement | null>(null);
 const productOperationsSectionRef = ref<HTMLElement | null>(null);
 const productNameInputRef = ref<HTMLInputElement | null>(null);
 const productPendingDelete = ref<ProductSummary | null>(null);
-const stagesProduct = ref<ProductSummary | null>(null);
-const isPlanningSettingsOpen = ref(false);
+const stagesProduct = ref<Pick<ProductSummary, "id" | "name" | "version"> | null>(null);
 const isWorkScheduleOpen = ref(false);
 const isPlanningWorkloadOpen = ref(false);
 const planningForecastOrderId = ref<number | null>(null);
@@ -741,7 +760,7 @@ const productionPlanningStatusMessage = computed(() => {
       : "Расчёт обновляется. Показан предыдущий успешный прогноз.";
   }
   if (status.requestedRevision < status.inputRevision) {
-    return "Приоритеты изменены. Для обновления прогноза нажать «Пересчитать».";
+    return "Приоритеты изменены. Для обновления прогноза требуется пересчёт администратором.";
   }
   if (status.activeRunId === null) {
     return "Успешный расчёт ещё не опубликован.";
@@ -1910,6 +1929,15 @@ function getDefaultWorkOrderSortDirection(
     : "desc";
 }
 
+function filterWorkOrdersByProduct(name: string) {
+  workOrderSearchDraft.value = name;
+  applyWorkOrderSearch();
+}
+
+function openWorkOrderProductStages(order: WorkOrderSummary) {
+  stagesProduct.value = { id: order.productId, name: order.productName, version: order.productVersion };
+}
+
 function applyWorkOrderSearch() {
   const nextSearch = workOrderSearchDraft.value.trim();
   if (nextSearch === workOrderFilter.value) {
@@ -2213,6 +2241,7 @@ async function loadProtectedData() {
   }
 
   const protectedDataLoaders = [
+    loadInterfaceSettings(),
     loadProducts(),
     loadUsers(),
     loadLeatherTypes(),
@@ -2655,7 +2684,7 @@ async function loadProductionPlanning(options: { silent?: boolean } = {}) {
 
 async function requestProductionPlanningUpdate() {
   if (
-    !canManagePlanningSchedule.value
+    !canManagePlanningSettings.value
     || productionPlanningRecalculating.value
   ) {
     return;
@@ -2853,6 +2882,7 @@ function resetForm() {
   productStageCount.value = 1;
   operationTree.value = [];
   operationStandardTimeInputs.value = {};
+  operationCoefficientInputs.value = {};
   operationStandardTimeInputErrors.value = {};
   nextOperationId = 1;
   setProductFormBaseline();
@@ -2967,16 +2997,6 @@ function openWorkSchedule() {
 
 function closeWorkSchedule() {
   isWorkScheduleOpen.value = false;
-}
-
-function openPlanningSettings() {
-  if (canManagePlanningSettings.value) {
-    isPlanningSettingsOpen.value = true;
-  }
-}
-
-function closePlanningSettings() {
-  isPlanningSettingsOpen.value = false;
 }
 
 function openPlanningWorkload() {
@@ -3440,6 +3460,7 @@ function handleWindowKeydown(event: KeyboardEvent) {
 function fillFormFromProduct(product: ProductDetail) {
   hasAttemptedSubmit.value = false;
   modalProductId.value = product.id;
+  pricingBaseRateCents.value = product.baseRateCents;
   productName.value = product.name;
   productVersion.value = product.version;
   productComment.value = product.comment ?? "";
@@ -4569,6 +4590,16 @@ function handleProductMaterialCostInput(event: Event) {
   productMaterialCostCents.value = parseMoneyInputToCents(target.value);
 }
 
+function formatCoefficient(units: number): string {
+  return Number.isFinite(units) ? (units / 10000).toFixed(4) : "";
+}
+function calculatedOperationPrice(row: FlatOperationNodeRow): string {
+  if (!Number.isSafeInteger(row.coefficientUnits) || row.coefficientUnits < 0) return "—";
+  const numerator = BigInt(pricingBaseRateCents.value) * BigInt(row.coefficientUnits) * BigInt(row.standardTimeSeconds ?? row.statisticalTimeSeconds ?? 0);
+  const cents = (numerator + 35999999n) / 36000000n;
+  return `${cents / 100n},${String(cents % 100n).padStart(2, "0")}`;
+}
+
 function handleOperationPriceInput(operationId: number, event: Event) {
   const target = event.target;
 
@@ -4576,11 +4607,26 @@ function handleOperationPriceInput(operationId: number, event: Event) {
     return;
   }
 
+  operationCoefficientInputs.value = { ...operationCoefficientInputs.value, [operationId]: target.value };
   operationTree.value = updateOperationPrice(
     operationTree.value,
     operationId,
-    parseMoneyInputToCents(target.value),
+    /^\d+(?:[.,]\d{0,4})?$/.test(target.value) ? Math.round(Number(target.value.replace(",", ".")) * 10000) : NaN,
   );
+}
+
+function getOperationCoefficientInput(row: FlatOperationNodeRow): string {
+  return operationCoefficientInputs.value[row.id] ?? formatCoefficient(row.coefficientUnits);
+}
+
+function normalizeOperationCoefficientInput(operationId: number, event: Event) {
+  const target = event.target;
+  if (!(target instanceof HTMLInputElement)) return;
+  const row = flatOperationRows.value.find(item => item.id === operationId);
+  if (!row || !Number.isSafeInteger(row.coefficientUnits) || row.coefficientUnits < 0) return;
+  const value = formatCoefficient(row.coefficientUnits);
+  operationCoefficientInputs.value = { ...operationCoefficientInputs.value, [operationId]: value };
+  target.value = value;
 }
 
 function handleOperationStandardTimeInput(operationId: number, event: Event) {
@@ -4685,19 +4731,19 @@ function pruneOperationStandardTimeInputErrors() {
 function updateOperationPrice(
   operations: OperationNode[],
   operationId: number,
-  priceCents: number | null,
+  coefficientUnits: number,
 ): OperationNode[] {
   return operations.map((operation) => {
     if (operation.id === operationId) {
       return {
         ...operation,
-        priceCents,
+        coefficientUnits,
       };
     }
 
     return {
       ...operation,
-      children: updateOperationPrice(operation.children, operationId, priceCents),
+      children: updateOperationPrice(operation.children, operationId, coefficientUnits),
     };
   });
 }
@@ -4859,6 +4905,7 @@ function createOperationNode(): OperationNode {
     operationCatalogEntryId: null,
     name: "",
     operationKind: null,
+    coefficientUnits: 10000,
     priceCents: null,
     standardTimeSeconds: null,
     statisticalTimeSeconds: null,
@@ -4881,6 +4928,7 @@ function appendChildOperation(
         ...operation,
         operationCatalogEntryId: null,
         operationKind: null,
+        coefficientUnits: 10000,
         priceCents: null,
         standardTimeSeconds: null,
         statisticalTimeSeconds: null,
@@ -5053,6 +5101,7 @@ function flattenOperations(
         id: operation.id,
         operationCatalogEntryId: operation.operationCatalogEntryId,
         name: operation.name,
+        coefficientUnits: operation.coefficientUnits,
         priceCents: operation.priceCents,
         standardTimeSeconds: operation.standardTimeSeconds,
         statisticalTimeSeconds: operation.statisticalTimeSeconds,
@@ -5131,8 +5180,8 @@ function validateOperationTree(
         errors[node.id] = "Выберите операцию из справочника.";
       } else if (entry && usedOperationCatalogEntryIds.has(entry.id)) {
         errors[node.id] = "Операция должна быть уникальной в изделии.";
-      } else if (!isGroup && node.priceCents !== null && node.priceCents < 0) {
-        errors[node.id] = "Цена операции не может быть отрицательной.";
+      } else if (!isGroup && (!Number.isSafeInteger(node.coefficientUnits) || node.coefficientUnits < 0 || node.coefficientUnits > 100000000)) {
+        errors[node.id] = "Коэффициент: от 0 до 10000, не более четырёх знаков после запятой";
       } else if (standardTimeInputErrors[node.id]) {
         errors[node.id] = standardTimeInputErrors[node.id];
       }
@@ -5157,6 +5206,7 @@ function cloneOperations(
     operationCatalogEntryId: operation.operationCatalogEntryId,
     name: operation.name,
     operationKind: operation.operationKind,
+    coefficientUnits: operation.coefficientUnits,
     priceCents: operation.priceCents,
     standardTimeSeconds: operation.standardTimeSeconds,
     statisticalTimeSeconds: preserveStatistics
@@ -5191,7 +5241,7 @@ function serializeOperations(
       return {
         operation_catalog_entry_id: null,
         name: operation.name.trim(),
-        price_cents: null,
+        coefficient_units: 10000,
         standard_time_seconds: null,
         stage_start: 1,
         stage_end: 1,
@@ -5207,7 +5257,7 @@ function serializeOperations(
     return {
       operation_catalog_entry_id: entry.id,
       name: entry.name,
-      price_cents: operation.priceCents,
+      coefficient_units: operation.coefficientUnits,
       standard_time_seconds: operation.standardTimeSeconds,
       stage_start: operation.stageStart,
       stage_end: operation.stageEnd,
@@ -5221,7 +5271,7 @@ function serializeOperationCostUpdates(
 ): ProductCostsUpdatePayload["operations"] {
   return operations.map((operation) => ({
     id: operation.id,
-    price_cents: operation.children.length > 0 ? null : operation.priceCents,
+    coefficient_units: operation.coefficientUnits,
     standard_time_seconds:
       operation.children.length > 0 ? null : operation.standardTimeSeconds,
     children: serializeOperationCostUpdates(operation.children),
@@ -5815,6 +5865,7 @@ async function waitForPrintableQrImages() {
 }
 
 function closeBrigadierOrderModal() {
+  if (orderCommentEditor.value && !orderCommentEditor.value.canClose()) return;
   clearBrigadierAssignmentDropdownCloseTimeout();
   clearBrigadierLeatherTypeDropdownCloseTimeout();
   isBrigadierSaveConfirmOpen.value = false;
@@ -6825,7 +6876,7 @@ async function handleResetUserPassword(user: UserRecord) {
         <p v-if="authError" class="field-error">{{ authError }}</p>
 
         <div class="auth-card__actions">
-          <button type="submit" class="primary-button" :disabled="authSubmitting">
+          <button type="submit" class="primary-button fc-button fc-button--primary" :disabled="authSubmitting">
             <span class="button-content">
               <span class="button-icon button-icon--key" aria-hidden="true" />
               <span>
@@ -6867,25 +6918,25 @@ async function handleResetUserPassword(user: UserRecord) {
             <strong>{{ currentSession.userName }}</strong>
           </div>
           <button
-            v-if="currentSession.userRoles.includes('worker')"
+            v-if="showPersonalWorkReport && currentSession.userRoles.includes('worker')"
             type="button"
             class="action-link"
             @click="personalWorkOpen = true"
           >Мой расчёт за месяц</button>
           <div class="current-user-card__actions">
-            <button type="button" class="ghost-button" @click="openChangePasswordModal">
+            <button type="button" class="ghost-button fc-button fc-button--ghost" @click="openChangePasswordModal">
               <span class="button-content">
                 <span class="button-icon button-icon--key" aria-hidden="true" />
                 <span class="current-user-card__action-label">Изменить пароль</span>
               </span>
             </button>
-            <button type="button" class="ghost-button" title="Отправить диагностику" aria-label="Отправить диагностику" :disabled="diagnosticSending" @click="sendDiagnosticReport">
+            <button type="button" class="ghost-button fc-button fc-button--ghost" title="Отправить диагностику" aria-label="Отправить диагностику" :disabled="diagnosticSending" @click="sendDiagnosticReport">
               <span class="button-content">
                 <svg class="button-icon" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 16V3m-5 5 5-5 5 5M4 15v6h16v-6" /></svg>
                 <span class="current-user-card__action-label">{{ diagnosticSending ? "Отправка…" : "Отправить диагностику" }}</span>
               </span>
             </button>
-            <button type="button" class="ghost-button" @click="void handleLogout()">
+            <button type="button" class="ghost-button fc-button fc-button--ghost" @click="void handleLogout()">
               <span class="button-content">
                 <span class="button-icon button-icon--logout" aria-hidden="true" />
                 <span class="current-user-card__action-label">Выйти</span>
@@ -6923,7 +6974,7 @@ async function handleResetUserPassword(user: UserRecord) {
             <div class="worker-panel__actions">
               <button
                 type="button"
-                class="secondary-button"
+                class="secondary-button fc-button"
                 :disabled="!currentWorker"
                 @click="void openWorkerQrScanner()"
               >
@@ -6935,7 +6986,7 @@ async function handleResetUserPassword(user: UserRecord) {
 
               <button
                 type="button"
-                class="primary-button"
+                class="primary-button fc-button fc-button--primary"
                 :disabled="!currentWorker || workerTimerSubmitting"
                 @click="isWorkerDayActive ? requestEndWorkerDay() : void startWorkerDay()"
               >
@@ -7063,7 +7114,7 @@ async function handleResetUserPassword(user: UserRecord) {
               <p>Установлен фильтр по QR-коду. Отображаются только операции выбранного заказа.</p>
               <button
                 type="button"
-                class="ghost-button"
+                class="ghost-button fc-button fc-button--ghost"
                 :disabled="workerAssignmentsLoading"
                 @click="void clearWorkerQrFilter()"
               >
@@ -7073,7 +7124,7 @@ async function handleResetUserPassword(user: UserRecord) {
 
             <div v-if="workerAssignmentsError" class="banner banner--error">
               <p>{{ workerAssignmentsError }}</p>
-              <button type="button" class="ghost-button" @click="void loadWorkerWorkspace()">
+              <button type="button" class="ghost-button fc-button fc-button--ghost" @click="void loadWorkerWorkspace()">
                 <span class="button-content">
                   <span class="button-icon button-icon--refresh" aria-hidden="true" />
                   <span>Повторить</span>
@@ -7217,7 +7268,7 @@ async function handleResetUserPassword(user: UserRecord) {
               <button
                 v-if="canManagePlanningSchedule"
                 type="button"
-                class="secondary-button"
+                class="secondary-button fc-button"
                 @click="openPlanningWorkload"
               >
                 Загрузка по операциям
@@ -7225,23 +7276,16 @@ async function handleResetUserPassword(user: UserRecord) {
               <button
                 v-if="canManagePlanningSchedule"
                 type="button"
-                class="secondary-button"
+                class="secondary-button fc-button"
                 @click="openWorkSchedule"
               >
                 График работы сотрудников
               </button>
+
               <button
                 v-if="canManagePlanningSettings"
                 type="button"
-                class="secondary-button"
-                @click="openPlanningSettings"
-              >
-                Настройки планирования
-              </button>
-              <button
-                v-if="canManagePlanningSchedule"
-                type="button"
-                class="secondary-button"
+                class="secondary-button fc-button"
                 :disabled="productionPlanningRecalculating || isProductionPlanningUpdating"
                 @click="void requestProductionPlanningUpdate()"
               >
@@ -7250,15 +7294,15 @@ async function handleResetUserPassword(user: UserRecord) {
             </div>
 
             <div
-              class="subtabs subtabs--work-orders"
+              class="fc-tabs subtabs subtabs--work-orders"
               role="tablist"
               aria-label="Разделы бригадира"
             >
               <button
                 v-if="canEditBrigadierOrderDetails"
                 type="button"
-                class="subtab-button"
-                :class="{ 'subtab-button--active': brigadierTab === 'orders' }"
+                class="fc-tab subtab-button"
+                :class="{ 'fc-tab--active': brigadierTab === 'orders' }"
                 @click="setBrigadierTab('orders')"
               >
                 <span class="button-content">
@@ -7270,8 +7314,8 @@ async function handleResetUserPassword(user: UserRecord) {
                 v-for="statusTab in workOrderStatusTabs"
                 :key="statusTab.id"
                 type="button"
-                class="subtab-button"
-                :class="{ 'subtab-button--active': brigadierTab === statusTab.id }"
+                class="fc-tab subtab-button"
+                :class="{ 'fc-tab--active': brigadierTab === statusTab.id }"
                 @click="setBrigadierTab(statusTab.id)"
               >
                 <span class="button-content">
@@ -7286,9 +7330,9 @@ async function handleResetUserPassword(user: UserRecord) {
               <button
                 v-if="canEditBrigadierOrderDetails"
                 type="button"
-                class="subtab-button"
+                class="fc-tab subtab-button"
                 :class="{
-                  'subtab-button--active': brigadierTab === 'prioritization',
+                  'fc-tab--active': brigadierTab === 'prioritization',
                 }"
                 @click="setBrigadierTab('prioritization')"
               >
@@ -7299,8 +7343,8 @@ async function handleResetUserPassword(user: UserRecord) {
               </button>
               <button
                 type="button"
-                class="subtab-button"
-                :class="{ 'subtab-button--active': brigadierTab === 'order_search' }"
+                class="fc-tab subtab-button"
+                :class="{ 'fc-tab--active': brigadierTab === 'order_search' }"
                 @click="setBrigadierTab('order_search')"
               >
                 <span class="button-content">
@@ -7318,7 +7362,7 @@ async function handleResetUserPassword(user: UserRecord) {
             <p>{{ productionPlanningError }}</p>
             <button
               type="button"
-              class="ghost-button"
+              class="ghost-button fc-button fc-button--ghost"
               @click="void loadProductionPlanning()"
             >
               Повторить
@@ -7420,7 +7464,7 @@ async function handleResetUserPassword(user: UserRecord) {
           <template v-else-if="brigadierTab !== 'orders'">
             <div v-if="brigadierOrdersError" class="banner banner--error">
               <p>{{ brigadierOrdersError }}</p>
-              <button type="button" class="ghost-button" @click="loadWorkOrders">
+              <button type="button" class="ghost-button fc-button fc-button--ghost" @click="loadWorkOrders">
                 <span class="button-content">
                   <span class="button-icon button-icon--refresh" aria-hidden="true" />
                   <span>Повторить</span>
@@ -7457,11 +7501,11 @@ async function handleResetUserPassword(user: UserRecord) {
                   </div>
                 </label>
                 <button v-if="showWorkOrderPriority" type="button"
-                  class="secondary-button mobile-only work-order-mobile-sort"
+                  class="secondary-button mobile-only work-order-mobile-sort fc-button"
                   @click="toggleWorkOrderSort('priority')">
                   Приоритет {{ isWorkOrderSortFieldActive('priority') ? (getWorkOrderSortDirection('priority') === 'asc' ? '↑' : '↓') : '↕' }}
                 </button>
-                <button type="button" class="secondary-button mobile-only work-order-mobile-sort"
+                <button type="button" class="secondary-button mobile-only work-order-mobile-sort fc-button"
                   @click="toggleWorkOrderSort('calculated_finish')">
                   Расчётная готовность {{ isWorkOrderSortFieldActive('calculated_finish') ? (getWorkOrderSortDirection('calculated_finish') === 'asc' ? '↑' : '↓') : '↕' }}
                 </button>
@@ -7475,12 +7519,13 @@ async function handleResetUserPassword(user: UserRecord) {
                 <table class="products-table brigadier-table">
                   <thead>
                     <tr>
-                      <th v-if="showWorkOrderPriority" :aria-sort="isWorkOrderSortFieldActive('priority') ? (getWorkOrderSortDirection('priority') === 'asc' ? 'ascending' : 'descending') : 'none'">
+                      <th v-if="showWorkOrderPriority" class="work-order-priority-column" :aria-sort="isWorkOrderSortFieldActive('priority') ? (getWorkOrderSortDirection('priority') === 'asc' ? 'ascending' : 'descending') : 'none'">
                         <button type="button" class="sort-header-button"
                           :class="{ 'sort-header-button--active': isWorkOrderSortFieldActive('priority') }"
-                          title="Позиция в общей очереди приоритизации: 1 — самый высокий приоритет"
+                          aria-label="Сортировать по приоритету"
+                          title="Приоритет: 1 — самый высокий. Нажать для сортировки"
                           @click="toggleWorkOrderSort('priority')">
-                          <span>Приоритет</span>
+                          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M4 5h16M4 12h11M4 19h6" /></svg>
                           <span class="sort-header-button__icon"
                             :class="`sort-header-button__icon--${getWorkOrderSortDirection('priority')}`"
                             aria-hidden="true" />
@@ -7717,9 +7762,19 @@ async function handleResetUserPassword(user: UserRecord) {
                   </thead>
                   <tbody>
                     <tr v-for="order in filteredWorkOrders" :key="order.id">
-                      <td v-if="showWorkOrderPriority">{{ order.priorityPosition ?? "—" }}</td>
+                      <td v-if="showWorkOrderPriority" class="work-order-priority-column">{{ order.priorityPosition ?? "—" }}</td>
                       <td>{{ order.orderNumber }}</td>
-                      <td>{{ order.productName }}</td>
+                      <td><span>{{ order.productName }}</span>
+                        <div v-if="activeTab === 'brigadier'" class="work-order-product-links">
+                          <template v-if="currentSession?.userRoles.includes('constructor')">
+                            <button type="button" class="action-link" @click="startViewProduct(order.productId)">Операции ({{ productsById.get(order.productId)?.operationsCount ?? "—" }})</button>
+                            <button type="button" class="action-link" @click="openWorkOrderProductStages(order)">Этапы ({{ productsById.get(order.productId)?.stageCount ?? "—" }})</button>
+                          </template>
+                          <button type="button" class="action-link" :aria-label="`Фильтровать заказы по изделию ${order.productName}`" title="Добавить наименование в фильтр" @click="filterWorkOrdersByProduct(order.productName)">
+                            Фильтр
+                          </button>
+                        </div>
+                      </td>
                       <td>{{ order.leatherTypeName ?? "вид кожи не указан" }}</td>
                       <td>{{ order.quantity }} шт.</td>
                       <template v-if="workOrderStatusTab === 'quality_control'">
@@ -7791,7 +7846,7 @@ async function handleResetUserPassword(user: UserRecord) {
                         <td>
                           <button
                             type="button"
-                            class="secondary-button"
+                            class="secondary-button fc-button"
                             @click="openBrigadierManageOrder(order)"
                           >
                             <span class="button-content">
@@ -8007,6 +8062,15 @@ async function handleResetUserPassword(user: UserRecord) {
                   <div class="mobile-card__meta">
                     <span v-if="showWorkOrderPriority">Приоритет: {{ order.priorityPosition ?? "—" }}</span>
                     <span>{{ order.productName }}</span>
+                    <div v-if="activeTab === 'brigadier'" class="work-order-product-links">
+                          <template v-if="currentSession?.userRoles.includes('constructor')">
+                            <button type="button" class="action-link" @click="startViewProduct(order.productId)">Операции ({{ productsById.get(order.productId)?.operationsCount ?? "—" }})</button>
+                            <button type="button" class="action-link" @click="openWorkOrderProductStages(order)">Этапы ({{ productsById.get(order.productId)?.stageCount ?? "—" }})</button>
+                          </template>
+                          <button type="button" class="action-link" :aria-label="`Фильтровать заказы по изделию ${order.productName}`" title="Добавить наименование в фильтр" @click="filterWorkOrdersByProduct(order.productName)">
+                            Фильтр
+                          </button>
+                        </div>
                     <span>Вид кожи: {{ order.leatherTypeName ?? "вид кожи не указан" }}</span>
                     <span>Количество изделий: {{ order.quantity }} шт.</span>
                     <span>Создан: {{ order.createdAt }}</span>
@@ -8059,7 +8123,7 @@ async function handleResetUserPassword(user: UserRecord) {
                   </div>
                   <button
                     type="button"
-                    class="secondary-button"
+                    class="secondary-button fc-button"
                     @click="openBrigadierManageOrder(order)"
                   >
                     <span class="button-content">
@@ -8217,7 +8281,7 @@ async function handleResetUserPassword(user: UserRecord) {
                 <div class="pagination-bar__actions">
                   <button
                     type="button"
-                    class="secondary-button"
+                    class="secondary-button fc-button"
                     :disabled="workOrdersPage <= 1"
                     @click="goToWorkOrdersPage(workOrdersPage - 1)"
                   >
@@ -8226,7 +8290,7 @@ async function handleResetUserPassword(user: UserRecord) {
                   <span>{{ workOrdersPage }} / {{ workOrdersPages }}</span>
                   <button
                     type="button"
-                    class="secondary-button"
+                    class="secondary-button fc-button"
                     :disabled="workOrdersPage >= workOrdersPages"
                     @click="goToWorkOrdersPage(workOrdersPage + 1)"
                   >
@@ -8264,7 +8328,7 @@ async function handleResetUserPassword(user: UserRecord) {
 
             <div v-if="listError" class="banner banner--error">
               <p>{{ listError }}</p>
-              <button type="button" class="ghost-button" @click="loadProducts">
+              <button type="button" class="ghost-button fc-button fc-button--ghost" @click="loadProducts">
                 <span class="button-content">
                   <span class="button-icon button-icon--refresh" aria-hidden="true" />
                   <span>Повторить</span>
@@ -8329,7 +8393,7 @@ async function handleResetUserPassword(user: UserRecord) {
                       <td>
                         <button
                           type="button"
-                          class="primary-button"
+                          class="primary-button fc-button fc-button--primary"
                           @click="openBrigadierCreateOrder(product.id)"
                         >
                           <span class="button-content">
@@ -8358,7 +8422,7 @@ async function handleResetUserPassword(user: UserRecord) {
                   </div>
                   <button
                     type="button"
-                    class="primary-button"
+                    class="primary-button fc-button fc-button--primary"
                     @click="openBrigadierCreateOrder(product.id)"
                   >
                     <span class="button-content">
@@ -8434,7 +8498,7 @@ async function handleResetUserPassword(user: UserRecord) {
                   </label>
                   <button
                     type="button"
-                    class="ghost-button statistics-date-range__apply"
+                    class="ghost-button statistics-date-range__apply fc-button fc-button--ghost"
                     :disabled="statisticsLoading"
                     @click="void applyCustomStatisticsPeriod()"
                   >
@@ -8446,7 +8510,7 @@ async function handleResetUserPassword(user: UserRecord) {
               <div class="statistics-toolbar__actions">
                 <button
                   type="button"
-                  class="primary-button statistics-refresh-button"
+                  class="primary-button statistics-refresh-button fc-button fc-button--primary"
                   :disabled="statisticsLoading"
                   @click="void loadStatistics()"
                 >
@@ -8458,7 +8522,7 @@ async function handleResetUserPassword(user: UserRecord) {
 
                 <button
                   type="button"
-                  class="primary-button statistics-export-button"
+                  class="primary-button statistics-export-button fc-button fc-button--primary"
                   :disabled="statisticsLoading || statisticsExportLoading"
                   @click="void exportStatisticsXlsx()"
                 >
@@ -8686,6 +8750,15 @@ async function handleResetUserPassword(user: UserRecord) {
         </article>
       </section>
 
+      <section v-else-if="activeTab === 'settings' && canManagePlanningSettings" class="settings-page">
+        <h2>Настройки</h2>
+        <PlanningSettingsModal @saved="showPersonalWorkReport = $event">
+          <BitrixPanel settings-only />
+        </PlanningSettingsModal>
+      </section>
+      <section v-else-if="activeTab === 'bitrix' && currentSession?.userRoles.includes('admin')">
+        <BitrixPanel />
+      </section>
       <section v-else-if="activeTab === 'reports'">
         <ReportsPanel
           :products="products"
@@ -8699,11 +8772,11 @@ async function handleResetUserPassword(user: UserRecord) {
               <h2>Конструктор</h2>
             </div>
 
-            <div class="subtabs" role="tablist" aria-label="Разделы конструктора">
+            <div class="fc-tabs subtabs" role="tablist" aria-label="Разделы конструктора">
               <button
                 type="button"
-                class="subtab-button"
-                :class="{ 'subtab-button--active': constructorTab === 'products' }"
+                class="fc-tab subtab-button"
+                :class="{ 'fc-tab--active': constructorTab === 'products' }"
                 @click="constructorTab = 'products'"
               >
                 <span class="button-content">
@@ -8713,8 +8786,8 @@ async function handleResetUserPassword(user: UserRecord) {
               </button>
               <button
                 type="button"
-                class="subtab-button"
-                :class="{ 'subtab-button--active': constructorTab === 'directories' }"
+                class="fc-tab subtab-button"
+                :class="{ 'fc-tab--active': constructorTab === 'directories' }"
                 @click="constructorTab = 'directories'"
               >
                 <span class="button-content">
@@ -8731,7 +8804,7 @@ async function handleResetUserPassword(user: UserRecord) {
                 <h2>Изделия и дерево операций</h2>
               </div>
 
-              <button type="button" class="primary-button" @click="startCreateProduct">
+              <button type="button" class="primary-button fc-button fc-button--primary" @click="startCreateProduct">
                 <span class="button-content">
                   <span class="button-icon button-icon--plus" aria-hidden="true" />
                   <span>Создать новое изделие</span>
@@ -8818,7 +8891,7 @@ async function handleResetUserPassword(user: UserRecord) {
 
             <div v-if="listError" class="banner banner--error">
               <p>{{ listError }}</p>
-              <button type="button" class="ghost-button" @click="loadProducts">
+              <button type="button" class="ghost-button fc-button fc-button--ghost" @click="loadProducts">
                 <span class="button-content">
                   <span class="button-icon button-icon--refresh" aria-hidden="true" />
                   <span>Повторить</span>
@@ -8838,6 +8911,7 @@ async function handleResetUserPassword(user: UserRecord) {
                     <th>Версия</th>
                     <th>Автор</th>
                     <th>Дата создания</th>
+                    <th v-if="currentSession?.userRoles.includes('admin')">Сопоставления Bitrix24</th>
                     <th>Действия</th>
                   </tr>
                 </thead>
@@ -8859,6 +8933,10 @@ async function handleResetUserPassword(user: UserRecord) {
                     <td>{{ product.version }}</td>
                     <td>{{ product.author }}</td>
                     <td>{{ product.createdAt }}</td>
+                    <td v-if="currentSession?.userRoles.includes('admin')">
+                      <ProductBitrixMapping v-if="product.isActive" :product-id="product.id" />
+                      <span v-else>Изделие неактивно</span>
+                    </td>
                     <td>
                       <div class="table-actions">
                         <button
@@ -8949,12 +9027,12 @@ async function handleResetUserPassword(user: UserRecord) {
                 <h2>Справочники</h2>
               </div>
 
-              <div class="subtabs" role="tablist" aria-label="Справочники конструктора">
+              <div class="fc-tabs subtabs" role="tablist" aria-label="Справочники конструктора">
                 <button
                   v-if="canManagePlanningSettings"
                   type="button"
-                  class="subtab-button"
-                  :class="{ 'subtab-button--active': constructorDirectoryTab === 'bonuses' }"
+                  class="fc-tab subtab-button"
+                  :class="{ 'fc-tab--active': constructorDirectoryTab === 'bonuses' }"
                   @click="constructorDirectoryTab = 'bonuses'"
                 >
                   <span class="button-content">
@@ -8967,9 +9045,9 @@ async function handleResetUserPassword(user: UserRecord) {
                 </button>
                 <button
                   type="button"
-                  class="subtab-button"
+                  class="fc-tab subtab-button"
                   :class="{
-                    'subtab-button--active':
+                    'fc-tab--active':
                       constructorDirectoryTab === 'operation-catalog',
                   }"
                   @click="constructorDirectoryTab = 'operation-catalog'"
@@ -8981,9 +9059,9 @@ async function handleResetUserPassword(user: UserRecord) {
                 </button>
                 <button
                   type="button"
-                  class="subtab-button"
+                  class="fc-tab subtab-button"
                   :class="{
-                    'subtab-button--active':
+                    'fc-tab--active':
                       constructorDirectoryTab === 'leather-types',
                   }"
                   @click="constructorDirectoryTab = 'leather-types'"
@@ -9025,7 +9103,7 @@ async function handleResetUserPassword(user: UserRecord) {
                 </label>
                 <button
                   type="submit"
-                  class="primary-button"
+                  class="primary-button fc-button fc-button--primary"
                   :disabled="
                     operationCatalogSaveLoading ||
                     Boolean(operationCatalogNameError)
@@ -9104,7 +9182,7 @@ async function handleResetUserPassword(user: UserRecord) {
                 class="banner banner--error"
               >
                 <p>{{ operationCatalogSaveError || operationCatalogError }}</p>
-                <button type="button" class="ghost-button" @click="loadOperationCatalog">
+                <button type="button" class="ghost-button fc-button fc-button--ghost" @click="loadOperationCatalog">
                   <span class="button-content">
                     <span class="button-icon button-icon--refresh" aria-hidden="true" />
                     <span>Повторить</span>
@@ -9192,7 +9270,7 @@ async function handleResetUserPassword(user: UserRecord) {
                   <div class="pagination-bar__actions">
                     <button
                       type="button"
-                      class="secondary-button"
+                      class="secondary-button fc-button"
                       :disabled="operationCatalogPage <= 1"
                       @click="goToOperationCatalogPage(operationCatalogPage - 1)"
                     >
@@ -9201,7 +9279,7 @@ async function handleResetUserPassword(user: UserRecord) {
                     <span>{{ operationCatalogPage }} / {{ operationCatalogPages }}</span>
                     <button
                       type="button"
-                      class="secondary-button"
+                      class="secondary-button fc-button"
                       :disabled="operationCatalogPage >= operationCatalogPages"
                       @click="goToOperationCatalogPage(operationCatalogPage + 1)"
                     >
@@ -9228,7 +9306,7 @@ async function handleResetUserPassword(user: UserRecord) {
                 </label>
                 <button
                   type="submit"
-                  class="primary-button"
+                  class="primary-button fc-button fc-button--primary"
                   :disabled="leatherTypeSaveLoading || Boolean(leatherTypeNameError)"
                 >
                   <span class="button-content">
@@ -9295,7 +9373,7 @@ async function handleResetUserPassword(user: UserRecord) {
 
               <div v-if="leatherTypeError || leatherTypesError" class="banner banner--error">
                 <p>{{ leatherTypeError || leatherTypesError }}</p>
-                <button type="button" class="ghost-button" @click="loadLeatherTypes">
+                <button type="button" class="ghost-button fc-button fc-button--ghost" @click="loadLeatherTypes">
                   <span class="button-content">
                     <span class="button-icon button-icon--refresh" aria-hidden="true" />
                     <span>Повторить</span>
@@ -9363,7 +9441,7 @@ async function handleResetUserPassword(user: UserRecord) {
                   <div class="pagination-bar__actions">
                     <button
                       type="button"
-                      class="secondary-button"
+                      class="secondary-button fc-button"
                       :disabled="leatherTypesPage <= 1"
                       @click="goToLeatherTypesPage(leatherTypesPage - 1)"
                     >
@@ -9372,7 +9450,7 @@ async function handleResetUserPassword(user: UserRecord) {
                     <span>{{ leatherTypesPage }} / {{ leatherTypesPages }}</span>
                     <button
                       type="button"
-                      class="secondary-button"
+                      class="secondary-button fc-button"
                       :disabled="leatherTypesPage >= leatherTypesPages"
                       @click="goToLeatherTypesPage(leatherTypesPage + 1)"
                     >
@@ -9398,10 +9476,10 @@ async function handleResetUserPassword(user: UserRecord) {
             </div>
 
             <div class="user-management-actions">
-              <button type="button" class="secondary-button" @click="workSummaryOpen = true">Общий расчёт выполненной работы</button>
+              <button type="button" class="secondary-button fc-button" @click="workSummaryOpen = true">Общий расчёт выполненной работы</button>
             <button
               type="button"
-              class="primary-button"
+              class="primary-button fc-button fc-button--primary"
               :disabled="editingUserId !== null"
               @click="startCreateUser"
             >
@@ -9492,7 +9570,7 @@ async function handleResetUserPassword(user: UserRecord) {
 
           <div v-if="usersError" class="banner banner--error">
             <p>{{ usersError }}</p>
-            <button type="button" class="ghost-button" @click="loadUsers">
+            <button type="button" class="ghost-button fc-button fc-button--ghost" @click="loadUsers">
               <span class="button-content">
                 <span class="button-icon button-icon--refresh" aria-hidden="true" />
                 <span>Повторить</span>
@@ -9759,7 +9837,7 @@ async function handleResetUserPassword(user: UserRecord) {
         </div>
 
         <div class="confirm-modal__actions card-actions">
-          <button type="button" class="ghost-button" @click="closeChangePasswordModal">
+          <button type="button" class="ghost-button fc-button fc-button--ghost" @click="closeChangePasswordModal">
             <span class="button-content">
               <span class="button-icon button-icon--close" aria-hidden="true" />
               <span>Отменить</span>
@@ -9767,7 +9845,7 @@ async function handleResetUserPassword(user: UserRecord) {
           </button>
           <button
             type="button"
-            class="primary-button"
+            class="primary-button fc-button fc-button--primary"
             :disabled="changePasswordSaving"
             @click="void submitPasswordChange()"
           >
@@ -9794,7 +9872,7 @@ async function handleResetUserPassword(user: UserRecord) {
 
           <button
             type="button"
-            class="ghost-button"
+            class="ghost-button fc-button fc-button--ghost"
             @click="closeBrigadierOrderModal"
           >
             <span class="button-content">
@@ -9984,6 +10062,13 @@ async function handleResetUserPassword(user: UserRecord) {
               </div>
             </div>
 
+            <OrderCommentEditor
+              v-if="brigadierModalOrderId !== null && canManageWorkOrders"
+              :key="brigadierModalOrderId"
+              ref="orderCommentEditor"
+              :order-id="brigadierModalOrderId"
+            />
+
             <section class="order-assignments">
               <div class="operations-section__head">
                 <div>
@@ -10129,7 +10214,7 @@ async function handleResetUserPassword(user: UserRecord) {
           <button
             v-if="isBrigadierSaveAvailable"
             type="submit" form="order-form-dialog"
-            class="primary-button"
+            class="primary-button fc-button fc-button--primary"
             :disabled="!brigadierModalCanSave || brigadierSaveLoading"
           >
             <span class="button-content">
@@ -10140,7 +10225,7 @@ async function handleResetUserPassword(user: UserRecord) {
 
           <button
             type="button"
-            class="ghost-button"
+            class="ghost-button fc-button fc-button--ghost"
             @click="closeBrigadierOrderModal"
           >
             <span class="button-content">
@@ -10204,7 +10289,7 @@ async function handleResetUserPassword(user: UserRecord) {
         <div class="confirm-modal__actions card-actions">
           <button
             type="button"
-            class="ghost-button"
+            class="ghost-button fc-button fc-button--ghost"
             :disabled="brigadierSaveLoading"
             @click="closeBrigadierSaveConfirm"
           >
@@ -10215,7 +10300,7 @@ async function handleResetUserPassword(user: UserRecord) {
           </button>
           <button
             type="button"
-            class="primary-button"
+            class="primary-button fc-button fc-button--primary"
             :disabled="brigadierSaveLoading"
             @click="void saveBrigadierOrder()"
           >
@@ -10286,7 +10371,7 @@ async function handleResetUserPassword(user: UserRecord) {
         <div class="confirm-modal__actions card-actions">
           <button
             type="button"
-            class="ghost-button"
+            class="ghost-button fc-button fc-button--ghost"
             :disabled="splitOrderSubmitting"
             @click="closeSplitOrderModal"
           >
@@ -10294,7 +10379,7 @@ async function handleResetUserPassword(user: UserRecord) {
           </button>
           <button
             type="button"
-            class="primary-button"
+            class="primary-button fc-button fc-button--primary"
             :disabled="splitOrderSubmitting"
             @click="void submitSplitOrder()"
           >
@@ -10365,7 +10450,7 @@ async function handleResetUserPassword(user: UserRecord) {
         <div class="confirm-modal__actions card-actions">
           <button
             type="button"
-            class="ghost-button"
+            class="ghost-button fc-button fc-button--ghost"
             :disabled="mergeOrderSubmitting"
             @click="closeMergeOrderModal"
           >
@@ -10373,7 +10458,7 @@ async function handleResetUserPassword(user: UserRecord) {
           </button>
           <button
             type="button"
-            class="primary-button"
+            class="primary-button fc-button fc-button--primary"
             :disabled="mergeOrderSubmitting || mergeSelectedOrderIds.length === 0"
             @click="void submitMergeOrders()"
           >
@@ -10423,7 +10508,7 @@ async function handleResetUserPassword(user: UserRecord) {
         <div class="confirm-modal__actions card-actions">
           <button
             type="button"
-            class="ghost-button"
+            class="ghost-button fc-button fc-button--ghost"
             :disabled="isWorkOrderBusy(workOrderActionConfirm.order.id)"
             @click="closeWorkOrderActionConfirm"
           >
@@ -10466,7 +10551,7 @@ async function handleResetUserPassword(user: UserRecord) {
 
           </div>
 
-          <button type="button" class="ghost-button" @click="closeWorkOrderTimeBreakdown">
+          <button type="button" class="ghost-button fc-button fc-button--ghost" @click="closeWorkOrderTimeBreakdown">
             <span class="button-content">
               <span class="button-icon button-icon--close" aria-hidden="true" />
               <span>Закрыть</span>
@@ -10487,7 +10572,7 @@ async function handleResetUserPassword(user: UserRecord) {
             <p>{{ workOrderTimeBreakdownError }}</p>
             <button
               type="button"
-              class="ghost-button"
+              class="ghost-button fc-button fc-button--ghost"
               :disabled="workOrderTimeBreakdownLoading"
               @click="void openWorkOrderTimeBreakdown(workOrderTimeBreakdownModal.order)"
             >
@@ -10591,7 +10676,7 @@ async function handleResetUserPassword(user: UserRecord) {
 
           </div>
 
-          <button type="button" class="ghost-button" @click="requestProductModalClose">
+          <button type="button" class="ghost-button fc-button fc-button--ghost" @click="requestProductModalClose">
             <span class="button-content">
               <span class="button-icon button-icon--close" aria-hidden="true" />
               <span>Закрыть</span>
@@ -10725,7 +10810,7 @@ async function handleResetUserPassword(user: UserRecord) {
                       <th>Операция</th>
                       <th>Тип</th>
                       <th>Норма на одно изделие, мм:сс</th>
-                      <th>Цена, ₽</th>
+                      <th>Коэффициент / стоимость</th>
                       <th>Действия</th>
                     </tr>
                   </thead>
@@ -10867,25 +10952,26 @@ async function handleResetUserPassword(user: UserRecord) {
                       </td>
                       <td>
                         <span v-if="row.isGroup" class="readonly-note">
-                        Цена только у операций
+                        Коэффициент только у операций
                         </span>
                         <span v-else-if="isViewMode && !canManagePlanningSettings" class="operation-text">
-                        {{ formatMoneyInput(row.priceCents) || "Не указана" }}
+                        {{ formatCoefficient(row.coefficientUnits) }}
                         </span>
                         <input
                           v-else
-                          :value="formatMoneyInput(row.priceCents)"
-                          type="number"
-                          min="0"
-                          step="0.01"
+                          :value="getOperationCoefficientInput(row)"
+                          type="text"
+                          inputmode="decimal"
                           class="operation-input operation-input--price"
-                          :aria-label="`Цена операции ${row.name || row.id}`"
+                          :aria-label="`Коэффициент операции ${row.name || row.id}`"
                           @input="handleOperationPriceInput(row.id, $event)"
+                          @blur="normalizeOperationCoefficientInput(row.id, $event)"
                         />
+                        <p v-if="!row.isGroup" class="readonly-note">{{ calculatedOperationPrice(row) }} ₽</p>
                         <p
                           v-if="
                             (!isViewMode || canManagePlanningSettings) &&
-                            (operationErrors[row.id]?.startsWith('Цена') ||
+                            (operationErrors[row.id]?.startsWith('Коэффициент') ||
                               operationErrors[row.id]?.startsWith('У группы'))
                           "
                           class="field-error"
@@ -10977,7 +11063,7 @@ async function handleResetUserPassword(user: UserRecord) {
                             </button>
                             <button
                               type="button"
-                              class="ghost-button ghost-button--danger"
+                              class="ghost-button ghost-button--danger fc-button fc-button--danger"
                               @click="removeOperation(row.id)"
                             >
                               <span class="button-content">
@@ -10996,7 +11082,7 @@ async function handleResetUserPassword(user: UserRecord) {
               <div v-if="!isViewMode" class="operations-footer">
                 <button
                   type="button"
-                  class="secondary-button secondary-button--add"
+                  class="secondary-button secondary-button--add fc-button"
                   data-field="add-root-operation"
                   @click="addRootOperation"
                 >
@@ -11029,7 +11115,7 @@ async function handleResetUserPassword(user: UserRecord) {
 
           <button
             type="submit" form="product-form-dialog"
-            class="primary-button"
+            class="primary-button fc-button fc-button--primary"
             :class="{ 'primary-button--blocked': !canSaveProduct && !saveLoading }"
             :aria-disabled="!canSaveProduct"
             :disabled="saveLoading"
@@ -11048,7 +11134,7 @@ async function handleResetUserPassword(user: UserRecord) {
             </span>
           </button>
 
-          <button type="button" class="ghost-button" @click="requestProductModalClose">
+          <button type="button" class="ghost-button fc-button fc-button--ghost" @click="requestProductModalClose">
             <span class="button-content">
               <span class="button-icon button-icon--close" aria-hidden="true" />
               <span>{{ isViewMode ? "Закрыть" : "Отменить" }}</span>
@@ -11075,7 +11161,7 @@ async function handleResetUserPassword(user: UserRecord) {
         </div>
 
         <div class="confirm-modal__actions card-actions">
-          <button type="button" class="ghost-button" @click="cancelProductModalClose">
+          <button type="button" class="ghost-button fc-button fc-button--ghost" @click="cancelProductModalClose">
             <span class="button-content">
               <span class="button-icon button-icon--close" aria-hidden="true" />
               <span>Продолжить редактирование</span>
@@ -11083,7 +11169,7 @@ async function handleResetUserPassword(user: UserRecord) {
           </button>
           <button
             type="button"
-            class="ghost-button ghost-button--danger"
+            class="ghost-button ghost-button--danger fc-button fc-button--danger"
             @click="discardProductFormChanges"
           >
             <span class="button-content">
@@ -11125,7 +11211,7 @@ async function handleResetUserPassword(user: UserRecord) {
         <div class="confirm-modal__actions card-actions">
           <button
             type="button"
-            class="ghost-button"
+            class="ghost-button fc-button fc-button--ghost"
             :disabled="isProductBusy(productPendingDelete.id)"
             @click="closeDeleteConfirmation"
           >
@@ -11136,7 +11222,7 @@ async function handleResetUserPassword(user: UserRecord) {
           </button>
           <button
             type="button"
-            class="ghost-button ghost-button--danger confirm-modal__delete"
+            class="ghost-button ghost-button--danger confirm-modal__delete fc-button fc-button--danger"
             :disabled="isProductBusy(productPendingDelete.id)"
             @click="handleDeleteProduct(productPendingDelete)"
           >
@@ -11179,7 +11265,7 @@ async function handleResetUserPassword(user: UserRecord) {
         <div class="confirm-modal__actions card-actions">
           <button
             type="button"
-            class="ghost-button"
+            class="ghost-button fc-button fc-button--ghost"
             @click="closeUserDeleteConfirmation"
           >
             <span class="button-content">
@@ -11189,7 +11275,7 @@ async function handleResetUserPassword(user: UserRecord) {
           </button>
           <button
             type="button"
-            class="ghost-button ghost-button--danger confirm-modal__delete"
+            class="ghost-button ghost-button--danger confirm-modal__delete fc-button fc-button--danger"
             @click="deleteUser(userPendingDelete)"
           >
             <span class="button-content">
@@ -11230,7 +11316,7 @@ async function handleResetUserPassword(user: UserRecord) {
         <div class="confirm-modal__actions card-actions">
           <button
             type="button"
-            class="ghost-button"
+            class="ghost-button fc-button fc-button--ghost"
             :disabled="workerTimerSubmitting"
             @click="closeWorkerAssignmentStatusConfirm"
           >
@@ -11261,7 +11347,7 @@ async function handleResetUserPassword(user: UserRecord) {
     </div>
 
     <WorkSummaryModal v-if="workSummaryOpen && canManagePlanningSettings" @close="workSummaryOpen = false" />
-    <CompletedWorkModal v-if="personalWorkOpen && currentSession?.userRoles.includes('worker')" :key="currentSession.userId" :user-id="currentSession.userId" personal @close="personalWorkOpen = false" />
+    <CompletedWorkModal v-if="showPersonalWorkReport && personalWorkOpen && currentSession?.userRoles.includes('worker')" :key="currentSession.userId" :user-id="currentSession.userId" personal @close="personalWorkOpen = false" />
     <CompletedWorkModal v-if="completedWorkUser && canManagePlanningSettings" :user-id="completedWorkUser.id" @close="completedWorkUser = null" />
     <div v-if="bonusUser && canManagePlanningSettings" class="bonus-dialog-overlay" @click.self="bonusUser = null">
       <section v-escape-close="() => { bonusUser = null }" class="bonus-dialog card-shell" role="dialog" aria-modal="true" aria-label="Премии" tabindex="-1">
@@ -11278,6 +11364,7 @@ async function handleResetUserPassword(user: UserRecord) {
       @updated="handleUserSkillsUpdated"
     />
 
+
     <ProductStagesModal
       v-if="stagesProduct"
       :product-id="stagesProduct.id"
@@ -11288,13 +11375,11 @@ async function handleResetUserPassword(user: UserRecord) {
 
     <WorkScheduleModal
       v-if="isWorkScheduleOpen"
+      :readonly="!canManagePlanningSettings"
       @close="closeWorkSchedule"
     />
 
-    <PlanningSettingsModal
-      v-if="isPlanningSettingsOpen"
-      @close="closePlanningSettings"
-    />
+
 
     <PlanningWorkloadModal
       v-if="isPlanningWorkloadOpen"
@@ -11347,7 +11432,7 @@ async function handleResetUserPassword(user: UserRecord) {
         </div>
 
         <div class="confirm-modal__actions card-actions">
-          <button type="button" class="ghost-button" @click="closeWorkerQrScanner">
+          <button type="button" class="ghost-button fc-button fc-button--ghost" @click="closeWorkerQrScanner">
             <span class="button-content">
               <span class="button-icon button-icon--close" aria-hidden="true" />
               <span>Закрыть</span>
@@ -11376,7 +11461,7 @@ async function handleResetUserPassword(user: UserRecord) {
         <div class="confirm-modal__actions card-actions">
           <button
             type="button"
-            class="ghost-button"
+            class="ghost-button fc-button fc-button--ghost"
             @click="closeWorkerDayEndConfirm"
           >
             <span class="button-content">
@@ -11386,7 +11471,7 @@ async function handleResetUserPassword(user: UserRecord) {
           </button>
           <button
             type="button"
-            class="ghost-button ghost-button--danger confirm-modal__delete"
+            class="ghost-button ghost-button--danger confirm-modal__delete fc-button fc-button--danger"
             :disabled="workerTimerSubmitting"
             @click="void endWorkerDay()"
           >
@@ -11422,7 +11507,7 @@ async function handleResetUserPassword(user: UserRecord) {
         </dl>
         <section class="print-order-summary__comment">
           <h2>Комментарий</h2>
-          <p>{{ printableWorkOrder.productComment || "—" }}</p>
+          <p>{{ printableWorkOrder.comment || "—" }}</p>
         </section>
       </div>
       <table class="print-order-table">
@@ -11472,6 +11557,8 @@ async function handleResetUserPassword(user: UserRecord) {
 </template>
 
 <style scoped>
+.settings-page { width: 100%; max-width: 1280px; min-width: 0; }
+.settings-page > h2 { margin: 0 0 24px; }
 .diagnostic-message { max-width: 320px; font-size: 0.85rem; overflow-wrap: anywhere; }
 .user-management-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
 .bonus-dialog-overlay { position: fixed; inset: 0; z-index: 120; display: grid; place-items: center; padding: 20px; background: #0f172a88; }
@@ -13273,40 +13360,16 @@ h2 {
   white-space: nowrap;
 }
 
-.subtabs {
-  display: inline-flex;
-  gap: 8px;
-  padding: 6px;
-  border-radius: 16px;
-  background: var(--color-surface);
-  border: 1px solid var(--color-border);
+.brigadier-table .work-order-priority-column {
+  width: 1%;
+  min-width: 44px;
+  padding-left: 6px;
+  padding-right: 6px;
+  white-space: nowrap;
+  text-align: center;
 }
-
-.subtab-button {
-  padding: 10px 16px;
-  border: 0;
-  border-radius: 12px;
-  background: transparent;
-  color: var(--color-text-secondary);
-  font: inherit;
-  font-weight: 600;
-  cursor: pointer;
-  transition:
-    transform 0.18s ease,
-    background-color 0.18s ease,
-    color 0.18s ease,
-    box-shadow 0.18s ease;
-}
-
-.subtab-button:hover {
-  transform: translateY(-1px);
-}
-
-.subtab-button--active {
-  background: var(--color-primary);
-  color: #fff;
-  box-shadow: 0 10px 22px rgba(47, 110, 163, 0.12);
-}
+.work-order-priority-column .sort-header-button { gap: 3px; }
+.work-order-product-links { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; margin-top: 6px; font-size: .85rem; }
 
 .brigadier-table .primary-button {
   padding: 10px 14px;

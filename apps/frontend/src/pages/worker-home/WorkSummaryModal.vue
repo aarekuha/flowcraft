@@ -47,7 +47,7 @@ onUnmounted(() => { requestId += 1; });
     <section v-escape-close="() => $emit('close')" class="summary-dialog card-shell" role="dialog" aria-modal="true" aria-label="Общий расчёт выполненной работы" tabindex="-1">
       <header class="card-heading">
         <h2>Общий расчёт выполненной работы</h2>
-        <button type="button" @click="$emit('close')">Закрыть</button>
+        <button class="fc-button" type="button" @click="$emit('close')">Закрыть</button>
       </header>
       <div class="card-scroll">
         <div class="controls">
@@ -72,8 +72,8 @@ onUnmounted(() => { requestId += 1; });
       </div>
 
       <footer class="controls card-actions">
-        <button :disabled="loading || printing" @click="load">Пересчитать</button>
-        <button :disabled="!report || loading || printing" @click="print">{{ printing ? 'Подготовка…' : 'Печать · XLSX' }}</button>
+        <button class="fc-button" :disabled="loading || printing" @click="load">Пересчитать</button>
+        <button class="fc-button" :disabled="!report || loading || printing" @click="print">{{ printing ? 'Подготовка…' : 'Печать · XLSX' }}</button>
       </footer>
     </section>
   </div>

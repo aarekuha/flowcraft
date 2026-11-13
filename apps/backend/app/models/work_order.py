@@ -46,6 +46,7 @@ class WorkOrderFamily(Base):
 
 
 class WorkOrder(Base):
+    comment: Mapped[str | None] = mapped_column(String(4000), nullable=True)
     __tablename__ = "work_orders"
     __table_args__ = (
         UniqueConstraint("order_number", name="uq_work_orders_order_number"),

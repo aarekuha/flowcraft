@@ -1,3 +1,4 @@
+# ruff: noqa: I001
 from calendar import monthrange
 from datetime import UTC, date, datetime
 
@@ -19,6 +20,7 @@ from app.schemas.planning import (
 )
 from app.services.planning_revision_service import PlanningRevisionService
 from app.services.production_calendar_service import ProductionCalendarService
+from app.services.operation_pricing import recalculate_prices
 
 
 class PlanningService:
@@ -35,6 +37,11 @@ class PlanningService:
         updated_by_user_id: int,
     ) -> PlanningSettingsRead:
         settings = self._get_or_create_settings()
+        if payload.show_personal_work_report is not None:
+            settings.show_personal_work_report = payload.show_personal_work_report
+        if payload.base_rate_cents is not None:
+            settings.base_rate_cents = payload.base_rate_cents
+            recalculate_prices(self.session)
         settings.display_offset_days = payload.display_offset_days
         settings.preparation_seconds = payload.preparation_seconds
         settings.horizon_months = payload.horizon_months

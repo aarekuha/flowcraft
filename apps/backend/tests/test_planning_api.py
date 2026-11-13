@@ -313,10 +313,11 @@ def test_work_schedule_rejects_invalid_worker_and_hours(client: TestClient) -> N
     assert partial_hour_response.status_code == 204
 
 
-def test_brigadier_can_manage_schedule_but_not_settings(client: TestClient) -> None:
+def test_brigadier_can_view_but_not_modify_planning(client: TestClient) -> None:
     """
     Проверяем права этапа планирования:
-    - разрешить бригадиру читать и менять график исполнителей
+    - разрешить бригадиру читать график и загрузку по операциям
+    - запретить изменение графика и ручной пересчёт
     - запретить бригадиру читать настройки планирования
     """
     worker = create_user(
@@ -354,8 +355,14 @@ def test_brigadier_can_manage_schedule_but_not_settings(client: TestClient) -> N
     settings_response = client.get("/api/planning/settings")
 
     assert calendar_response.status_code == 200
-    assert update_response.status_code == 204
+    assert update_response.status_code == 403
     assert settings_response.status_code == 403
+
+    assert client.request("DELETE", "/api/planning/work-schedule", json={
+        "user_id": worker["id"], "work_dates": ["2026-11-02"],
+    }).status_code == 403
+    assert client.post("/api/planning/recalculate").status_code == 403
+    assert client.get("/api/planning/workload?month=2026-11").status_code == 200
 
 
 def test_work_schedule_translates_concurrent_insert_conflict(
@@ -715,3 +722,41 @@ def test_calendar_refresh_requires_admin(client: TestClient) -> None:
     response = client.get("/api/planning/work-schedule?month=2026-11")
     assert response.status_code == 200
     assert response.json()["production_calendar"] is None
+
+
+def test_personal_report_visibility_persists_for_worker(client: TestClient) -> None:
+    """
+    Проверяем настройку отображения персонального расчёта:
+    - сохранить выключенное значение администратором
+    - получить его исполнителем без доступа к административным настройкам
+    - запретить исполнителю изменение настройки
+    """
+    assert client.get("/api/planning/interface-settings").json() == {
+        "show_personal_work_report": True,
+    }
+    response = client.patch("/api/planning/settings", json={
+        "show_personal_work_report": False,
+        "display_offset_days": 2,
+        "preparation_seconds": 3600,
+        "horizon_months": 3,
+    })
+    assert response.status_code == 200
+    assert response.json()["show_personal_work_report"] is False
+    worker = client.post("/api/users", json={
+        "name": "Исполнитель настройки", "phone": "+79990000882",
+        "roles": ["worker"], "is_active": True,
+    })
+    assert worker.status_code == 201
+    assert client.post("/api/auth/setup-password", json={
+        "phone": "+79990000882", "new_password": "password123",
+    }).status_code == 200
+    assert client.get("/api/planning/interface-settings").json() == {
+        "show_personal_work_report": False,
+    }
+    assert client.get("/api/planning/settings").status_code == 403
+    assert client.patch("/api/planning/settings", json={
+        "show_personal_work_report": True,
+        "display_offset_days": 2,
+        "preparation_seconds": 3600,
+        "horizon_months": 3,
+    }).status_code == 403

@@ -18,6 +18,8 @@ import {
   isWeekendDate,
 } from "@/shared/lib/workSchedule";
 
+const props = defineProps<{ readonly?: boolean }>();
+
 type SelectionAnchor = {
   userId: number;
   workDate: string;
@@ -140,7 +142,7 @@ async function selectDate(
   workDate: string,
   event: MouseEvent,
 ) {
-  if (saving.value || loading.value) {
+  if (props.readonly || saving.value || loading.value) {
     return;
   }
   const availableSeconds = getAvailableSeconds(worker.userId, workDate);
@@ -204,6 +206,7 @@ function getCommonHours(selections: ScheduleSelection[]): number | null {
 }
 
 async function saveEditor() {
+  if (props.readonly) return;
   if (editor.value === null || editorError.value || saving.value) {
     return;
   }
@@ -222,6 +225,7 @@ async function saveDates(
   hours: number,
   periodType: WorkSchedulePeriodType = "work",
 ) {
+  if (props.readonly) return;
   saving.value = true;
   error.value = "";
   try {
@@ -240,6 +244,7 @@ async function saveDates(
 }
 
 async function deleteEditorDates() {
+  if (props.readonly) return;
   if (editor.value === null || editor.value.mode !== "edit" || saving.value) {
     return;
   }
@@ -321,7 +326,7 @@ function getErrorMessage(value: unknown, fallback: string): string {
           <p>Планирование производства</p>
           <h2>График работы сотрудников</h2>
         </div>
-        <button type="button" class="schedule-button" @click="close">Закрыть</button>
+        <button type="button" class="schedule-button fc-button" @click="close">Закрыть</button>
       </header>
       <div class="card-scroll">
 
@@ -330,10 +335,10 @@ function getErrorMessage(value: unknown, fallback: string): string {
             <span>Месяц</span>
             <input v-model="month" type="month" />
           </label>
-          <button type="button" class="schedule-button" @click="toggleSort">
+          <button type="button" class="schedule-button fc-button" @click="toggleSort">
           ФИО {{ sortDirection === "asc" ? "А–Я" : "Я–А" }}
           </button>
-          <p>
+          <p v-if="!props.readonly">
           Выбрать начало и конец диапазона. Shift открывает выбор типа периода и часов для всего диапазона;
           новый диапазон в одной строке без Shift сохраняется по 8 часов.
           Выбор границ на разных строках открывает редактирование для всех сотрудников между ними.
@@ -462,7 +467,7 @@ function getErrorMessage(value: unknown, fallback: string): string {
           <div class="schedule-editor__actions card-actions">
             <button
               type="button"
-              class="schedule-button schedule-button--primary"
+              class="schedule-button schedule-button--primary fc-button fc-button--primary"
               :disabled="Boolean(editorError) || saving"
               @click="saveEditor"
             >
@@ -471,7 +476,7 @@ function getErrorMessage(value: unknown, fallback: string): string {
             <button
               v-if="editor.mode === 'edit'"
               type="button"
-              class="schedule-button schedule-button--danger"
+              class="schedule-button schedule-button--danger fc-button fc-button--danger"
               :disabled="saving"
               @click="deleteEditorDates"
             >
@@ -479,7 +484,7 @@ function getErrorMessage(value: unknown, fallback: string): string {
             </button>
             <button
               type="button"
-              class="schedule-button"
+              class="schedule-button fc-button"
               :disabled="saving"
               @click="editor = null"
             >

@@ -1,3 +1,4 @@
+# ruff: noqa: I001
 from collections import defaultdict
 from datetime import UTC, datetime
 from fractions import Fraction
@@ -14,6 +15,8 @@ from app.services.effective_order_time import (
     union_duration_seconds,
 )
 
+from app.services.operation_pricing import recalculate_prices
+
 ALGORITHM_VERSION = "recent-30d-five-items-mean-v3"
 MIN_ITEMS = 5
 LOOKBACK_MILLISECONDS = 30 * 24 * 60 * 60 * 1000
@@ -27,10 +30,7 @@ class OperationTimeEstimateService:
         return (
             self.session.scalar(
                 select(OperationTimeEstimate.operation_id)
-                .where(
-                    OperationTimeEstimate.algorithm_version
-                    != ALGORITHM_VERSION
-                )
+                .where(OperationTimeEstimate.algorithm_version != ALGORITHM_VERSION)
                 .limit(1)
             )
             is not None
@@ -85,9 +85,7 @@ class OperationTimeEstimateService:
                 Operation.product_id == product_id
             )
         ).all()
-        parent_ids = {
-            parent_id for _, parent_id in operations if parent_id is not None
-        }
+        parent_ids = {parent_id for _, parent_id in operations if parent_id is not None}
         operation_ids = {
             operation_id
             for operation_id, _ in operations
@@ -115,8 +113,7 @@ class OperationTimeEstimateService:
             estimate.operation_id: estimate.dirty_at for estimate in estimates
         }
         algorithm_versions = {
-            estimate.operation_id: estimate.algorithm_version
-            for estimate in estimates
+            estimate.operation_id: estimate.algorithm_version for estimate in estimates
         }
         operation_ids = {estimate.operation_id for estimate in estimates}
         samples = self._load_samples(operation_ids)
@@ -124,8 +121,7 @@ class OperationTimeEstimateService:
             operation_samples = samples.get(estimate.operation_id, [])
             completed_orders_count = len(operation_samples)
             items_count = sum(
-                included_quantity
-                for _, _, included_quantity in operation_samples
+                included_quantity for _, _, included_quantity in operation_samples
             )
             seconds_per_item = (
                 self._average_seconds(operation_samples)
@@ -156,6 +152,7 @@ class OperationTimeEstimateService:
                 )
                 .execution_options(synchronize_session=False)
             )
+        recalculate_prices(self.session, operation_ids)
         self.session.commit()
         return len(estimates)
 
@@ -240,8 +237,7 @@ class OperationTimeEstimateService:
                 if completed_at >= cutoff
             ]
             selected_items = sum(
-                included_quantity
-                for _, _, included_quantity in selected_samples
+                included_quantity for _, _, included_quantity in selected_samples
             )
             if selected_items < MIN_ITEMS:
                 for completed_at, _, elapsed_seconds, quantity in ordered_candidates:
@@ -263,9 +259,7 @@ class OperationTimeEstimateService:
     ) -> int:
         if not samples:
             raise RuntimeError("Operation time samples unexpectedly empty")
-        items_count = sum(
-            included_quantity for _, _, included_quantity in samples
-        )
+        items_count = sum(included_quantity for _, _, included_quantity in samples)
         if items_count <= 0:
             raise RuntimeError("Operation time samples contain no items")
         total_seconds = sum(

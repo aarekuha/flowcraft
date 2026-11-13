@@ -632,3 +632,89 @@ def test_order_batch_report_groups_timers_and_keeps_zero_time_assignments(
         assert "Рюкзак Nord (1.0)" in sheet
         assert sheet.index("Упаковка") < sheet.index("Итого по партии")
         assert sheet.index("Итого по партии") < sheet.index("Итого за период")
+
+
+def test_product_time_operation_filter_applies_to_totals_and_export(
+    client: TestClient,
+    db_session: sessionmaker[Session],
+) -> None:
+    """
+    Проверяем фильтр операций в отчёте по изделиям:
+    - выбрать одну или несколько операций справочника
+    - пересчитать строки и итоги по выбранным операциям
+    - применить тот же фильтр в XLSX и вернуть пустой отчёт без совпадений
+    """
+    _grant_reports_permission(db_session)
+    with db_session() as session:
+        product = _create_product(session)
+        worker_id = product.author_user_id
+        order = WorkOrder(
+            order_number="FILTER-1",
+            product_id=product.id,
+            quantity=2,
+            created_at=1,
+            updated_at=1,
+        )
+        shift = WorkShift(
+            user_id=worker_id,
+            started_at=0,
+            ended_at=300000,
+            business_date="2026-06-01",
+            created_at=0,
+        )
+        entries = [
+            OperationCatalogEntry(name=name, is_active=True, created_at=1, updated_at=1)
+            for name in ("Пошив", "Упаковка")
+        ]
+        session.add_all([order, shift, *entries])
+        session.flush()
+        entry_ids = [entry.id for entry in entries]
+        for index, entry in enumerate(entries):
+            operation = Operation(
+                product_id=product.id,
+                name=entry.name,
+                operation_catalog_entry_id=entry.id,
+            )
+            session.add(operation)
+            session.flush()
+            session.add(
+                TimerSession(
+                    shift_id=shift.id,
+                    user_id=worker_id,
+                    order_id=order.id,
+                    operation_id=operation.id,
+                    timer_type_code=TIMER_TYPE_TO_CODE[TimerType.OPERATION],
+                    started_at=index * 100000,
+                    ended_at=(index + 1) * 100000,
+                    created_at=0,
+                )
+            )
+        session.commit()
+    query = "?date_from=2026-06-01&date_to=2026-06-01"
+    filtered = query + f"&operation_catalog_entry_id={entry_ids[0]}"
+    response = client.get("/api/reports/product-time" + filtered)
+    assert response.status_code == 200
+    product = response.json()["products"][0]
+    assert [row["operation_name"] for row in product["rows"]] == ["Пошив"]
+    assert product["total_elapsed_ms"] == 100000
+    assert product["average_ms"] == 50000
+    multiple = client.get(
+        "/api/reports/product-time"
+        + filtered
+        + f"&operation_catalog_entry_id={entry_ids[1]}"
+    )
+    assert multiple.json()["products"][0]["total_elapsed_ms"] == 200000
+    empty = client.get(
+        "/api/reports/product-time" + query + "&operation_catalog_entry_id=999999"
+    )
+    assert empty.json()["products"] == []
+    export = client.get("/api/reports/product-time/export.xlsx" + filtered)
+    assert export.status_code == 200
+    with ZipFile(BytesIO(export.content)) as workbook:
+        text = "".join(
+            workbook.read(name).decode()
+            for name in workbook.namelist()
+            if name.endswith(".xml")
+        )
+        assert "Пошив" in text
+        assert "Упаковка" not in text

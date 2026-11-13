@@ -1,7 +1,9 @@
+# ruff: noqa: I001
 from datetime import date
 
 from sqlalchemy import (
     JSON,
+    Boolean,
     BigInteger,
     CheckConstraint,
     Date,
@@ -33,6 +35,10 @@ class PlanningSettings(Base):
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
+    show_personal_work_report: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default="1"
+    )
+    base_rate_cents: Mapped[int] = mapped_column(Integer, nullable=False, default=35000)
     display_offset_days: Mapped[int] = mapped_column(
         Integer,
         nullable=False,

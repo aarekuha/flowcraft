@@ -100,7 +100,7 @@ function getErrorMessage(value: unknown, fallback: string): string {
             Расшифровка расчёта<span v-if="detail"> · {{ detail.orderNumber }}</span>
           </h2>
         </div>
-        <button type="button" class="forecast-button" @click="close">
+        <button type="button" class="forecast-button fc-button" @click="close">
           Закрыть
         </button>
       </header>

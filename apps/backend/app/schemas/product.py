@@ -6,6 +6,7 @@ from app.schemas.operation_catalog import OperationCatalogEntryKind
 class OperationCreate(BaseModel):
     operation_catalog_entry_id: int | None = Field(default=None, ge=1)
     name: str | None = Field(default=None, min_length=1, max_length=255)
+    coefficient_units: int = Field(default=10000, ge=0, le=100000000)
     price_cents: int | None = Field(default=None, ge=0)
     standard_time_seconds: int | None = Field(
         default=None,
@@ -44,6 +45,7 @@ class OperationRead(BaseModel):
     operation_catalog_entry_id: int | None
     name: str
     operation_kind: OperationCatalogEntryKind | None = None
+    coefficient_units: int = 10000
     price_cents: int | None = None
     standard_time_seconds: int | None = None
     statistical_time_seconds: int | None = None
@@ -57,6 +59,7 @@ class OperationRead(BaseModel):
 
 class OperationCostUpdate(BaseModel):
     id: int
+    coefficient_units: int = Field(default=10000, ge=0, le=100000000)
     price_cents: int | None = Field(default=None, ge=0)
     standard_time_seconds: int | None = Field(
         default=None,
@@ -142,6 +145,7 @@ class ProductListItem(BaseModel):
 
 
 class ProductDetail(BaseModel):
+    base_rate_cents: int = 35000
     model_config = ConfigDict(from_attributes=True)
 
     id: int

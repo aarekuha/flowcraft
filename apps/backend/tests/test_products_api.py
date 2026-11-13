@@ -85,7 +85,7 @@ def test_create_and_get_product(client: TestClient) -> None:
                 "children": [
                     {
                         "name": "Фасад",
-                        "price_cents": 5000,
+                        "coefficient_units": 5000,
                         "standard_time_seconds": 95,
                         "children": [],
                     },
@@ -94,7 +94,7 @@ def test_create_and_get_product(client: TestClient) -> None:
             },
             {
                 "name": "Пошив",
-                "price_cents": 25000,
+                "coefficient_units": 25000,
                 "standard_time_seconds": 630,
                 "children": [],
             },
@@ -116,21 +116,16 @@ def test_create_and_get_product(client: TestClient) -> None:
     assert created_product["operations"][0]["price_cents"] is None
     assert created_product["operations"][0]["standard_time_seconds"] is None
     assert isinstance(
-        created_product["operations"][0]["children"][0][
-            "operation_catalog_entry_id"
-        ],
+        created_product["operations"][0]["children"][0]["operation_catalog_entry_id"],
         int,
     )
     assert created_product["operations"][0]["children"][0]["name"] == "Фасад"
-    assert created_product["operations"][0]["children"][0]["price_cents"] == 5000
+    assert created_product["operations"][0]["children"][0]["price_cents"] == 462
     assert (
-        created_product["operations"][0]["children"][0]["standard_time_seconds"]
-        == 95
+        created_product["operations"][0]["children"][0]["standard_time_seconds"] == 95
     )
     assert (
-        created_product["operations"][0]["children"][0][
-            "statistical_time_seconds"
-        ]
+        created_product["operations"][0]["children"][0]["statistical_time_seconds"]
         is None
     )
     assert (
@@ -140,12 +135,9 @@ def test_create_and_get_product(client: TestClient) -> None:
         == 0
     )
     assert (
-        created_product["operations"][0]["children"][0][
-            "statistical_items_count"
-        ]
-        == 0
+        created_product["operations"][0]["children"][0]["statistical_items_count"] == 0
     )
-    assert created_product["operations"][0]["children"][1]["price_cents"] is None
+    assert created_product["operations"][0]["children"][1]["price_cents"] == 0
     assert created_product["operations"][1]["standard_time_seconds"] == 630
 
     product_id = created_product["id"]
@@ -504,10 +496,10 @@ def test_update_product_costs(client: TestClient) -> None:
                 {
                     "name": "Подготовка",
                     "children": [
-                        {"name": "Фасад", "price_cents": 7000, "children": []},
+                        {"name": "Фасад", "coefficient_units": 7000, "children": []},
                     ],
                 },
-                {"name": "Пошив", "price_cents": 25000, "children": []},
+                {"name": "Пошив", "coefficient_units": 25000, "children": []},
             ],
         },
     )
@@ -528,8 +520,8 @@ def test_update_product_costs(client: TestClient) -> None:
     assert updated_product["material_cost_cents"] == 99000
     assert updated_product["comment"] == "Блок операций 1: крой и подготовка"
     assert updated_product["operations"][0]["price_cents"] is None
-    assert updated_product["operations"][0]["children"][0]["price_cents"] == 7000
-    assert updated_product["operations"][1]["price_cents"] == 25000
+    assert updated_product["operations"][0]["children"][0]["price_cents"] == 0
+    assert updated_product["operations"][1]["price_cents"] == 0
 
     get_response = client.get(f"/api/products/{product['id']}")
     assert get_response.status_code == 200
@@ -651,14 +643,14 @@ def test_create_product_rejects_group_operation_catalog_reference(
     )
 
 
-def test_update_product_costs_allows_admin_operation_price_change(
+def test_update_product_costs_allows_admin_operation_coefficient_change(
     client: TestClient,
 ) -> None:
     """
-    Проверяем изменение расценки администратором:
-    - создать изделие с ценой операции
-    - изменить цену существующей операции через API
-    - получить сохранённую новую расценку
+    Проверяем изменение коэффициента администратором:
+    - создать изделие с коэффициентом операции
+    - изменить коэффициент существующей операции через API
+    - получить сохранённую новый коэффициент
     """
     author_user = create_author_user(client)
     ensure_operation_catalog_entries(client, ["Крой", "Пошив"])
@@ -669,7 +661,7 @@ def test_update_product_costs_allows_admin_operation_price_change(
             "version": "1.0",
             "author_user_id": author_user["id"],
             "operations": [
-                {"name": "Крой", "price_cents": 10000, "children": []},
+                {"name": "Крой", "coefficient_units": 10000, "children": []},
                 {"name": "Пошив", "children": []},
             ],
         },
@@ -684,7 +676,7 @@ def test_update_product_costs_allows_admin_operation_price_change(
             "operations": [
                 {
                     "id": product["operations"][0]["id"],
-                    "price_cents": 11000,
+                    "coefficient_units": 11000,
                     "children": [],
                 },
             ],
@@ -692,9 +684,9 @@ def test_update_product_costs_allows_admin_operation_price_change(
     )
 
     assert patch_response.status_code == 200
-    assert patch_response.json()["operations"][0]["price_cents"] == 11000
+    assert patch_response.json()["operations"][0]["coefficient_units"] == 11000
     saved = client.get(f"/api/products/{product['id']}").json()
-    assert saved["operations"][0]["price_cents"] == 11000
+    assert saved["operations"][0]["coefficient_units"] == 11000
 
 
 def test_update_product_costs_allows_operation_standard_time_change_and_removal(
@@ -717,7 +709,7 @@ def test_update_product_costs_allows_operation_standard_time_change_and_removal(
             "operations": [
                 {
                     "name": "Крой",
-                    "price_cents": 10000,
+                    "coefficient_units": 10000,
                     "standard_time_seconds": 90,
                     "children": [],
                 },
@@ -736,7 +728,7 @@ def test_update_product_costs_allows_operation_standard_time_change_and_removal(
             "operations": [
                 {
                     "id": operation_id,
-                    "price_cents": 10000,
+                    "coefficient_units": 10000,
                     "children": [],
                 },
             ],
@@ -745,8 +737,7 @@ def test_update_product_costs_allows_operation_standard_time_change_and_removal(
     assert unchanged_response.status_code == 200
     assert unchanged_response.json()["operations"][0]["standard_time_seconds"] == 90
     assert (
-        client.get("/api/planning/status").json()["input_revision"]
-        == revision_before
+        client.get("/api/planning/status").json()["input_revision"] == revision_before
     )
 
     patch_response = client.patch(
@@ -756,7 +747,7 @@ def test_update_product_costs_allows_operation_standard_time_change_and_removal(
             "operations": [
                 {
                     "id": operation_id,
-                    "price_cents": 10000,
+                    "coefficient_units": 10000,
                     "standard_time_seconds": 120,
                     "children": [],
                 },
@@ -777,7 +768,7 @@ def test_update_product_costs_allows_operation_standard_time_change_and_removal(
             "operations": [
                 {
                     "id": operation_id,
-                    "price_cents": 10000,
+                    "coefficient_units": 10000,
                     "standard_time_seconds": None,
                     "children": [],
                 },
@@ -786,9 +777,7 @@ def test_update_product_costs_allows_operation_standard_time_change_and_removal(
     )
 
     assert delete_response.status_code == 200
-    assert (
-        delete_response.json()["operations"][0]["standard_time_seconds"] is None
-    )
+    assert delete_response.json()["operations"][0]["standard_time_seconds"] is None
     deleted_status = client.get("/api/planning/status").json()
     assert deleted_status["input_revision"] == revision_before + 2
     assert deleted_status["calculation_status"] == "pending"

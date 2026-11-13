@@ -103,3 +103,22 @@ def test_priority_during_calculation_does_not_publish_old_order(
     assert status.active_run_id is None
     assert status.calculation_status == "idle"
     assert not planner.run_once(NOW + timedelta(minutes=1))
+
+
+def test_queue_preserves_planned_dates_when_reordered(
+    planning_session: Session,
+) -> None:
+    """
+    Проверяем плановую дату в очереди приоритетов:
+    - передать дату заказа и отсутствие даты другого заказа
+    - сохранить принадлежность дат заказам после перестановки
+    """
+    order = planning_session.get(WorkOrder, 1)
+    order.planned_completion_date = NOW.date()
+    planning_session.commit()
+    reorder(planning_session)
+    queue = PlanningQueueService(planning_session).get_queue()
+    dates = {item.order_id: item.planned_completion_date for item in queue.items}
+    assert dates[1] == NOW.date()
+    assert dates[2] is None
+    assert [item.order_id for item in queue.items][:2] == [2, 1]

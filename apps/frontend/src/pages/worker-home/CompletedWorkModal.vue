@@ -131,12 +131,12 @@ watch([year, month, () => props.userId], load, { immediate: true });
 <template>
   <div class="work-overlay" @click.self="$emit('close')">
     <section v-escape-close="() => $emit('close')" class="work-dialog card-shell" role="dialog" aria-modal="true" aria-label="Расчёт выполненной работы" tabindex="-1">
-      <header class="card-heading"><h2>Расчёт выполненной работы</h2><button type="button" @click="$emit('close')">Закрыть</button></header>
+      <header class="card-heading"><h2>Расчёт выполненной работы</h2><button class="fc-button" type="button" @click="$emit('close')">Закрыть</button></header>
       <div class="card-scroll">
         <form v-if="personal && !accessToken" class="password-gate" @submit.prevent="unlock">
           <p>Для просмотра личного расчёта требуется пароль текущего пользователя.</p>
           <label>Пароль <input v-model="password" type="password" autocomplete="current-password" maxlength="255" required :disabled="busy" autofocus /></label>
-          <button type="submit" :disabled="busy || !password">{{ busy ? 'Проверка…' : 'Открыть расчёт' }}</button>
+          <button class="fc-button fc-button--primary" type="submit" :disabled="busy || !password">{{ busy ? 'Проверка…' : 'Открыть расчёт' }}</button>
         </form>
         <div v-else class="controls">
           <label>Месяц <select v-model="month" :disabled="printing || savingBonus || savingPiecework"><option v-for="(name, index) in months" :key="index" :value="index + 1">{{ name }}</option></select></label>
@@ -186,12 +186,12 @@ watch([year, month, () => props.userId], load, { immediate: true });
 
       <footer v-if="!personal || accessToken" class="controls card-actions">
         <template v-if="report && !personal && adminReport">
-          <button type="submit" form="piecework-dialog-form" :disabled="busy || printing || savingBonus || savingPiecework || !pieceworkDirty">{{ savingPiecework ? 'Сохранение…' : 'Сохранить сделку' }}</button>
-          <button type="button" :disabled="busy || printing || savingBonus || savingPiecework || report.manual_piecework_cents === null" @click="savePiecework(true)">Использовать системный расчёт</button>
-          <button v-if="pieceworkDirty" type="button" :disabled="savingPiecework" @click="pieceworkInput = savedPieceworkInput">Отменить ввод</button>
+          <button class="fc-button fc-button--primary" type="submit" form="piecework-dialog-form" :disabled="busy || printing || savingBonus || savingPiecework || !pieceworkDirty">{{ savingPiecework ? 'Сохранение…' : 'Сохранить сделку' }}</button>
+          <button class="fc-button" type="button" :disabled="busy || printing || savingBonus || savingPiecework || report.manual_piecework_cents === null" @click="savePiecework(true)">Использовать системный расчёт</button>
+          <button class="fc-button" v-if="pieceworkDirty" type="button" :disabled="savingPiecework" @click="pieceworkInput = savedPieceworkInput">Отменить ввод</button>
         </template>
-        <button :disabled="busy || printing || savingBonus || savingPiecework" @click="load">Пересчитать</button>
-        <button v-if="!personal" :disabled="!report || printing || busy || savingBonus || savingPiecework || pieceworkDirty" @click="print">{{ printing ? 'Подготовка…' : 'Распечатать · XLSX' }}</button>
+        <button class="fc-button" :disabled="busy || printing || savingBonus || savingPiecework" @click="load">Пересчитать</button>
+        <button class="fc-button" v-if="!personal" :disabled="!report || printing || busy || savingBonus || savingPiecework || pieceworkDirty" @click="print">{{ printing ? 'Подготовка…' : 'Распечатать · XLSX' }}</button>
       </footer>
     </section>
   </div>

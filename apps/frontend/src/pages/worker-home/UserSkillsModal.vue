@@ -185,7 +185,7 @@ function getErrorMessage(value: unknown, fallback: string): string {
           <p class="skills-modal__eyebrow">Пользователь</p>
           <h2>Навыки · {{ targetUser.name }}</h2>
         </div>
-        <button type="button" class="skills-button skills-button--ghost" @click="close">
+        <button type="button" class="skills-button skills-button--ghost fc-button fc-button--ghost" @click="close">
           Закрыть
         </button>
       </header>
@@ -215,7 +215,7 @@ function getErrorMessage(value: unknown, fallback: string): string {
                 <span>{{ skill.operationName }}</span>
                 <button
                   type="button"
-                  class="skills-button skills-button--danger"
+                  class="skills-button skills-button--danger fc-button fc-button--danger"
                   :disabled="saving"
                   @click="removeSkill(skill.operationCatalogEntryId)"
                 >
@@ -265,7 +265,7 @@ function getErrorMessage(value: unknown, fallback: string): string {
               </select>
               <button
                 type="button"
-                class="skills-button skills-button--primary"
+                class="skills-button skills-button--primary fc-button fc-button--primary"
                 :disabled="!sourceUserId || saving"
                 @click="requestCopy"
               >
@@ -291,7 +291,7 @@ function getErrorMessage(value: unknown, fallback: string): string {
           <div class="skills-confirm__actions card-actions">
             <button
               type="button"
-              class="skills-button skills-button--primary"
+              class="skills-button skills-button--primary fc-button fc-button--primary"
               :disabled="saving"
               @click="confirmCopy"
             >
@@ -299,7 +299,7 @@ function getErrorMessage(value: unknown, fallback: string): string {
             </button>
             <button
               type="button"
-              class="skills-button skills-button--ghost"
+              class="skills-button skills-button--ghost fc-button fc-button--ghost"
               :disabled="saving"
               @click="cancelCopy"
             >

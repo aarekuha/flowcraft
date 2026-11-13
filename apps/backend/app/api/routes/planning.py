@@ -1,7 +1,13 @@
+# ruff: noqa: I001
 from fastapi import APIRouter, Depends, Query, Response, status
 from sqlalchemy.orm import Session
 
-from app.api.dependencies import get_session, require_any_role
+from app.api.dependencies import (
+    get_session,
+    require_any_role,
+    get_authenticated_session,
+)
+from app.models.planning import PlanningSettings
 from app.schemas.planning import (
     PlanningOrderForecastDetailRead,
     PlanningOrderForecastRead,
@@ -43,7 +49,7 @@ def get_production_planning_status(
     summary="Request production planning recalculation",
 )
 def request_production_planning_recalculation(
-    _: object = Depends(require_any_role("brigadier", "admin")),
+    _: object = Depends(require_any_role("admin")),
     session: Session = Depends(get_session),
 ) -> ProductionPlanningStatusRead:
     return PlanningResultsService(session).request_recalculation()
@@ -166,7 +172,7 @@ def get_work_schedule(
 def update_work_schedule(
     payload: WorkScheduleBatchUpdate | list[WorkScheduleBatchUpdate],
     auth_session: AuthenticatedSession = Depends(
-        require_any_role("brigadier", "admin")
+        require_any_role("admin")
     ),
     session: Session = Depends(get_session),
 ) -> Response:
@@ -184,7 +190,7 @@ def update_work_schedule(
 )
 def delete_work_schedule(
     payload: WorkScheduleBatchDelete | list[WorkScheduleBatchDelete],
-    _: object = Depends(require_any_role("brigadier", "admin")),
+    _: object = Depends(require_any_role("admin")),
     session: Session = Depends(get_session),
 ) -> Response:
     PlanningService(session).delete_work_schedule(payload)
@@ -205,3 +211,16 @@ def refresh_calendar(
     session: Session = Depends(get_session),
 ) -> CalendarStatusRead:
     return ProductionCalendarService(session).refresh(auth_session.user_id)
+
+
+@router.get("/interface-settings")
+def get_interface_settings(
+    _: object = Depends(get_authenticated_session),
+    session: Session = Depends(get_session),
+) -> dict[str, bool]:
+    settings = session.get(PlanningSettings, 1)
+    return {
+        "show_personal_work_report": (
+            settings.show_personal_work_report if settings else True
+        ),
+    }
