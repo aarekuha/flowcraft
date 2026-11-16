@@ -4,6 +4,11 @@ import { fetchPlanningTimeline, type PlanningTimeline } from "@/shared/api/plann
 import { dayDate, layoutTimeline, projectTimeline, defaultTimelineRange, timelineRangeView, findTimelineOrders, orderColor, toggleOrderFocus, zoomTimeline, type PlannedBlock, type TimelineView } from "@/shared/lib/planningTimeline";
 import { getPlanningIssueLabel, getPlanningIssueHint } from "@/shared/lib/productionPlanning";
 
+import PlanningDayModal from "./PlanningDayModal.vue";
+
+const selectedDay = ref(new Intl.DateTimeFormat("en-CA", { timeZone: "Europe/Moscow", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date()));
+const dayModalOpen = ref(false);
+
 const data = ref<PlanningTimeline | null>(null);
 const loading = ref(false);
 const error = ref("");
@@ -134,15 +139,21 @@ onBeforeUnmount(() => { document.removeEventListener("pointerdown", closeSearchO
   <article class="timeline-panel">
     <header class="timeline-head">
       <div><h2>Рабочее время</h2><p>Прогноз по дням · от первого до последнего запланированного дня операции</p><p v-if="data?.calculation.active_completed_at">Расчёт: {{ new Date(data.calculation.active_completed_at).toLocaleString('ru-RU') }}</p></div>
+      <div class="day-toolbar">
+      <form class="range-form control-group" @submit.prevent="dayModalOpen = true">
+        <label>Операции на день<input v-model="selectedDay" type="date" required></label>
+        <button type="submit" class="fc-button" :disabled="!selectedDay">Показать операции</button>
+      </form>
       <button type="button" class="fc-button" :disabled="loading" @click="load">{{ loading ? 'Загрузка…' : 'Обновить' }}</button>
+      </div>
     </header>
     <div class="timeline-filters">
-      <form class="range-form" @submit.prevent="applyRange">
+      <form class="range-form control-group" @submit.prevent="applyRange">
         <label>С<input v-model="dateFrom" type="date" required></label>
         <label>По<input v-model="dateTo" type="date" required></label>
         <button type="submit" class="fc-button" :disabled="Boolean(rangeError)">Построить</button>
       </form>
-      <form ref="searchElement" class="order-search" @submit.prevent="findOrder" @keydown.esc="searchOpen = false">
+      <form ref="searchElement" class="order-search control-group" @submit.prevent="findOrder" @keydown.esc="searchOpen = false">
         <label for="timeline-order-search">Найти заказ</label>
         <div class="search-controls"><input id="timeline-order-search" v-model="orderQuery" type="search" placeholder="Номер заказа" autocomplete="off" @input="searchOpen = true; searchMessage = ''" @keydown.esc="searchOpen = false"><button type="submit" class="fc-button" :disabled="!orderQuery.trim() || !data">Найти</button></div>
         <div v-if="searchOpen && orderQuery.trim()" class="search-results">
@@ -158,7 +169,7 @@ onBeforeUnmount(() => { document.removeEventListener("pointerdown", closeSearchO
     <p v-if="data?.calculation.is_stale" class="message">Показан последний опубликованный расчёт. Исходные данные изменились; для актуализации нужен пересчёт администратором.</p>
     <p v-if="data && data.calculation.active_run_id === null" class="message">Расчёт ещё не опубликован.</p>
     <template v-if="layout.blocks.length">
-      <div class="timeline-toolbar" aria-label="Масштаб графика">
+      <div class="timeline-toolbar control-group" aria-label="Масштаб графика">
         <button type="button" class="fc-button" :disabled="view.end - view.start <= 1" @click="zoom(.5)">+ Приблизить</button>
         <button type="button" class="fc-button" :disabled="view.end - view.start >= navigationBounds.end - navigationBounds.start" @click="zoom(2)">− Отдалить</button>
         <button type="button" class="fc-button" :disabled="view.start <= navigationBounds.start" aria-label="Предыдущие дни" @click="pan(-1)">←</button>
@@ -193,14 +204,16 @@ onBeforeUnmount(() => { document.removeEventListener("pointerdown", closeSearchO
     </template>
     <p v-else-if="data && !loading && data.calculation.active_run_id !== null" class="message">В текущем расчёте нет операций с запланированными датами.</p>
     <details v-if="missing.length" class="unplanned"><summary>Операции без рассчитанных дат: {{ missing.length }}</summary><div class="unplanned-table"><table><thead><tr><th>Заказ</th><th>Операция</th><th>Причина</th></tr></thead><tbody><tr v-for="item in missing" :key="`${item.order_id}:${item.operation_id}`"><td>{{ item.order_number }}</td><td>{{ item.operation_name }}</td><td><span v-for="code in item.issue_codes" :key="code" :title="getPlanningIssueHint(code)">{{ getPlanningIssueLabel(code) }}<br></span><span v-if="!item.issue_codes.length">{{ item.status === 'completed' ? 'Операция завершена' : 'Даты не определены' }}</span></td></tr></tbody></table></div></details>
+    <PlanningDayModal v-if="dayModalOpen" :work-date="selectedDay" @close="dayModalOpen = false" />
   </article>
 </template>
 
 <style scoped>
+.control-group { box-sizing: border-box; max-width: 100%; padding: 6px; border: 1px solid var(--color-border, #d6dee6); border-radius: 16px; background: var(--color-surface, #fff); }
 .timeline-filters { display: flex; flex-wrap: wrap; align-items: start; gap: 20px; margin: 20px 0; }
 .range-form { display: flex; flex-wrap: wrap; align-items: end; gap: 10px; }
-.timeline-filters label { display: grid; gap: 7px; font-size: .875rem; font-weight: 600; }
-.timeline-filters input { min-height: 44px; min-width: 0; padding: 10px 12px; border: 1px solid var(--color-border); border-radius: 10px; font: inherit; background: var(--color-surface); color: var(--color-text); }
+.timeline-filters label, .day-toolbar label { display: grid; gap: 7px; font-size: .875rem; font-weight: 600; }
+.timeline-filters input, .day-toolbar input { min-height: 44px; min-width: 0; padding: 10px 12px; border: 1px solid var(--color-border); border-radius: 10px; font: inherit; background: var(--color-surface); color: var(--color-text); }
 .range-form input { width: 11rem; }
 .order-search { position: relative; flex: 1 1 260px; max-width: 460px; display: grid; gap: 7px; }
 .search-controls { display: flex; gap: 10px; }
@@ -214,9 +227,11 @@ onBeforeUnmount(() => { document.removeEventListener("pointerdown", closeSearchO
 .timeline-panel { padding: 22px; background: var(--color-surface); border: 1px solid var(--color-border); border-radius: 24px; }
 h2 { margin: 0; font-size: 1.5rem; }
 .timeline-head, .timeline-toolbar, .focus-note { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; }
-.timeline-head { justify-content: space-between; align-items: flex-start; }
+.timeline-head { align-items: flex-start; justify-content: space-between; }
+.timeline-head > div:first-child { flex: 1 1 320px; }
+.day-toolbar { display: flex; align-items: end; gap: 12px; flex-wrap: wrap; }
 .timeline-head p, .hint { color: var(--color-text-secondary); font-size: .875rem; }
-.timeline-toolbar { margin: 20px 0 12px; }
+.timeline-toolbar { width: fit-content; margin: 20px 0 12px; }
 .timeline-toolbar span { font-size: .875rem; }
 .message, .focus-note { padding: 12px; background: var(--color-surface-soft); border-radius: 12px; }
 .error { background: #fbeaea; color: #963b3b; }
