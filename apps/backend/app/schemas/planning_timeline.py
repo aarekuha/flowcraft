@@ -22,3 +22,21 @@ class PlanningTimelineItem(BaseModel):
 class PlanningTimelineRead(BaseModel):
     calculation: ProductionPlanningStatusRead
     items: list[PlanningTimelineItem]
+
+
+class PlanningDayItem(BaseModel):
+    order_id: int
+    order_number: str
+    product_name: str
+    product_version: str
+    leather_type_name: str | None
+    quantity: int
+    operation_id: int
+    operation_name: str
+    worker_names: list[str]
+
+
+class PlanningDayRead(BaseModel):
+    work_date: date
+    calculation: ProductionPlanningStatusRead
+    items: list[PlanningDayItem]

@@ -27,3 +27,26 @@ export type PlanningTimeline = {
 export async function fetchPlanningTimeline(): Promise<PlanningTimeline> {
   return handleJsonResponse(await apiFetch("/api/planning/timeline"));
 }
+
+
+export type PlanningDayItem = {
+  order_id: number;
+  order_number: string;
+  product_name: string;
+  product_version: string;
+  leather_type_name: string | null;
+  quantity: number;
+  operation_id: number;
+  operation_name: string;
+  worker_names: string[];
+};
+
+export type PlanningDay = {
+  work_date: string;
+  calculation: PlanningTimeline["calculation"];
+  items: PlanningDayItem[];
+};
+
+export async function fetchPlanningDay(workDate: string): Promise<PlanningDay> {
+  return handleJsonResponse(await apiFetch(`/api/planning/timeline/day?work_date=${encodeURIComponent(workDate)}`));
+}
